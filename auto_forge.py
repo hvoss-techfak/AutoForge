@@ -155,7 +155,7 @@ def composite_pixel_tempered(pixel_height_logit, global_logits, tau_height, tau_
         p_i = gumbel_softmax(global_logits[j], tau_global, gumbel_keys[j], hard=False)
         color_linear = jnp.dot(p_i, material_colors_linear)
         TD_i = jnp.dot(p_i, material_TDs)
-        opac = 1.0 - jnp.exp(-46.05 * (eff_thick / TD_i))
+        opac = jnp.minimum(1.0, eff_thick / (TD_i * 0.1))
         new_comp = comp + remaining * opac * color_linear
         new_remaining = remaining * (1 - opac)
         return (new_comp, new_remaining), None
@@ -294,7 +294,7 @@ def composite_image_discrete_jax(discrete_height_image, discrete_global, h, max_
                 mat_idx = discrete_global[idx]
                 color_linear = mat_colors_linear[mat_idx]
                 TD = mat_TDs[mat_idx]
-                opac = 1.0 - jnp.exp(-46.05 * (h / TD))
+                opac = jnp.minimum(1.0, h / (TD * 0.1))
                 new_comp = comp + remaining * opac * color_linear
                 new_remaining = remaining * (1 - opac)
                 return (new_comp, new_remaining)
@@ -713,9 +713,6 @@ def main():
     discrete_comp_np = np.clip(np.array(discrete_comp), 0, 255).astype(np.uint8)
     cv2.imwrite(os.path.join(args.output_folder, "discrete_comp.jpg"),
                 cv2.cvtColor(discrete_comp_np, cv2.COLOR_RGB2BGR))
-    #additionally write as pil image
-    #from PIL import Image
-    #Image.fromarray(discrete_comp_np).save(os.path.join(args.output_folder, "discrete_comp_pil.jpg"))
 
     height_map_mm = (np.array(disc_height_image, dtype=np.float32)) * h_value
     stl_filename = os.path.join(args.output_folder, "final_model.stl")
