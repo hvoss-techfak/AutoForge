@@ -249,7 +249,7 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
                                                          material_colors, material_TDs, background)
                 disc_comp_np = np.clip(np.array(disc_comp), 0, 255).astype(np.uint8)
                 disc_comp_im.set_data(disc_comp_np)
-        if visualize and (i % 200 == 0):
+        if visualize and (i % 50 == 0):
             comp = composite_image_tempered_fn(params['pixel_height_logits'], params['global_logits'],
                                                tau_height, tau_global, gumbel_keys,
                                                h, max_layers, material_colors, material_TDs, background)
@@ -273,19 +273,28 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
 def generate_stl(height_map, filename, background_height, scale=1.0):
     """
     Generate an ASCII STL file from a height map.
+
+    Parameters:
+        height_map (np.array): 2D array of height values.
+        filename (str): Output STL file path.
+        background_height (float): Height of the background.
+        scale (float): Scale factor for the vertices.
     """
     H, W = height_map.shape
     vertices = np.zeros((H, W, 3), dtype=np.float32)
     for i in range(H):
         for j in range(W):
+            # Original coordinates: x = j*scale, y = i*scale, z = height + background
             vertices[i, j, 0] = j * scale
             vertices[i, j, 1] = i * scale
             vertices[i, j, 2] = height_map[i, j] + background_height
+
     triangles = []
 
     def add_triangle(v1, v2, v3):
         triangles.append((v1, v2, v3))
 
+    # Top surface (each grid cell as two triangles)
     for i in range(H - 1):
         for j in range(W - 1):
             v0 = vertices[i, j]
@@ -295,6 +304,7 @@ def generate_stl(height_map, filename, background_height, scale=1.0):
             add_triangle(v0, v1, v2)
             add_triangle(v0, v2, v3)
 
+    # Walls along the boundaries:
     for j in range(W - 1):
         v0 = vertices[0, j]
         v1 = vertices[0, j + 1]
@@ -302,7 +312,6 @@ def generate_stl(height_map, filename, background_height, scale=1.0):
         v1b = np.array([v1[0], v1[1], 0])
         add_triangle(v0, v1, v1b)
         add_triangle(v0, v1b, v0b)
-
     for j in range(W - 1):
         v0 = vertices[H - 1, j]
         v1 = vertices[H - 1, j + 1]
@@ -310,7 +319,6 @@ def generate_stl(height_map, filename, background_height, scale=1.0):
         v1b = np.array([v1[0], v1[1], 0])
         add_triangle(v1, v0, v1b)
         add_triangle(v0, v0b, v1b)
-
     for i in range(H - 1):
         v0 = vertices[i, 0]
         v1 = vertices[i + 1, 0]
@@ -318,7 +326,6 @@ def generate_stl(height_map, filename, background_height, scale=1.0):
         v1b = np.array([v1[0], v1[1], 0])
         add_triangle(v1, v0, v1b)
         add_triangle(v0, v0b, v1b)
-
     for i in range(H - 1):
         v0 = vertices[i, W - 1]
         v1 = vertices[i + 1, W - 1]
@@ -327,6 +334,7 @@ def generate_stl(height_map, filename, background_height, scale=1.0):
         add_triangle(v0, v1, v1b)
         add_triangle(v0, v1b, v0b)
 
+    # Bottom face
     v0 = np.array([0, 0, 0])
     v1 = np.array([(W - 1) * scale, 0, 0])
     v2 = np.array([(W - 1) * scale, (H - 1) * scale, 0])
@@ -354,6 +362,7 @@ def generate_stl(height_map, filename, background_height, scale=1.0):
         f.write("endsolid heightmap\n")
 
 
+
 def generate_swap_instructions(discrete_global, discrete_height_image, h, background_layers, background_height, material_names):
     """
     Generate swap instructions based on discrete material assignments.
@@ -363,10 +372,12 @@ def generate_swap_instructions(discrete_global, discrete_height_image, h, backgr
     if L == 0:
         instructions.append("No layers printed.")
         return instructions
-    instructions.append(f"At layer #{background_layers + h} ({background_height + h:.2f}mm) swap to {material_names[int(discrete_global[0])]}")
-    for i in range(1, L):
-        if int(discrete_global[i]) != int(discrete_global[i - 1]):
-            instructions.append(f"At layer #{i + background_layers} ({(i * h) + background_height:.2f}mm) swap to {material_names[int(discrete_global[i])]}")
+    instructions.append("Start with your background color")
+    instructions.append(f"At layer #{background_layers} ({background_height:.2f}mm) swap to {material_names[int(discrete_global[0])]}")
+    for i in range(0, L):
+        if i == 0 or int(discrete_global[i]) != int(discrete_global[i - 1]):
+            ie = i+1
+            instructions.append(f"At layer #{ie + background_layers+1} ({(ie * h) + background_height:.2f}mm) swap to {material_names[int(discrete_global[i])]}")
     instructions.append("For the rest, use " + material_names[int(discrete_global[L - 1])])
     return instructions
 

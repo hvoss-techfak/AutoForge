@@ -73,7 +73,13 @@ After running, the following files will be created in your specified output fold
 
 ## Requirements
 
-See the [requirements.txt](requirements.txt) file for a complete list of dependencies.
+See the [requirements.txt](requirements.txt) file for a complete list of dependencies.\
+The optimizer is built using JAX, which requires a CUDA-compatible GPU for optimal performance.\
+Without a dedicated gpu the process can take a very long time (up to 10x longer).\
+If you have a gpu, you can install the gpu version of jax by running:
+```bash
+pip install -U "jax[cuda12]"
+```
 
 ## License
 
