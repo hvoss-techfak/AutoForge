@@ -20,6 +20,7 @@ import math
 from tqdm import tqdm
 import pandas as pd
 
+
 def hex_to_rgb(hex_str):
     """
     Convert a hex color string to a normalized RGB list.
@@ -67,6 +68,56 @@ def gumbel_softmax(logits, temperature, key, hard=False):
     return y
 
 
+# ------------------ Color Conversion for Perceptual Loss ------------------
+
+def srgb_to_linear(rgb):
+    """
+    Convert sRGB (range [0,1]) to linear RGB.
+    """
+    return jnp.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
+
+
+def linear_to_xyz(rgb_linear):
+    """
+    Convert linear RGB to XYZ using sRGB D65.
+    """
+    R = rgb_linear[..., 0]
+    G = rgb_linear[..., 1]
+    B = rgb_linear[..., 2]
+    X = 0.4124564 * R + 0.3575761 * G + 0.1804375 * B
+    Y = 0.2126729 * R + 0.7151522 * G + 0.0721750 * B
+    Z = 0.0193339 * R + 0.1191920 * G + 0.9503041 * B
+    return jnp.stack([X, Y, Z], axis=-1)
+
+
+def xyz_to_lab(xyz):
+    """
+    Convert XYZ to CIELAB. Assumes D65 reference white.
+    This could become a problem, but I'll keep it for now.
+    """
+    # Reference white for D65:
+    xyz_ref = jnp.array([0.95047, 1.0, 1.08883])
+    xyz = xyz / xyz_ref
+    delta = 6/29
+    f = jnp.where(xyz > delta**3, xyz ** (1/3), (xyz / (3 * delta**2)) + (4/29))
+    L = 116 * f[..., 1] - 16
+    a = 500 * (f[..., 0] - f[..., 1])
+    b = 200 * (f[..., 1] - f[..., 2])
+    return jnp.stack([L, a, b], axis=-1)
+
+
+def rgb_to_lab(rgb):
+    """
+    Convert an sRGB image (values in [0,1]) to CIELAB.
+    """
+    rgb_linear = srgb_to_linear(rgb)
+    xyz = linear_to_xyz(rgb_linear)
+    lab = xyz_to_lab(xyz)
+    return lab
+
+
+# ------------------ Compositing Functions ------------------
+
 def composite_pixel_tempered(pixel_height_logit, global_logits, tau_height, tau_global, h, max_layers,
                              material_colors, material_TDs, background, gumbel_keys):
     """
@@ -102,11 +153,38 @@ def composite_image_tempered_fn(pixel_height_logits, global_logits, tau_height, 
     """
     return jax.vmap(jax.vmap(
         lambda ph_logit: composite_pixel_tempered(ph_logit, global_logits, tau_height, tau_global,
-                                                  h, max_layers, material_colors, material_TDs, background, gumbel_keys)
+                                                   h, max_layers, material_colors, material_TDs, background, gumbel_keys)
     ))(pixel_height_logits)
+
 
 # Apply jit with static_argnums for the static argument "max_layers" (index 6)
 composite_image_tempered_fn = jax.jit(composite_image_tempered_fn, static_argnums=(6,))
+
+
+def loss_fn(params, target, tau_height, tau_global, gumbel_keys, h, max_layers, material_colors, material_TDs, background):
+    """
+    Compute the mean squared error loss between the composite and target images (in sRGB).
+    """
+    comp = composite_image_tempered_fn(params['pixel_height_logits'], params['global_logits'],
+                                       tau_height, tau_global, gumbel_keys,
+                                       h, max_layers, material_colors, material_TDs, background)
+    return jnp.mean((comp - target) ** 2)
+
+
+def loss_fn_perceptual(params, target, tau_height, tau_global, gumbel_keys, h, max_layers, material_colors, material_TDs, background):
+    """
+    Compute a perceptual loss between the composite and target images.
+
+    Both images are normalized to [0,1], converted to CIELAB, and then the MSE is computed.
+    """
+    comp = composite_image_tempered_fn(params['pixel_height_logits'], params['global_logits'],
+                                       tau_height, tau_global, gumbel_keys,
+                                       h, max_layers, material_colors, material_TDs, background)
+    comp_norm = comp / 255.0
+    target_norm = target / 255.0
+    comp_lab = rgb_to_lab(comp_norm)
+    target_lab = rgb_to_lab(target_norm)
+    return jnp.mean((comp_lab - target_lab) ** 2)
 
 def huber_loss(pred, target, delta=0.1):
     """
@@ -126,23 +204,29 @@ def huber_loss(pred, target, delta=0.1):
     linear = abs_error - quadratic
     return jnp.mean(0.5 * quadratic**2 + delta * linear)
 
-def loss_fn(params, target, tau_height, tau_global, gumbel_keys, h, max_layers, material_colors, material_TDs, background):
+def loss_fn_perceptual_l1(params, target, tau_height, tau_global, gumbel_keys, h, max_layers, material_colors, material_TDs, background):
     """
-    Compute the mean squared error loss between the composite and target images.
+    Compute a perceptual loss between the composite and target images.
+
+    Both images are normalized to [0,1], converted to CIELAB, and then the MSE is computed.
     """
     comp = composite_image_tempered_fn(params['pixel_height_logits'], params['global_logits'],
                                        tau_height, tau_global, gumbel_keys,
                                        h, max_layers, material_colors, material_TDs, background)
-    return huber_loss(comp, target, delta=1.0)
+    comp_norm = comp / 255.0
+    target_norm = target / 255.0
+    comp_lab = rgb_to_lab(comp_norm)
+    target_lab = rgb_to_lab(target_norm)
+    return huber_loss(comp_lab, target_lab, delta=1.0)
 
 
-def create_update_step(optimizer, h, max_layers, material_colors, material_TDs, background):
+def create_update_step(optimizer, loss_function, h, max_layers, material_colors, material_TDs, background):
     """
-    Create a JIT-compiled update step function.
+    Create a JIT-compiled update step function using the specified loss function.
     """
     @jax.jit
     def update_step(params, target, tau_height, tau_global, gumbel_keys, opt_state):
-        loss_val, grads = jax.value_and_grad(loss_fn)(
+        loss_val, grads = jax.value_and_grad(loss_function)(
             params, target, tau_height, tau_global, gumbel_keys,
             h, max_layers, material_colors, material_TDs, background)
         updates, new_opt_state = optimizer.update(grads, opt_state)
@@ -206,7 +290,7 @@ composite_image_discrete_jax = jax.jit(composite_image_discrete_jax, static_argn
 
 
 def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, material_TDs, background,
-                  num_iters, learning_rate, decay_v, visualize=False):
+                  num_iters, learning_rate, decay_v, loss_function, visualize=False):
     """
     Run the optimization loop to learn per-pixel heights and per-layer material assignments.
     """
@@ -219,7 +303,7 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
 
     optimizer = optax.adam(learning_rate)
     opt_state = optimizer.init(params)
-    update_step = create_update_step(optimizer, h, max_layers, material_colors, material_TDs, background)
+    update_step = create_update_step(optimizer, loss_function, h, max_layers, material_colors, material_TDs, background)
 
     decay_rate = -math.log(decay_v) / num_iters
 
@@ -273,7 +357,7 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
             comp_im.set_data(comp_np)
             actual_layer_height = (max_layers * h) * jax.nn.sigmoid(best_params['pixel_height_logits'])
             highest_layer = np.max(np.array(actual_layer_height))
-            fig.suptitle(f"Iteration {i}, Loss: {loss_val:.4f}, Best Loss: {best_loss:.4f}, Tau: {tau_height:.4f}, Highest Layer: {highest_layer:.2f}mm")
+            fig.suptitle(f"Iteration {i}, Loss: {loss_val:.4f}, Best Loss: {best_loss:.4f}, Tau: {tau_height:.3f}, Highest Layer: {highest_layer:.2f}mm")
             plt.pause(0.01)
         tbar.set_description(f"loss = {loss_val:.4f}, Best Loss = {best_loss:.4f}")
 
@@ -290,11 +374,6 @@ def generate_stl(height_map, filename, background_height, scale=1.0):
     """
     Generate an ASCII STL file from a height map.
 
-    Parameters:
-        height_map (np.array): 2D array of height values.
-        filename (str): Output STL file path.
-        background_height (float): Height of the background.
-        scale (float): Scale factor for the vertices.
     """
     H, W = height_map.shape
     vertices = np.zeros((H, W, 3), dtype=np.float32)
@@ -378,7 +457,6 @@ def generate_stl(height_map, filename, background_height, scale=1.0):
         f.write("endsolid heightmap\n")
 
 
-
 def generate_swap_instructions(discrete_global, discrete_height_image, h, background_layers, background_height, material_names):
     """
     Generate swap instructions based on discrete material assignments.
@@ -391,7 +469,7 @@ def generate_swap_instructions(discrete_global, discrete_height_image, h, backgr
     instructions.append("Start with your background color")
     for i in range(0, L):
         if i == 0 or int(discrete_global[i]) != int(discrete_global[i - 1]):
-            ie = i+1
+            ie = i + 1
             instructions.append(f"At layer #{ie + background_layers} ({(ie * h) + background_height:.2f}mm) swap to {material_names[int(discrete_global[i])]}")
     instructions.append("For the rest, use " + material_names[int(discrete_global[L - 1])])
     return instructions
@@ -409,16 +487,16 @@ def main():
     parser.add_argument("--iterations", type=int, default=20000, help="Number of optimization iterations")
     parser.add_argument("--learning_rate", type=float, default=5e-3, help="Learning rate for optimization")
     parser.add_argument("--layer_height", type=float, default=0.04, help="Layer thickness in mm")
-    parser.add_argument("--max_layers", type=int, default=50, help="Maximum number of layers")
+    parser.add_argument("--max_layers", type=int, default=75, help="Maximum number of layers")
     parser.add_argument("--background_height", type=float, default=0.4, help="Height of the background in mm")
-    parser.add_argument("--background_color", type=str, default="#000000", help="Background color")
+    parser.add_argument("--background_color", type=str, default="#ffffff", help="Background color")
     parser.add_argument("--max_size", type=int, default=512, help="Maximum dimension for target image")
     parser.add_argument("--decay", type=float, default=0.01, help="Final tau value for Gumbel-Softmax")
+    parser.add_argument("--loss", type=str, default="perceptual", choices=["mse", "perceptual","perceptual_l1"], help="Loss function to use")
     parser.add_argument("--visualize", action="store_true", help="Enable visualization during optimization")
     args = parser.parse_args()
 
     os.makedirs(args.output_folder, exist_ok=True)
-
     # Ensure background height is divisible by layer height.
     assert (args.background_height / args.layer_height).is_integer(), "Background height must be divisible by layer height."
 
@@ -444,9 +522,20 @@ def main():
     target = jnp.array(target, dtype=jnp.float32)
 
     rng_key = random.PRNGKey(0)
+    # Choose loss function
+    if args.loss == "mse":
+        loss_fn_to_use = loss_fn
+    elif args.loss == "perceptual":
+        loss_fn_to_use = loss_fn_perceptual
+    elif args.loss == "perceptual_l1":
+        loss_fn_to_use = loss_fn_perceptual_l1
+    else:
+        raise ValueError("Invalid loss type")
+
     best_params, _ = run_optimizer(rng_key, target, new_h, new_w, max_layers_value, h_value,
                                    material_colors, material_TDs, background,
                                    args.iterations, args.learning_rate, decay_v_value,
+                                   loss_function=loss_fn_to_use,
                                    visualize=args.visualize)
 
     rng_key, subkey = random.split(rng_key)

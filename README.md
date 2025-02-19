@@ -14,6 +14,11 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 - **Swap Instructions**: Generates clear swap instructions for changing materials during printing.
 - **Live Visualization**: (Optional) Displays live composite images during the optimization process.
 
+## Example
+<p float="left">
+  <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi.jpg" width="100" />
+  <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_discretized.jpg" width="100" />
+</p>
 ## Installation
 
 1. **Clone the Repository**
