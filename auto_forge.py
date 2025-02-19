@@ -20,7 +20,6 @@ import math
 from tqdm import tqdm
 import pandas as pd
 
-
 def hex_to_rgb(hex_str):
     """
     Convert a hex color string to a normalized RGB list.
@@ -257,7 +256,7 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
             comp_im.set_data(comp_np)
             actual_layer_height = (max_layers * h) * jax.nn.sigmoid(best_params['pixel_height_logits'])
             highest_layer = np.max(np.array(actual_layer_height))
-            fig.suptitle(f"Iteration {i}, Loss: {loss_val:.2f}, Tau: {tau_height:.3f}, Highest Layer: {highest_layer:.3f}mm")
+            fig.suptitle(f"Iteration {i}, Loss: {loss_val:.2f}, Best Loss: {best_loss:.2f}, Tau: {tau_height:.3f}, Highest Layer: {highest_layer:.3f}mm")
             plt.pause(0.01)
         tbar.set_description(f"loss = {loss_val:.2f}, Best Loss = {best_loss:.2f}")
 
@@ -373,11 +372,10 @@ def generate_swap_instructions(discrete_global, discrete_height_image, h, backgr
         instructions.append("No layers printed.")
         return instructions
     instructions.append("Start with your background color")
-    instructions.append(f"At layer #{background_layers} ({background_height:.2f}mm) swap to {material_names[int(discrete_global[0])]}")
     for i in range(0, L):
         if i == 0 or int(discrete_global[i]) != int(discrete_global[i - 1]):
             ie = i+1
-            instructions.append(f"At layer #{ie + background_layers+1} ({(ie * h) + background_height:.2f}mm) swap to {material_names[int(discrete_global[i])]}")
+            instructions.append(f"At layer #{ie + background_layers} ({(ie * h) + background_height:.2f}mm) swap to {material_names[int(discrete_global[i])]}")
     instructions.append("For the rest, use " + material_names[int(discrete_global[L - 1])])
     return instructions
 
