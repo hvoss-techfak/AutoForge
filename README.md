@@ -1,5 +1,8 @@
-**README.md**
+Below is the updated **README.md** that reflects the new command-line arguments:
 
+---
+
+**README.md**
 
 # AutoForge
 
@@ -15,18 +18,20 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 - **Live Visualization**: (Optional) Displays live composite images during the optimization process.
 
 ## Example
-## Example
+
 <div style="display: flex; justify-content: center; gap: 20px;">
   <div style="text-align: center;">
     <h3>Input Image</h3>
     <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi.jpg" width="300" />
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi.jpg" width="300" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature.jpg" width="300" />
   </div>
   <div style="text-align: center;">
     <h3>Autoforge Output</h3>
     <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_discretized.png" width="300" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_discretized.png" width="300" />
   </div>
 </div>
+
 ## Installation
 
 1. **Clone the Repository**
@@ -52,29 +57,45 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 ## Usage
 
 The script is run from the command line and accepts several arguments. Below is an example command:
-Please note that you will need [Hueforge](https://shop.thehueforge.com/) installed to export your filament csv. \
-To get your csv file, simply go to the "Filaments" menu in Hueforge, click the export button, select your filaments and export your filaments as a csv file.
+
+> **Note:** You will need [Hueforge](https://shop.thehueforge.com/) installed to export your filament CSV.  
+> To get your CSV file, simply go to the "Filaments" menu in Hueforge, click the export button, select your filaments, and export them as a CSV file.
+
 ```bash
-python auto_forge.py --input_image path/to/input_image.jpg \
-                     --csv_file path/to/materials.csv \
-                     --output_folder outputs \
-                     --iterations 20000 \
-                     --learning_rate 0.01 \
-                     --target_max 512 \
-                     --visualize
+python auto_forge.py \
+  --input_image path/to/input_image.jpg \
+  --csv_file path/to/materials.csv \
+  --output_folder outputs \
+  --iterations 20000 \
+  --learning_rate 0.01 \
+  --layer_height 0.04 \
+  --max_layers 50 \
+  --background_height 0.4 \
+  --background_color "#8e9089" \
+  --max_size 512 \
+  --decay 0.01 \
+  --loss mse \
+  --visualize
 ```
 
 ### Command Line Arguments
 
+- `--config`: *(Optional)* Path to a configuration file with the settings.
 - `--input_image`: **(Required)** Path to the input image.
 - `--csv_file`: **(Required)** Path to the CSV file containing material data. The CSV should include columns for the brand, name, color (hex code), and TD values.
 - `--output_folder`: **(Required)** Folder where output files will be saved.
 - `--iterations`: Number of optimization iterations (default: 20000).
 - `--learning_rate`: Learning rate for the optimizer (default: 0.01).
+- `--layer_height`: Layer thickness in millimeters (default: 0.04).
+- `--max_layers`: Maximum number of layers (default: 75). 
+  **Note:** This is about 3mm + the background height
+- `--background_height`: Height of the background in millimeters (default: 0.4).  
+  **Note:** The background height must be divisible by the layer height.
+- `--background_color`: Background color in hexadecimal format (default: `#8e9089` aka Bambulab Grey).
 - `--max_size`: Maximum dimension (width or height) for the resized target image (default: 512).
-- `--decay`: Final tau value for Gumbel-Softmax loss (if unsure, leave as default).
+- `--decay`: Final tau value for the Gumbel-Softmax formulation (default: 0.01).
+- `--loss`: Loss function to use. Choices are `mse`, `perceptual`, or `perceptual_l1` (default: `mse`).
 - `--visualize`: Flag to enable live visualization of the composite image during optimization.
-- `--config`: *(Optional)* Path to a configuration file with the above settings.
 
 ## Outputs
 
@@ -84,12 +105,18 @@ After running, the following files will be created in your specified output fold
 - **STL File**: `final_model.stl`
 - **Swap Instructions**: `swap_instructions.txt`
 
+Just a heads-up, this program is mainly concerned with realistic output and will give you VERY long swap instructions.
+Expect to switch your filament every 1-2 layers!
+
+For more artistic control or to reduce the number of swaps, consider buying [Hueforge](https://shop.thehueforge.com/).
+
 ## Requirements
 
-See the [requirements.txt](requirements.txt) file for a complete list of dependencies.\
-The optimizer is built using JAX, which requires a CUDA-compatible GPU for optimal performance.\
-Without a dedicated gpu the process can take a very long time (up to 10x longer).\
-If you have a gpu, you can install the gpu version of jax by running:
+See the [requirements.txt](requirements.txt) file for a complete list of dependencies.  
+The optimizer is built using JAX, which benefits from a CUDA-compatible GPU for optimal performance.  
+Without a dedicated GPU the process can take significantly longer (up to 10x slower).  
+If you have a GPU, you can install the GPU version of JAX by running:
+
 ```bash
 pip install -U "jax[cuda12]"
 ```
@@ -99,6 +126,10 @@ pip install -U "jax[cuda12]"
 AutoForge © 2025 by Hendric Voss is licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
 
 ## Acknowledgements
+
+First and foremost:
+- [Hueforge](https://shop.thehueforge.com/) for providing the filament data and inspiration for this project.
+Without it, this project would not have been possible.
 
 AutoForge makes use of several open source libraries:
 
@@ -110,8 +141,12 @@ AutoForge makes use of several open source libraries:
 - [TQDM](https://github.com/tqdm/tqdm)
 - [ConfigArgParse](https://github.com/bw2/ConfigArgParse)
 
-Example Images:
-<a href="https://www.vecteezy.com/free-photos/anime-girl">Anime Girl Stock photos by Vecteezy</a>
+Example Images:  
+<a href="https://www.vecteezy.com/free-photos/anime-girl">Anime Girl Stock photos by Vecteezy</a>  
 <a href="https://www.vecteezy.com/free-photos/nature">Nature Stock photos by Vecteezy</a>
 
 Happy printing!
+
+--- 
+
+This revised README now includes all the new arguments and their descriptions.
