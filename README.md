@@ -14,7 +14,7 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 - **Live Visualization**: (Optional) Displays live composite images during the optimization process.
 
 ## Example
-
+All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge.
 <div style="display: flex; justify-content: center; gap: 20px;">
   <div style="text-align: center;">
     <h3>Input Image</h3>
