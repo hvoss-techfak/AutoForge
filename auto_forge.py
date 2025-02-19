@@ -56,7 +56,7 @@ def load_materials(csv_filename):
     """
     df = pd.read_csv(csv_filename)
     material_names = [brand + " - " + name for brand, name in zip(df["Brand"].tolist(), df[" Name"].tolist())]
-    material_TDs = df[' TD'].astype(float).to_numpy() * (10.82/6.8)
+    material_TDs = df[' TD'].astype(float).to_numpy()
     colors_list = df[' Color'].tolist()
     material_colors = jnp.array([hex_to_rgb(color) for color in colors_list], dtype=jnp.float32)
     return material_colors, material_TDs, material_names,colors_list
@@ -155,7 +155,7 @@ def composite_pixel_tempered(pixel_height_logit, global_logits, tau_height, tau_
         p_i = gumbel_softmax(global_logits[j], tau_global, gumbel_keys[j], hard=False)
         color_linear = jnp.dot(p_i, material_colors_linear)
         TD_i = jnp.dot(p_i, material_TDs)
-        opac = 1.0 - jnp.exp(-TD_i * eff_thick)
+        opac = 1.0 - jnp.exp(-46.05 * (eff_thick / TD_i))
         new_comp = comp + remaining * opac * color_linear
         new_remaining = remaining * (1 - opac)
         return (new_comp, new_remaining), None
@@ -294,7 +294,7 @@ def composite_image_discrete_jax(discrete_height_image, discrete_global, h, max_
                 mat_idx = discrete_global[idx]
                 color_linear = mat_colors_linear[mat_idx]
                 TD = mat_TDs[mat_idx]
-                opac = 1.0 - jnp.exp(-TD * h)
+                opac = 1.0 - jnp.exp(-46.05 * (h / TD))
                 new_comp = comp + remaining * opac * color_linear
                 new_remaining = remaining * (1 - opac)
                 return (new_comp, new_remaining)
