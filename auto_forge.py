@@ -489,7 +489,7 @@ def main():
     parser.add_argument("--layer_height", type=float, default=0.04, help="Layer thickness in mm")
     parser.add_argument("--max_layers", type=int, default=75, help="Maximum number of layers")
     parser.add_argument("--background_height", type=float, default=0.4, help="Height of the background in mm")
-    parser.add_argument("--background_color", type=str, default="#ffffff", help="Background color")
+    parser.add_argument("--background_color", type=str, default="#000000", help="Background color")
     parser.add_argument("--max_size", type=int, default=512, help="Maximum dimension for target image")
     parser.add_argument("--decay", type=float, default=0.01, help="Final tau value for Gumbel-Softmax")
     parser.add_argument("--loss", type=str, default="perceptual", choices=["mse", "perceptual","perceptual_l1"], help="Loss function to use")
