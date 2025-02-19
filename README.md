@@ -1,6 +1,8 @@
 # AutoForge
 
-AutoForge is a Python tool for generating 3D printed layered models from an input image. Using a learned optimization strategy with a Gumbel softmax formulation, AutoForge assigns materials per layer and produces both a discretized composite image and a 3D-printable STL file. It also generates swap instructions to guide the printer through material changes during a multi-material print.
+AutoForge is a Python tool for generating 3D printed layered models from an input image. Using a learned optimization strategy with a Gumbel softmax formulation, AutoForge assigns materials per layer and produces both a discretized composite image and a 3D-printable STL file. It also generates swap instructions to guide the printer through material changes during a multi-material print. \
+
+**TLDR:** It uses a picture to generate a 3D model that you can print with a multi-material printer. Similar to [Hueforge](https://shop.thehueforge.com/), but without the manual work (and without the artistic control).
 
 ## Features
 
