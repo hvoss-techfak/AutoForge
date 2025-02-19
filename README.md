@@ -144,7 +144,3 @@ Example Images:
 <a href="https://www.vecteezy.com/free-photos/nature">Nature Stock photos by Vecteezy</a>
 
 Happy printing!
-
---- 
-
-This revised README now includes all the new arguments and their descriptions.
