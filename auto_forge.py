@@ -53,7 +53,7 @@ def load_materials(csv_filename):
     """
     df = pd.read_csv(csv_filename)
     material_names = [brand + " - " + name for brand, name in zip(df["Brand"].tolist(), df[" Name"].tolist())]
-    material_TDs = df[' TD'].astype(float).to_numpy()
+    material_TDs = df[' TD'].astype(float).to_numpy() * (10.82/6.8)
     colors_list = df[' Color'].tolist()
     material_colors = jnp.array([hex_to_rgb(color) for color in colors_list], dtype=jnp.float32)
     return material_colors, material_TDs, material_names
@@ -140,32 +140,35 @@ def composite_pixel_tempered(pixel_height_logit, global_logits, tau_height, tau_
                              material_colors, material_TDs, background, gumbel_keys):
     """
     Composite one pixel using a learned height and per-layer soft indicator.
+
+    (Modified to work directly in sRGB space.)
     """
     pixel_height = (max_layers * h) * jax.nn.sigmoid(pixel_height_logit)
 
-    # Convert to linear RGB for proper blending
-    mat_lin = srgb_to_linear(material_colors)
-    bg_lin = srgb_to_linear(background)
+    # Remove gamma conversion: use material_colors and background as given (in sRGB)
+    # mat_lin = srgb_to_linear(material_colors)
+    # bg_lin = srgb_to_linear(background)
 
     def step_fn(carry, i):
         comp, remaining = carry
-        j = max_layers - 1 - i
+        j = max_layers - 1 - i  # process from top to bottom
         p_print = jax.nn.sigmoid((pixel_height - j * h) / tau_height)
         eff_thick = p_print * h
         p_i = gumbel_softmax(global_logits[j], tau_global, gumbel_keys[j], hard=False)
-        color = jnp.dot(p_i, mat_lin)  # Use linear color
+        # Blend in sRGB space directly
+        color = jnp.dot(p_i, material_colors)
         TD_i = jnp.dot(p_i, material_TDs)
-        opac = jnp.minimum(1.0, eff_thick / (TD_i * 0.1))
+        opac = 1.0 - jnp.exp(-TD_i * eff_thick * 1.591)
         new_comp = comp + remaining * opac * color
         new_remaining = remaining * (1 - opac)
         return (new_comp, new_remaining), None
 
     init_state = (jnp.zeros(3), 1.0)
-    (comp_linear, remaining), _ = jax.lax.scan(step_fn, init_state, jnp.arange(max_layers))
-    # Convert back to sRGB for output
-    result_linear = comp_linear + remaining * bg_lin
-    result_srgb = linear_to_srgb(result_linear)
-    return result_srgb * 255.0
+    (comp, remaining), _ = jax.lax.scan(step_fn, init_state, jnp.arange(max_layers))
+    # Composite against background in sRGB space directly.
+    result = comp + remaining * background
+    # No gamma conversion needed; result is already in sRGB.
+    return result * 255.0
 
 
 def composite_image_tempered_fn(pixel_height_logits, global_logits, tau_height, tau_global, gumbel_keys,
@@ -279,11 +282,14 @@ def discretize_solution_jax(params, tau_global, gumbel_keys, h, max_layers):
 def composite_image_discrete_jax(discrete_height_image, discrete_global, h, max_layers, mat_colors, mat_TDs,
                                  background):
     """
-    Composite a discrete image with proper linear/sRGB conversion
+    Composite a discrete image from per-pixel layer counts and discrete global assignments.
+
+    (Modified to work directly in sRGB space.)
     """
-    # Convert to linear RGB
-    mat_lin = srgb_to_linear(mat_colors)
-    bg_lin = srgb_to_linear(background)
+
+    # Remove conversion to linear space:
+    # mat_lin = srgb_to_linear(mat_colors)
+    # bg_lin = srgb_to_linear(background)
 
     def composite_pixel(pixel_printed_layers):
         def step_fn(carry, l):
@@ -294,9 +300,10 @@ def composite_image_discrete_jax(discrete_height_image, discrete_global, h, max_
             def true_fn(carry):
                 comp, remaining = carry
                 mat_idx = discrete_global[idx]
-                color = mat_lin[mat_idx]  # Use linear color
+                # Use sRGB directly.
+                color = mat_colors[mat_idx]
                 TD = mat_TDs[mat_idx]
-                opac = jnp.minimum(1.0, h / (TD * 0.1))
+                opac = 1.0 - jnp.exp(-TD * h * 1.591)
                 new_comp = comp + remaining * opac * color
                 new_remaining = remaining * (1 - opac)
                 return (new_comp, new_remaining)
@@ -305,11 +312,9 @@ def composite_image_discrete_jax(discrete_height_image, discrete_global, h, max_
             return new_carry, None
 
         init_state = (jnp.zeros(3), 1.0)
-        (comp_linear, remaining), _ = jax.lax.scan(step_fn, init_state, jnp.arange(max_layers))
-        # Convert back to sRGB
-        result_linear = comp_linear + remaining * bg_lin
-        result_srgb = linear_to_srgb(result_linear)
-        return result_srgb * 255.0
+        (comp, remaining), _ = jax.lax.scan(step_fn, init_state, jnp.arange(max_layers))
+        result = comp + remaining * background
+        return result * 255.0
 
     return jax.vmap(jax.vmap(composite_pixel))(discrete_height_image)
 
