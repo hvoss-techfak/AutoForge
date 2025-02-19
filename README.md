@@ -83,11 +83,8 @@ python auto_forge.py \
   --visualize
 ```
 
-Currently, the height mesh output is in ascii stl format, which Hueforge does not support. We will fix thie export in an upcoming version. \
+Currently, the height mesh output is in ascii stl format, which Hueforge does not support. We will fix this export in an upcoming version. \
 To convert the ascii stl to binary stl, simply import it into [Blender](https://www.blender.org/) (or the 3d program of your choice) and export it as a stl again.
-
-Another current bug is a slight color discrepancy between our output and hueforge. \
-If anyone has an idea what the problem is, please don't hesitate to submit a pull request :)
 
 ### Command Line Arguments
 
@@ -120,6 +117,11 @@ Just a heads-up, this program is mainly concerned with realistic output and will
 Expect to switch your filament every 1-2 layers!
 
 For more artistic control or to reduce the number of swaps, consider buying [Hueforge](https://shop.thehueforge.com/).
+
+## Known Bugs
+
+- The output stl is in ascii format, which Hueforge does not support. To convert the ascii stl to binary stl, simply import it into [Blender](https://www.blender.org/) (or the 3d program of your choice) and export it as a stl again.
+- There is a slight color discrepancy between our output and hueforge. If anyone has an idea what the problem is, please don't hesitate to submit a pull request :)
 
 ## License
 
