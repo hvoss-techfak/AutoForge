@@ -54,6 +54,15 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
    pip install -r requirements.txt
    ```
 
+See the [requirements.txt](requirements.txt) file for a complete list of dependencies.  
+The optimizer is built using JAX, which benefits from a CUDA-compatible GPU for optimal performance.  
+Without a dedicated GPU the process can take significantly longer (up to 10x slower).  
+If you have a GPU, you can install the GPU version of JAX by running:
+
+```bash
+pip install -U "jax[cuda12]"
+```
+
 ## Usage
 
 The script is run from the command line and accepts several arguments. Below is an example command:
@@ -78,6 +87,12 @@ python auto_forge.py \
   --visualize
 ```
 
+Currently, the height mesh output is in ascii stl format, which Hueforge does not support. We will fix thie export in an upcoming version. \
+To convert the ascii stl to binary stl, simply import it into [Blender](https://www.blender.org/) (or the 3d program of your choice) and export it as a stl again.
+
+Another current bug is a slight color discrepancy between our output and hueforge. \
+If anyone has an idea what the problem is, please don't hesitate to submit a pull request :)
+
 ### Command Line Arguments
 
 - `--config`: *(Optional)* Path to a configuration file with the settings.
@@ -85,7 +100,7 @@ python auto_forge.py \
 - `--csv_file`: **(Required)** Path to the CSV file containing material data. The CSV should include columns for the brand, name, color (hex code), and TD values.
 - `--output_folder`: **(Required)** Folder where output files will be saved.
 - `--iterations`: Number of optimization iterations (default: 20000).
-- `--learning_rate`: Learning rate for the optimizer (default: 0.01).
+- `--learning_rate`: Learning rate for the optimizer (default: 5e-3).
 - `--layer_height`: Layer thickness in millimeters (default: 0.04).
 - `--max_layers`: Maximum number of layers (default: 75). 
   **Note:** This is about 3mm + the background height
@@ -109,17 +124,6 @@ Just a heads-up, this program is mainly concerned with realistic output and will
 Expect to switch your filament every 1-2 layers!
 
 For more artistic control or to reduce the number of swaps, consider buying [Hueforge](https://shop.thehueforge.com/).
-
-## Requirements
-
-See the [requirements.txt](requirements.txt) file for a complete list of dependencies.  
-The optimizer is built using JAX, which benefits from a CUDA-compatible GPU for optimal performance.  
-Without a dedicated GPU the process can take significantly longer (up to 10x slower).  
-If you have a GPU, you can install the GPU version of JAX by running:
-
-```bash
-pip install -U "jax[cuda12]"
-```
 
 ## License
 
