@@ -20,21 +20,6 @@ import math
 from tqdm import tqdm
 import pandas as pd
 
-def srgb_to_linear(c):
-    """
-    Convert sRGB color to linear color.
-    Assumes c is in [0,1].
-    """
-    return jnp.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
-
-def linear_to_srgb(c):
-    """
-    Convert linear color to sRGB.
-    Assumes c is in [0,1].
-    """
-    return jnp.where(c <= 0.0031308, 12.92 * c, 1.055 * (c ** (1/2.4)) - 0.055)
-
-
 def hex_to_rgb(hex_str):
     """
     Convert a hex color string to a normalized RGB list.
@@ -87,13 +72,8 @@ def composite_pixel_tempered(pixel_height_logit, global_logits, tau_height, tau_
     """
     Composite one pixel using a learned height and per-layer soft indicator.
 
-    This version converts sRGB colors to linear space, performs blending, and converts back.
     Uses jax.lax.scan.
     """
-    # Convert material colors and background from sRGB to linear.
-    mat_lin = srgb_to_linear(material_colors)
-    bg_lin = srgb_to_linear(background)
-
     pixel_height = (max_layers * h) * jax.nn.sigmoid(pixel_height_logit)
 
     def step_fn(carry, i):
@@ -102,20 +82,17 @@ def composite_pixel_tempered(pixel_height_logit, global_logits, tau_height, tau_
         p_print = jax.nn.sigmoid((pixel_height - j * h) / tau_height)
         eff_thick = p_print * h
         p_i = gumbel_softmax(global_logits[j], tau_global, gumbel_keys[j], hard=False)
-        # Blend using linear colors:
-        color_lin = jnp.dot(p_i, mat_lin)
+        color_i = jnp.dot(p_i, material_colors)
         TD_i = jnp.dot(p_i, material_TDs)
         opac = jnp.minimum(1.0, eff_thick / (TD_i * 0.1))
-        new_comp = comp + remaining * opac * color_lin
+        new_comp = comp + remaining * opac * color_i
         new_remaining = remaining * (1 - opac)
         return (new_comp, new_remaining), None
 
     init_state = (jnp.zeros(3), 1.0)
     (comp, remaining), _ = jax.lax.scan(step_fn, init_state, jnp.arange(max_layers))
-    result_lin = comp + remaining * bg_lin
-    # Convert the linear composite back to sRGB and scale to 0-255.
-    result_srgb = linear_to_srgb(result_lin)
-    return result_srgb * 255.0
+    result = comp + remaining * background
+    return result * 255.0
 
 
 def composite_image_tempered_fn(pixel_height_logits, global_logits, tau_height, tau_global, gumbel_keys,
@@ -125,13 +102,29 @@ def composite_image_tempered_fn(pixel_height_logits, global_logits, tau_height, 
     """
     return jax.vmap(jax.vmap(
         lambda ph_logit: composite_pixel_tempered(ph_logit, global_logits, tau_height, tau_global,
-                                                   h, max_layers, material_colors, material_TDs, background, gumbel_keys)
+                                                  h, max_layers, material_colors, material_TDs, background, gumbel_keys)
     ))(pixel_height_logits)
 
 # Apply jit with static_argnums for the static argument "max_layers" (index 6)
 composite_image_tempered_fn = jax.jit(composite_image_tempered_fn, static_argnums=(6,))
 
+def huber_loss(pred, target, delta=0.1):
+    """
+    Compute the Huber loss between predictions and targets.
 
+    Parameters:
+        pred (jnp.array): Predicted values.
+        target (jnp.array): Ground-truth values.
+        delta (float): Threshold at which to change between quadratic and linear loss.
+
+    Returns:
+        jnp.array: The Huber loss.
+    """
+    error = pred - target
+    abs_error = jnp.abs(error)
+    quadratic = jnp.minimum(abs_error, delta)
+    linear = abs_error - quadratic
+    return jnp.mean(0.5 * quadratic**2 + delta * linear)
 
 def loss_fn(params, target, tau_height, tau_global, gumbel_keys, h, max_layers, material_colors, material_TDs, background):
     """
@@ -140,7 +133,7 @@ def loss_fn(params, target, tau_height, tau_global, gumbel_keys, h, max_layers, 
     comp = composite_image_tempered_fn(params['pixel_height_logits'], params['global_logits'],
                                        tau_height, tau_global, gumbel_keys,
                                        h, max_layers, material_colors, material_TDs, background)
-    return jnp.mean((comp - target) ** 2)
+    return huber_loss(comp, target, delta=1.0)
 
 
 def create_update_step(optimizer, h, max_layers, material_colors, material_TDs, background):
@@ -176,17 +169,12 @@ def discretize_solution_jax(params, tau_global, gumbel_keys, h, max_layers):
     return discrete_global, discrete_height_image
 
 
-def composite_image_discrete_jax(discrete_height_image, discrete_global, h, max_layers, mat_colors, mat_TDs,
-                                 background):
+def composite_image_discrete_jax(discrete_height_image, discrete_global, h, max_layers, mat_colors, mat_TDs, background):
     """
     Composite a discrete image from per-pixel layer counts and discrete global assignments.
 
-    Uses jax.lax.scan and performs blending in linear space.
+    Uses jax.lax.scan.
     """
-    # Convert colors to linear space.
-    mat_lin = srgb_to_linear(mat_colors)
-    bg_lin = srgb_to_linear(background)
-
     def composite_pixel(pixel_printed_layers):
         def step_fn(carry, l):
             comp, remaining = carry
@@ -196,10 +184,10 @@ def composite_image_discrete_jax(discrete_height_image, discrete_global, h, max_
             def true_fn(carry):
                 comp, remaining = carry
                 mat_idx = discrete_global[idx]
-                color_lin = mat_lin[mat_idx]
+                color = mat_colors[mat_idx]
                 TD = mat_TDs[mat_idx]
                 opac = jnp.minimum(1.0, h / (TD * 0.1))
-                new_comp = comp + remaining * opac * color_lin
+                new_comp = comp + remaining * opac * color
                 new_remaining = remaining * (1 - opac)
                 return (new_comp, new_remaining)
 
@@ -208,10 +196,8 @@ def composite_image_discrete_jax(discrete_height_image, discrete_global, h, max_
 
         init_state = (jnp.zeros(3), 1.0)
         (comp, remaining), _ = jax.lax.scan(step_fn, init_state, jnp.arange(max_layers))
-        result_lin = comp + remaining * bg_lin
-        # Convert back to sRGB.
-        result_srgb = linear_to_srgb(result_lin)
-        return result_srgb * 255.0
+        result = comp + remaining * background
+        return result * 255.0
 
     return jax.vmap(jax.vmap(composite_pixel))(discrete_height_image)
 
@@ -249,7 +235,7 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
         target_im = ax[0].imshow(np.array(target, dtype=np.uint8))
         ax[0].set_title("Target Image")
         comp_im = ax[1].imshow(np.zeros((H, W, 3), dtype=np.uint8))
-        ax[1].set_title("Gumbel Composite")
+        ax[1].set_title("Current Gumbel Composite")
         best_comp_im = ax[2].imshow(np.zeros((H, W, 3), dtype=np.uint8))
         ax[2].set_title("Best Gumbel Composite")
         disc_comp_im = ax[3].imshow(np.zeros((H, W, 3), dtype=np.uint8))
@@ -287,9 +273,9 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
             comp_im.set_data(comp_np)
             actual_layer_height = (max_layers * h) * jax.nn.sigmoid(best_params['pixel_height_logits'])
             highest_layer = np.max(np.array(actual_layer_height))
-            fig.suptitle(f"Iteration {i}, Loss: {loss_val:.2f}, Best Loss: {best_loss:.2f}, Tau: {tau_height:.3f}, Highest Layer: {highest_layer:.3f}mm")
+            fig.suptitle(f"Iteration {i}, Loss: {loss_val:.4f}, Best Loss: {best_loss:.4f}, Tau: {tau_height:.4f}, Highest Layer: {highest_layer:.2f}mm")
             plt.pause(0.01)
-        tbar.set_description(f"loss = {loss_val:.2f}, Best Loss = {best_loss:.2f}")
+        tbar.set_description(f"loss = {loss_val:.4f}, Best Loss = {best_loss:.4f}")
 
     if visualize:
         plt.ioff()
@@ -421,7 +407,7 @@ def main():
     parser.add_argument("--csv_file", type=str, required=True, help="Path to CSV file with material data")
     parser.add_argument("--output_folder", type=str, required=True, help="Folder to write outputs")
     parser.add_argument("--iterations", type=int, default=20000, help="Number of optimization iterations")
-    parser.add_argument("--learning_rate", type=float, default=1e-2, help="Learning rate for optimization")
+    parser.add_argument("--learning_rate", type=float, default=5e-3, help="Learning rate for optimization")
     parser.add_argument("--layer_height", type=float, default=0.04, help="Layer thickness in mm")
     parser.add_argument("--max_layers", type=int, default=50, help="Maximum number of layers")
     parser.add_argument("--background_height", type=float, default=0.4, help="Height of the background in mm")
