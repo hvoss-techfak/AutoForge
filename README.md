@@ -4,15 +4,6 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 
 **TLDR:** It uses a picture to generate a 3D layer image that you can print with a 3d printer. Similar to [Hueforge](https://shop.thehueforge.com/), but without the manual work (and without the artistic control).
 
-## Features
-
-- **Image-to-Model Conversion**: Converts an input image into a layered model suitable for 3D printing.
-- **Learned Optimization**: Optimizes per-pixel height and per-layer material assignments using JAX and Optax.
-- **Gumbel Softmax Sampling**: Leverages the Gumbel softmax method to decide material assignments for each layer.
-- **STL File Generation**: Exports an ASCII STL file based on the optimized height map.
-- **Swap Instructions**: Generates clear swap instructions for changing materials during printing.
-- **Live Visualization**: (Optional) Displays live composite images during the optimization process.
-
 ## Example
 All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge.
 <div style="display: flex; justify-content: center; gap: 20px;">
@@ -27,6 +18,17 @@ All examples use only the 13 BambuLab Basic filaments, currently available in Hu
     <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_discretized.png" width="300" />
   </div>
 </div>
+
+## Features
+
+- **Image-to-Model Conversion**: Converts an input image into a layered model suitable for 3D printing.
+- **Learned Optimization**: Optimizes per-pixel height and per-layer material assignments using JAX and Optax.
+- **Gumbel Softmax Sampling**: Leverages the Gumbel softmax method to decide material assignments for each layer.
+- **STL File Generation**: Exports an ASCII STL file based on the optimized height map.
+- **Swap Instructions**: Generates clear swap instructions for changing materials during printing.
+- **Live Visualization**: (Optional) Displays live composite images during the optimization process.
+
+
 
 ## Installation
 
