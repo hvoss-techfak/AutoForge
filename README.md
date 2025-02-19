@@ -19,11 +19,11 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 <div style="display: flex; justify-content: center; gap: 20px;">
   <div style="text-align: center;">
     <h3>Input Image</h3>
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi.jpg" width="500" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi.jpg" width="300" />
   </div>
   <div style="text-align: center;">
     <h3>Autoforge Output</h3>
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_discretized.png" width="500" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_discretized.png" width="300" />
   </div>
 </div>
 ## Installation
