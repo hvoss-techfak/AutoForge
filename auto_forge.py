@@ -6,8 +6,10 @@ This script uses a learned optimization with a Gumbel softmax formulation
 to assign materials per layer and produce both a discretized composite that
 is exported as an STL file along with swap instructions.
 """
-
+import json
 import os
+import uuid
+
 import configargparse
 import cv2
 import jax
@@ -56,7 +58,7 @@ def load_materials(csv_filename):
     material_TDs = df[' TD'].astype(float).to_numpy() * (10.82/6.8)
     colors_list = df[' Color'].tolist()
     material_colors = jnp.array([hex_to_rgb(color) for color in colors_list], dtype=jnp.float32)
-    return material_colors, material_TDs, material_names
+    return material_colors, material_TDs, material_names,colors_list
 
 
 def sample_gumbel(shape, key, eps=1e-20):
@@ -262,13 +264,11 @@ def create_update_step(optimizer, loss_function, h, max_layers, material_colors,
 
 
 def discretize_solution_jax(params, tau_global, gumbel_keys, h, max_layers):
-    """
-    Discretize continuous parameters into discrete global assignments and per-pixel layer counts.
-    """
     pixel_height_logits = params['pixel_height_logits']
     global_logits = params['global_logits']
     pixel_heights = (max_layers * h) * jax.nn.sigmoid(pixel_height_logits)
-    discrete_height_image = jnp.ceil(pixel_heights / h).astype(jnp.int32)
+    # Use floor instead of ceil to avoid counting a partially reached layer.
+    discrete_height_image = jnp.floor(pixel_heights / h).astype(jnp.int32)
     discrete_height_image = jnp.clip(discrete_height_image, 0, max_layers)
 
     def discretize_layer(logits, key):
@@ -323,7 +323,7 @@ composite_image_discrete_jax = jax.jit(composite_image_discrete_jax, static_argn
 
 
 def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, material_TDs, background,
-                  num_iters, learning_rate, decay_v, loss_function, visualize=False):
+                  num_iters, learning_rate, decay_v, loss_function, visualize=False,save_max_tau=0.1):
     """
     Run the optimization loop to learn per-pixel heights and per-layer material assignments.
     """
@@ -358,7 +358,7 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
         disc_comp_im = ax[3].imshow(np.zeros((H, W, 3), dtype=np.uint8))
         ax[3].set_title("Discretized Composite")
         plt.pause(0.1)
-
+    saved_new_tau = False
     tbar = tqdm(range(num_iters))
     for i in tbar:
         tau_height = get_tau(i, tau_init=1.0, tau_final=decay_v, decay_rate=decay_rate)
@@ -366,7 +366,10 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
         rng_key, subkey = random.split(rng_key)
         gumbel_keys = random.split(subkey, max_layers)
         params, opt_state, loss_val = update_step(params, target, tau_height, tau_global, gumbel_keys, opt_state)
-        if loss_val < best_loss:
+        save_tau_bool = (tau_global < save_max_tau and not saved_new_tau)
+        if loss_val < best_loss or save_tau_bool:
+            if save_tau_bool:
+                saved_new_tau = True
             best_loss = loss_val
             best_params = {k: jnp.array(v) for k, v in params.items()}
             if visualize:
@@ -508,6 +511,135 @@ def generate_swap_instructions(discrete_global, discrete_height_image, h, backgr
     return instructions
 
 
+def generate_project_file(project_filename, args, disc_global, disc_height_image,
+                          image_width_mm, image_height_mm,
+                          stl_filename, material_names, material_TDs, material_hex):
+    """
+    Generate a project file (JSON) that follows the expected external program format.
+
+    This function sets a number of fields from args and our code defaults.
+    In particular, it builds:
+
+      - slider_values: a list of 1-indexed printed layer positions where the material changes.
+      - filament_set: a list of filaments (one per slider event) corresponding to the material
+        that is applied at that layer. Duplicates are allowed if the same filament is used in multiple
+        positions.
+
+    Parameters:
+        project_filename (str): Path to write the JSON project file.
+        args: The argparse namespace (contains layer_height, background_height, etc.).
+        disc_global (array-like): 1D array (length max_layers) of material indices per layer.
+        disc_height_image (array-like): 2D array of printed layer counts (per pixel); its maximum
+            determines the number of printed layers (L).
+        image_width_mm (float): Printed object width in millimeters.
+        image_height_mm (float): Printed object height (printed region, excluding background) in mm.
+        stl_filename (str): Path/filename of the generated STL.
+        material_names (list): List of material names (from CSV).
+        material_TDs (list/array): Material transmissivity values.
+        material_hex (list): List of hex color strings for each material.
+    """
+    project = {}
+
+    # Basic settings
+    project["version"] = "0.7.0"
+    project["layer_height"] = args.layer_height
+    project["base_layer_height"] = args.background_height  # background as base layer height
+    project["border_height"] = args.background_height
+    project["border_width"] = 3
+    project["borderless"] = True
+    project["bright_adjust_zero"] = False
+    project["brightness_compensation_name"] = "Standard"
+    project["bw_tolerance"] = 8
+    project["color_match_method"] = 0
+    project["depth_mode"] = 2
+    project["edit_image"] = False
+    project["extra_gap"] = 2
+
+    # Determine printed layer count L (only layers 0 to L-1 are printed).
+    L = int(np.max(np.array(disc_height_image)))
+
+    # Build slider_values and filament_set.
+    # We assume that disc_global is ordered from bottom (layer 0) to top (layer max_layers-1).
+    slider_values = []
+    filament_set = []
+
+    if L > 0:
+        # Always add the first printed layer.
+        slider_values.append(1)  # 1-indexed
+        # Record the filament used at layer 0.
+        mat_idx = int(disc_global[0])
+        filament_set.append({
+            "Brand": "BambuLab Basic",  # or load from CSV if available
+            "Color": material_hex[mat_idx] if mat_idx < len(material_hex) else "#000000",
+            "Name": material_names[mat_idx],
+            "Owned": True,
+            "Transmissivity": float(material_TDs[mat_idx]),
+            "Type": "PLA",
+            "uuid": str(uuid.uuid4())
+        })
+        # For each subsequent printed layer (from layer 1 to L-1) add a slider event if the material changes.
+        for i in range(1, L):
+            if disc_global[i] != disc_global[i - 1]:
+                slider_values.append(i + 1)  # use 1-indexing
+                mat_idx = int(disc_global[i])
+                filament_set.append({
+                    "Brand": "BambuLab Basic",
+                    "Color": material_hex[mat_idx] if mat_idx < len(material_hex) else "#000000",
+                    "Name": material_names[mat_idx],
+                    "Owned": True,
+                    "Transmissivity": float(material_TDs[mat_idx]),
+                    "Type": "PLA",
+                    "uuid": str(uuid.uuid4())
+                })
+
+    project["slider_values"] = slider_values
+    project["filament_set"] = filament_set
+
+    # Other settings
+    project["flatten"] = False
+    project["full_range"] = True
+    project["green_shift"] = 0
+    project["gs_threshold"] = 0
+    project["width_in_mm"] = float(image_width_mm)
+    # Total printed height includes the printed part plus the background.
+    project["height_in_mm"] = float(image_height_mm) + args.background_height
+    project["hsl_invert"] = False
+    project["ignore_blue"] = False
+    project["ignore_green"] = False
+    project["ignore_red"] = False
+    project["invert_blue"] = False
+    project["invert_green"] = False
+    project["invert_red"] = False
+    project["inverted_color_pop"] = False
+    project["legacy_luminance"] = False
+    project["light_intensity"] = -1
+    project["light_temperature"] = 1
+    project["lighting_visualizer"] = 0
+    project["luminance_factor"] = 0
+    project["luminance_method"] = 2
+    project["luminance_offset"] = 0
+    project["luminance_offset_max"] = 100
+    project["luminance_power"] = 2
+    project["luminance_weight"] = 100
+    project["max_depth"] = args.background_height
+    project["median"] = 0
+    project["mesh_style_edit"] = True
+    project["min_depth"] = args.background_height / 2  # adjust as needed
+    project["min_detail"] = 0.2
+    project["negative"] = True
+    project["red_shift"] = 0
+    project["reverse_litho"] = True
+    project["smoothing"] = 0
+    project["srgb_linearize"] = False
+    project["stl"] = stl_filename
+    project["strict_tolerance"] = False
+    project["transparency"] = True
+
+    # Write out the JSON file.
+    with open(project_filename, "w") as f:
+        json.dump(project, f, indent=4)
+
+
 def main():
     """
     Main function to run the optimization and generate outputs.
@@ -524,6 +656,7 @@ def main():
     parser.add_argument("--background_height", type=float, default=0.4, help="Height of the background in mm")
     parser.add_argument("--background_color", type=str, default="#8e9089", help="Background color")
     parser.add_argument("--max_size", type=int, default=512, help="Maximum dimension for target image")
+    parser.add_argument("--save_max_tau", type=float, default=0.05, help="We start to save the best result after this tau value, to ensure convergence and color separation")
     parser.add_argument("--decay", type=float, default=0.005, help="Final tau value for Gumbel-Softmax")
     parser.add_argument("--loss", type=str, default="mse", choices=["mse", "perceptual","perceptual_l1"], help="Loss function to use")
     parser.add_argument("--visualize", action="store_true", help="Enable visualization during optimization")
@@ -532,6 +665,11 @@ def main():
     os.makedirs(args.output_folder, exist_ok=True)
     # Ensure background height is divisible by layer height.
     assert (args.background_height / args.layer_height).is_integer(), "Background height must be divisible by layer height."
+    assert args.save_max_tau > args.decay, "save_max_tau must be less than decay."
+    assert args.max_size > 0, "max_size must be positive."
+    assert args.iterations > 0, "iterations must be positive."
+    assert args.learning_rate > 0, "learning_rate must be positive."
+    assert args.layer_height > 0, "layer_height must be positive."
 
     h_value = args.layer_height
     max_layers_value = args.max_layers
@@ -540,7 +678,7 @@ def main():
     decay_v_value = args.decay
 
     background = jnp.array(hex_to_rgb(args.background_color), dtype=jnp.float32)
-    material_colors, material_TDs, material_names = load_materials(args.csv_file)
+    material_colors, material_TDs, material_names,material_hex = load_materials(args.csv_file)
 
     img = cv2.imread(args.input_image)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -569,7 +707,8 @@ def main():
                                    material_colors, material_TDs, background,
                                    args.iterations, args.learning_rate, decay_v_value,
                                    loss_function=loss_fn_to_use,
-                                   visualize=args.visualize)
+                                   visualize=args.visualize,
+                                   save_max_tau=args.save_max_tau)
 
     rng_key, subkey = random.split(rng_key)
     gumbel_keys_disc = random.split(subkey, max_layers_value)
@@ -579,8 +718,11 @@ def main():
                                                  material_colors, material_TDs, background)
 
     discrete_comp_np = np.clip(np.array(discrete_comp), 0, 255).astype(np.uint8)
-    cv2.imwrite(os.path.join(args.output_folder, "discrete_comp.png"),
+    cv2.imwrite(os.path.join(args.output_folder, "discrete_comp.jpg"),
                 cv2.cvtColor(discrete_comp_np, cv2.COLOR_RGB2BGR))
+    #additionally write as pil image
+    #from PIL import Image
+    #Image.fromarray(discrete_comp_np).save(os.path.join(args.output_folder, "discrete_comp_pil.jpg"))
 
     height_map_mm = (np.array(disc_height_image, dtype=np.float32)) * h_value
     stl_filename = os.path.join(args.output_folder, "final_model.stl")
@@ -592,6 +734,15 @@ def main():
     with open(instructions_filename, "w") as f:
         for line in swap_instructions:
             f.write(line + "\n")
+    width_mm = new_w
+    height_mm = new_h
+
+    #project saving is not yet implemented correctly
+
+    # project_filename = os.path.join(args.output_folder, "project_file.json")
+    # generate_project_file(project_filename, args, np.array(disc_global), np.array(disc_height_image),
+    #                       width_mm, height_mm, stl_filename,
+    #                       material_names, material_TDs, material_hex)
     print("All outputs saved to", args.output_folder)
     print("Happy printing!")
 

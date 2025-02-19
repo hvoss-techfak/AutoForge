@@ -4,7 +4,10 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 
 **TLDR:** It uses a picture to generate a 3D layer image that you can print with a 3d printer. Similar to [Hueforge](https://shop.thehueforge.com/), but without the manual work (and without the artistic control).
 
-## ATTENTION: There is currently still a bug in this implementation, where colors sometimes do not match the hueforge output. We are working on fixing this issue.
+There are a few limitations to this project:
+- The output can be slightly different to what you see in Hueforge. We are working on this, but the colors are very similar at this point.
+- Currently, the export of the stl is in ascii format, which Hueforge does not support. Please open it in blender or any slicer and export it again to make it Hueforge compatible.
+- We are working on getting Hueforge project support up and running, but that is still in the works. 
 
 ## Example
 All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge.
@@ -71,24 +74,11 @@ The script is run from the command line and accepts several arguments. Below is 
 > To get your CSV file, simply go to the "Filaments" menu in Hueforge, click the export button, select your filaments, and export them as a CSV file.
 
 ```bash
-python auto_forge.py \
-  --input_image path/to/input_image.jpg \
-  --csv_file path/to/materials.csv \
-  --output_folder outputs \
-  --iterations 20000 \
-  --learning_rate 0.01 \
-  --layer_height 0.04 \
-  --max_layers 50 \
-  --background_height 0.4 \
-  --background_color "#8e9089" \
-  --max_size 512 \
-  --decay 0.01 \
-  --loss mse \
-  --visualize
+python auto_forge.py --input_image path/to/input_image.jpg --csv_file path/to/materials.csv --output_folder outputs 
 ```
 
 Currently, the height mesh output is in ascii stl format, which Hueforge does not support. We will fix this export in an upcoming version. \
-To convert the ascii stl to binary stl, simply import it into [Blender](https://www.blender.org/) (or the 3d program of your choice) and export it as a stl again.
+To convert the ascii stl to binary stl, simply import it into [Blender](https://www.blender.org/) (or the 3d program/slicer of your choice) and export it as a stl again.
 
 ### Command Line Arguments
 
