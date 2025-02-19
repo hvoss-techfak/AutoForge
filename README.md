@@ -19,7 +19,7 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 1. **Clone the Repository**
 
    ```bash
-   git clone https://github.com/yourusername/AutoForge.git
+   git clone https://github.com/hvoss-techfak/AutoForge.git
    cd AutoForge
    ```
 
@@ -39,7 +39,8 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 ## Usage
 
 The script is run from the command line and accepts several arguments. Below is an example command:
-
+Please note that you will need [Hueforge](https://shop.thehueforge.com/) installed to export your filament csv. \
+To get your csv file, simply go to the "Filaments" menu in Hueforge, click the export button, select your filaments and export your filaments as a csv file.
 ```bash
 python auto_forge.py --input_image path/to/input_image.jpg \
                      --csv_file path/to/materials.csv \
@@ -57,7 +58,8 @@ python auto_forge.py --input_image path/to/input_image.jpg \
 - `--output_folder`: **(Required)** Folder where output files will be saved.
 - `--iterations`: Number of optimization iterations (default: 20000).
 - `--learning_rate`: Learning rate for the optimizer (default: 0.01).
-- `--target_max`: Maximum dimension (width or height) for the resized target image (default: 512).
+- `--max_size`: Maximum dimension (width or height) for the resized target image (default: 512).
+- `--decay`: Final tau value for Gumbel-Softmax loss (if unsure, leave as default).
 - `--visualize`: Flag to enable live visualization of the composite image during optimization.
 - `--config`: *(Optional)* Path to a configuration file with the above settings.
 
@@ -88,5 +90,9 @@ AutoForge makes use of several open source libraries:
 - [Pandas](https://pandas.pydata.org/)
 - [TQDM](https://github.com/tqdm/tqdm)
 - [ConfigArgParse](https://github.com/bw2/ConfigArgParse)
+
+Example Images:
+<a href="https://www.vecteezy.com/free-photos/anime-girl">Anime Girl Stock photos by Vecteezy</a>
+<a href="https://www.vecteezy.com/free-photos/nature">Nature Stock photos by Vecteezy</a>
 
 Happy printing!
