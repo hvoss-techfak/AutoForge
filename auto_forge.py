@@ -663,6 +663,7 @@ def main():
     args = parser.parse_args()
 
     os.makedirs(args.output_folder, exist_ok=True)
+
     # Ensure background height is divisible by layer height.
     assert (args.background_height / args.layer_height).is_integer(), "Background height must be divisible by layer height."
     assert args.save_max_tau > args.decay, "save_max_tau must be less than decay."
