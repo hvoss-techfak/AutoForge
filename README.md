@@ -4,7 +4,6 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 
 **TLDR:** It uses a picture to generate a 3D layer image that you can print with a 3d printer. Similar to [Hueforge](https://shop.thehueforge.com/), but without the manual work (and without the artistic control).
 
-## ATTENTION: There is currently still a bug in this implementation, where colors sometimes do not match the hueforge output. We are working on fixing this issue.
 
 
 ## Example
@@ -30,7 +29,7 @@ All examples use only the 13 BambuLab Basic filaments, currently available in Hu
 - **STL File Generation**: Exports an ASCII STL file based on the optimized height map.
 - **Swap Instructions**: Generates clear swap instructions for changing materials during printing.
 - **Live Visualization**: (Optional) Displays live composite images during the optimization process.
-
+- **Hueforge export**: Outputs a project file that can be opened with hueforge.
 
 
 ## Installation
@@ -110,10 +109,6 @@ For more artistic control or to reduce the number of swaps, consider buying [Hue
 ## Known Bugs
 
 - There is a slight color discrepancy between our output and hueforge. If anyone has an idea what the problem is, please don't hesitate to submit a pull request :)
-
-## TODOs
-
-- Hueforge project support
 
 ## License
 
