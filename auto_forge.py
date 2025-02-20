@@ -299,14 +299,12 @@ def rgb_to_lab(rgb):
 TRANSMISSION_SCALE = 5#6.5 # Tunable parameter: adjust so that when t = TD, T is nearly 0.
 # ------------------ Compositing Functions ------------------
 
-
-
 def composite_pixel_tempered_layered(pixel_height_logit, global_logits, tau_height, tau_global,
                                        h, max_layers, material_colors, material_TDs,
                                        background, gumbel_keys):
     """
     Compute a layered composite color for a single pixel using a modified transmission model.
-    Uses the global SATURATION_SCALE to boost layer colors.
+    Once the effective thickness reaches the transmission distance (TD), the layer becomes fully opaque.
     """
     # Compute continuous pixel height.
     pixel_height = (max_layers * h) * jax.nn.sigmoid(pixel_height_logit)
@@ -316,19 +314,18 @@ def composite_pixel_tempered_layered(pixel_height_logit, global_logits, tau_heig
     def scan_fn(carry, i):
         # Process layers from top (max_layers-1) to bottom (0).
         L = max_layers - 1 - i
-        # Compute continuous weight and effective thickness.
+        # Compute continuous weight and effective thickness for this layer.
         p_i = jax.nn.sigmoid((pixel_height - L * h) / tau_height)
         t_i = p_i * h
         # Compute soft material assignment.
         p = gumbel_softmax(global_logits[L], tau_global, gumbel_keys[L], hard=False)
-        # Get weighted color and its transmission distance.
+        # Weighted color and corresponding transmission distance.
         color = jnp.dot(p, material_colors)
         TD = jnp.dot(p, material_TDs)
-        # Convert to linear space.
         color_lin = srgb_to_linear(color).astype(jnp.float64)
-        # Compute transmission T using a piecewise model.
-        T = jnp.where(t_i >= TD, 0.0, jnp.exp(-TRANSMISSION_SCALE * t_i / TD))
-        # Composite: layer’s contribution mixes its saturated color with the carried value.
+        # Use a piecewise transmission: if effective thickness exceeds TD, set transmission to 0.
+        T = jnp.exp(-TRANSMISSION_SCALE * t_i / TD)
+        # Composite: the layer’s contribution is fully its color when T==0.
         new_I = (1 - T) * color_lin + T * carry
         return new_I.astype(jnp.float64), None
 
@@ -443,10 +440,10 @@ def composite_pixel_discrete_layered(discrete_printed_layers, discrete_global,
                                      h, max_layers, mat_colors, mat_TDs,
                                      background):
     """
-    Compute a layered composite color for a single pixel using discrete assignment,
-    applying the modified transmission function and the global SATURATION_SCALE.
+    Compute a layered composite color for a single pixel using the discrete assignment,
+    applying the modified transmission function.
     """
-    I_init = background.astype(jnp.float64)#srgb_to_linear(background).astype(jnp.float64)
+    I_init = srgb_to_linear(background).astype(jnp.float64)
 
     def scan_fn(carry, i):
         def apply_layer(carry):
@@ -454,20 +451,16 @@ def composite_pixel_discrete_layered(discrete_printed_layers, discrete_global,
             mat_idx = discrete_global[idx]
             color = mat_colors[mat_idx]
             TD = mat_TDs[mat_idx]
-            #color_lin = srgb_to_linear(color).astype(jnp.float64)
-
-            # For a full layer thickness h, if h >= TD then it's completely opaque.
+            color_lin = srgb_to_linear(color).astype(jnp.float64)
+            # For a full layer of thickness h, if h >= TD then it's completely opaque.
             T = jnp.where(h >= TD, 0.0, jnp.exp(-TRANSMISSION_SCALE * h / TD))
-            result = (1 - T) * color + T * carry
+            result = (1 - T) * color_lin + T * carry
             return result.astype(jnp.float64)
-        new_carry = jax.lax.cond(i < discrete_printed_layers,
-                                 apply_layer,
-                                 lambda x: x.astype(jnp.float64),
-                                 carry)
+        new_carry = jax.lax.cond(i < discrete_printed_layers, apply_layer, lambda x: x.astype(jnp.float64), carry)
         return new_carry, None
 
     I_final, _ = jax.lax.scan(scan_fn, I_init, jnp.arange(max_layers))
-    return I_final.astype(jnp.float64) * 255.0#linear_to_srgb(
+    return linear_to_srgb(I_final).astype(jnp.float64) * 255.0
 
 
 def composite_image_discrete_jax(discrete_height_image, discrete_global, h, max_layers, mat_colors, mat_TDs, background):
