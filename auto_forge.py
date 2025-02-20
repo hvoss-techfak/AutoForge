@@ -555,9 +555,6 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
             highest_layer = np.max(np.array(actual_layer_height))
             fig.suptitle(f"Iteration {i}, Loss: {loss_val:.4f}, Best Loss: {best_loss:.4f}, Tau: {tau_height:.3f}, Highest Layer: {highest_layer:.2f}mm")
             plt.pause(0.01)
-            #also show side by side in opencv by combining the images
-            cv2.imshow("Combined", cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
-            cv2.waitKey(1)
 
         tbar.set_description(f"loss = {loss_val:.4f}, Best Loss = {best_loss:.4f}")
 
