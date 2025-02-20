@@ -265,8 +265,8 @@ def discretize_solution_jax(params, tau_global, gumbel_keys, h, max_layers):
     pixel_height_logits = params['pixel_height_logits']
     global_logits = params['global_logits']
     pixel_heights = (max_layers * h) * jax.nn.sigmoid(pixel_height_logits)
-    # Use floor instead of ceil to avoid counting a partially reached layer.
-    discrete_height_image = jnp.floor(pixel_heights / h).astype(jnp.int32)
+    # Subtract a small epsilon to ensure values at the boundary round down consistently.
+    discrete_height_image = jnp.round((pixel_heights - 1e-6) / h).astype(jnp.int32)
     discrete_height_image = jnp.clip(discrete_height_image, 0, max_layers)
 
     def discretize_layer(logits, key):
@@ -398,18 +398,19 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
     return best_params, best_comp
 
 
+import struct
+
 def generate_stl(height_map, filename, background_height, scale=1.0):
     """
-    Generate an ASCII STL file from a height map.
-
+    Generate a binary STL file from a height map.
     """
     H, W = height_map.shape
     vertices = np.zeros((H, W, 3), dtype=np.float32)
     for i in range(H):
         for j in range(W):
-            # Original coordinates: x = j*scale, y = i*scale, z = height + background
+            # Original coordinates: x = j*scale, y = (H - 1 - i), z = height + background
             vertices[i, j, 0] = j * scale
-            vertices[i, j, 1] = i * scale
+            vertices[i, j, 1] = (H - 1 - i)  # (Consider applying scale if needed)
             vertices[i, j, 2] = height_map[i, j] + background_height
 
     triangles = []
@@ -417,72 +418,77 @@ def generate_stl(height_map, filename, background_height, scale=1.0):
     def add_triangle(v1, v2, v3):
         triangles.append((v1, v2, v3))
 
-    # Top surface (each grid cell as two triangles)
     for i in range(H - 1):
         for j in range(W - 1):
             v0 = vertices[i, j]
             v1 = vertices[i, j + 1]
             v2 = vertices[i + 1, j + 1]
             v3 = vertices[i + 1, j]
-            add_triangle(v0, v1, v2)
-            add_triangle(v0, v2, v3)
+            # Reversed order so normals face upward
+            add_triangle(v2, v1, v0)
+            add_triangle(v3, v2, v0)
 
-    # Walls along the boundaries:
     for j in range(W - 1):
         v0 = vertices[0, j]
         v1 = vertices[0, j + 1]
-        v0b = np.array([v0[0], v0[1], 0])
-        v1b = np.array([v1[0], v1[1], 0])
+        v0b = np.array([v0[0], v0[1], 0], dtype=np.float32)
+        v1b = np.array([v1[0], v1[1], 0], dtype=np.float32)
         add_triangle(v0, v1, v1b)
         add_triangle(v0, v1b, v0b)
     for j in range(W - 1):
         v0 = vertices[H - 1, j]
         v1 = vertices[H - 1, j + 1]
-        v0b = np.array([v0[0], v0[1], 0])
-        v1b = np.array([v1[0], v1[1], 0])
+        v0b = np.array([v0[0], v0[1], 0], dtype=np.float32)
+        v1b = np.array([v1[0], v1[1], 0], dtype=np.float32)
         add_triangle(v1, v0, v1b)
         add_triangle(v0, v0b, v1b)
     for i in range(H - 1):
         v0 = vertices[i, 0]
         v1 = vertices[i + 1, 0]
-        v0b = np.array([v0[0], v0[1], 0])
-        v1b = np.array([v1[0], v1[1], 0])
+        v0b = np.array([v0[0], v0[1], 0], dtype=np.float32)
+        v1b = np.array([v1[0], v1[1], 0], dtype=np.float32)
         add_triangle(v1, v0, v1b)
         add_triangle(v0, v0b, v1b)
     for i in range(H - 1):
         v0 = vertices[i, W - 1]
         v1 = vertices[i + 1, W - 1]
-        v0b = np.array([v0[0], v0[1], 0])
-        v1b = np.array([v1[0], v1[1], 0])
+        v0b = np.array([v0[0], v0[1], 0], dtype=np.float32)
+        v1b = np.array([v1[0], v1[1], 0], dtype=np.float32)
         add_triangle(v0, v1, v1b)
         add_triangle(v0, v1b, v0b)
 
-    # Bottom face
-    v0 = np.array([0, 0, 0])
-    v1 = np.array([(W - 1) * scale, 0, 0])
-    v2 = np.array([(W - 1) * scale, (H - 1) * scale, 0])
-    v3 = np.array([0, (H - 1) * scale, 0])
-    add_triangle(v0, v1, v2)
-    add_triangle(v0, v2, v3)
+    v0 = np.array([0, 0, 0], dtype=np.float32)
+    v1 = np.array([(W - 1) * scale, 0, 0], dtype=np.float32)
+    v2 = np.array([(W - 1) * scale, (H - 1) * scale, 0], dtype=np.float32)
+    v3 = np.array([0, (H - 1) * scale, 0], dtype=np.float32)
+    add_triangle(v2, v1, v0)
+    add_triangle(v3, v2, v0)
 
-    with open(filename, 'w') as f:
-        f.write("solid heightmap\n")
+    num_triangles = len(triangles)
+
+    # Write the binary STL file.
+    with open(filename, 'wb') as f:
+        header_str = "Binary STL generated from heightmap"
+        header = header_str.encode('utf-8')
+        header = header.ljust(80, b' ')
+        f.write(header)
+        f.write(struct.pack('<I', num_triangles))
         for tri in triangles:
             v1, v2, v3 = tri
             normal = np.cross(v2 - v1, v3 - v1)
             norm = np.linalg.norm(normal)
             if norm == 0:
-                normal = np.array([0, 0, 0])
+                normal = np.array([0, 0, 0], dtype=np.float32)
             else:
                 normal = normal / norm
-            f.write("  facet normal {} {} {}\n".format(normal[0], normal[1], normal[2]))
-            f.write("    outer loop\n")
-            f.write("      vertex {} {} {}\n".format(v1[0], v1[1], v1[2]))
-            f.write("      vertex {} {} {}\n".format(v2[0], v2[1], v2[2]))
-            f.write("      vertex {} {} {}\n".format(v3[0], v3[1], v3[2]))
-            f.write("    endloop\n")
-            f.write("  endfacet\n")
-        f.write("endsolid heightmap\n")
+            f.write(struct.pack('<12fH',
+                                  normal[0], normal[1], normal[2],
+                                  v1[0], v1[1], v1[2],
+                                  v2[0], v2[1], v2[2],
+                                  v3[0], v3[1], v3[2],
+                                  0))
+
+
 
 
 def generate_swap_instructions(discrete_global, discrete_height_image, h, background_layers, background_height, material_names):
