@@ -75,9 +75,6 @@ The script is run from the command line and accepts several arguments. Below is 
 python auto_forge.py --input_image path/to/input_image.jpg --csv_file path/to/materials.csv --output_folder outputs 
 ```
 
-Currently, the height mesh output is in ascii stl format, which Hueforge does not support. We will fix this export in an upcoming version. \
-To convert the ascii stl to binary stl, simply import it into [Blender](https://www.blender.org/) (or the 3d program/slicer of your choice) and export it as a stl again.
-
 ### Command Line Arguments
 
 - `--config`: *(Optional)* Path to a configuration file with the settings.
@@ -112,7 +109,6 @@ For more artistic control or to reduce the number of swaps, consider buying [Hue
 
 ## Known Bugs
 
-- The output stl is in ascii format, which Hueforge does not support. To convert the ascii stl to binary stl, simply import it into [Blender](https://www.blender.org/) (or the 3d program of your choice) and export it as a stl again.
 - There is a slight color discrepancy between our output and hueforge. If anyone has an idea what the problem is, please don't hesitate to submit a pull request :)
 
 ## TODOs

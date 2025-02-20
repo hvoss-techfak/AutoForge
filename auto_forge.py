@@ -23,7 +23,167 @@ import math
 from tqdm import tqdm
 import pandas as pd
 
+import os
+import json
+import pandas as pd
+import numpy as np
 
+
+def load_materials_data(csv_filename):
+    """
+    Load the full material data from the CSV file.
+    Returns a list of dictionaries (one per material) with keys such as
+    "Brand", "Type", "Color", "Name", "TD", "Owned", and "Uuid".
+    """
+    df = pd.read_csv(csv_filename)
+    # Use a consistent key naming. For example, convert 'TD' to 'Transmissivity' and 'Uuid' to 'uuid'
+    records = df.to_dict(orient="records")
+    return records
+
+
+def extract_filament_swaps(disc_global, disc_height_image, background_layers):
+    """
+    Given the discrete global material assignment (disc_global) and the discrete height image,
+    extract the list of material indices (one per swap point) and the corresponding slider
+    values (which indicate at which layer the material change occurs).
+
+    This mimics the logic used in your generate_swap_instructions function.
+    """
+    # L is the total number of layers printed (maximum value in the height image)
+    L = int(np.max(np.array(disc_height_image)))
+    filament_indices = []
+    slider_values = []
+    prev = None
+    for i in range(L):
+        current = int(disc_global[i])
+        # If this is the first layer or the material changes from the previous layer…
+        if i == 0 or current != prev:
+            # As in your swap instructions: the layer (1-indexed) is offset by the background layer count
+            slider = i + background_layers
+            slider_values.append(slider)
+            filament_indices.append(current)
+        prev = current
+    return filament_indices, slider_values
+
+
+def generate_project_file(project_filename, args, disc_global, disc_height_image,
+                          width_mm, height_mm, stl_filename, csv_filename):
+    """
+    Export a project file containing the printing parameters, including:
+      - Key dimensions and layer information (from your command-line args and computed outputs)
+      - The filament_set: a list of filament definitions (each corresponding to a color swap)
+        where the same material may be repeated if used at different swap points.
+      - slider_values: a list of layer numbers (indices) where a filament swap occurs.
+
+    The filament_set entries are built using the full material data from the CSV file.
+    """
+    # Compute the number of background layers (as in your main())
+    background_layers = int(args.background_height / args.layer_height)
+
+    # Load full material data from CSV
+    material_data = load_materials_data(csv_filename)
+
+    # Extract the swap points from the discrete solution
+    filament_indices, slider_values = extract_filament_swaps(disc_global, disc_height_image, background_layers)
+
+    # Build the filament_set list. For each swap point, we look up the corresponding material from CSV.
+    # Here we map CSV columns to the project file’s expected keys.
+    filament_set = []
+    for idx in filament_indices:
+        mat = material_data[idx]
+        filament_entry = {
+            "Brand": mat["Brand"],
+            "Color": mat[" Color"],
+            "Name": mat[" Name"],
+            # Convert Owned to a boolean (in case it is read as a string)
+            "Owned": str(mat[" Owned"]).strip().lower() == "true",
+            "Transmissivity": float(mat[" TD"]) if not float(mat[" TD"]).is_integer() else int(mat[" TD"]),
+            "Type": mat[" Type"],
+            "uuid": mat[" Uuid"]
+        }
+        filament_set.append(filament_entry)
+
+    # add black as the first filament with background height as the first slider value
+    filament_set.insert(0, {
+            "Brand": "Black",
+            "Color": "#000000",
+            "Name": "Black",
+            "Owned": False,
+            "Transmissivity": 0.1,
+            "Type": "PLA",
+            "uuid": str(uuid.uuid4())
+    })
+    #add black to slider value
+    slider_values.insert(0, (args.background_height//args.layer_height)-1)
+
+    # reverse order of filament set
+    filament_set = filament_set[::-1]
+
+
+
+    # Build the project file dictionary.
+    # Many keys are filled in with default or derived values.
+    project_data = {
+        "base_layer_height": args.layer_height,  # you may adjust this if needed
+        "blue_shift": 0,
+        "border_height": args.background_height,  # here we use the background height
+        "border_width": 3,
+        "borderless": True,
+        "bright_adjust_zero": False,
+        "brightness_compensation_name": "Standard",
+        "bw_tolerance": 8,
+        "color_match_method": 0,
+        "depth_mode": 2,
+        "edit_image": False,
+        "extra_gap": 2,
+        "filament_set": filament_set,
+        "flatten": False,
+        "full_range": False,
+        "green_shift": 0,
+        "gs_threshold": 0,
+        "height_in_mm": height_mm,
+        "hsl_invert": False,
+        "ignore_blue": False,
+        "ignore_green": False,
+        "ignore_red": False,
+        "invert_blue": False,
+        "invert_green": False,
+        "invert_red": False,
+        "inverted_color_pop": False,
+        "layer_height": args.layer_height,
+        "legacy_luminance": False,
+        "light_intensity": -1,
+        "light_temperature": 1,
+        "lighting_visualizer": 0,
+        "luminance_factor": 0,
+        "luminance_method": 2,
+        "luminance_offset": 0,
+        "luminance_offset_max": 100,
+        "luminance_power": 2,
+        "luminance_weight": 100,
+        # For max_depth you might choose a value based on your design; here we use the background height.
+        "max_depth": args.background_height+args.layer_height*args.max_layers,
+        "median": 0,
+        "mesh_style_edit": True,
+        # For min_depth we use an example value; adjust as needed.
+        "min_depth": 0.48,
+        "min_detail": 0.2,
+        "negative": True,
+        "red_shift": 0,
+        "reverse_litho": True,
+        "slider_values": slider_values,
+        "smoothing": 0,
+        "srgb_linearize": False,
+        "stl": os.path.basename(stl_filename),
+        "strict_tolerance": False,
+        "transparency": True,
+        "version": "0.7.0",
+        "width_in_mm": width_mm
+    }
+
+    # Write out the project file as JSON
+    with open(project_filename, "w") as f:
+        json.dump(project_data, f, indent=4)
 
 def srgb_to_linear(c):
     """
@@ -136,55 +296,57 @@ def rgb_to_lab(rgb):
     lab = xyz_to_lab(xyz)
     return lab
 
-
+TRANSMISSION_SCALE = 5#6.5 # Tunable parameter: adjust so that when t = TD, T is nearly 0.
 # ------------------ Compositing Functions ------------------
 
-def composite_pixel_tempered(pixel_height_logit, global_logits, tau_height, tau_global, h, max_layers,
-                             material_colors, material_TDs, background, gumbel_keys):
+
+
+def composite_pixel_tempered_layered(pixel_height_logit, global_logits, tau_height, tau_global,
+                                       h, max_layers, material_colors, material_TDs,
+                                       background, gumbel_keys):
+    """
+    Compute a layered composite color for a single pixel using a modified transmission model.
+    Uses the global SATURATION_SCALE to boost layer colors.
+    """
+    # Compute continuous pixel height.
     pixel_height = (max_layers * h) * jax.nn.sigmoid(pixel_height_logit)
+    # Background in linear space.
+    I_init = srgb_to_linear(background).astype(jnp.float64)
 
-    # Convert sRGB colors to linear space for proper blending.
-    material_colors_linear = srgb_to_linear(material_colors)
-    background_linear = srgb_to_linear(background)
+    def scan_fn(carry, i):
+        # Process layers from top (max_layers-1) to bottom (0).
+        L = max_layers - 1 - i
+        # Compute continuous weight and effective thickness.
+        p_i = jax.nn.sigmoid((pixel_height - L * h) / tau_height)
+        t_i = p_i * h
+        # Compute soft material assignment.
+        p = gumbel_softmax(global_logits[L], tau_global, gumbel_keys[L], hard=False)
+        # Get weighted color and its transmission distance.
+        color = jnp.dot(p, material_colors)
+        TD = jnp.dot(p, material_TDs)
+        # Convert to linear space.
+        color_lin = srgb_to_linear(color).astype(jnp.float64)
+        # Compute transmission T using a piecewise model.
+        T = jnp.where(t_i >= TD, 0.0, jnp.exp(-TRANSMISSION_SCALE * t_i / TD))
+        # Composite: layer’s contribution mixes its saturated color with the carried value.
+        new_I = (1 - T) * color_lin + T * carry
+        return new_I.astype(jnp.float64), None
 
-    def step_fn(carry, i):
-        comp, remaining = carry
-        j = max_layers - 1 - i  # process from top to bottom
-        p_print = jax.nn.sigmoid((pixel_height - j * h) / tau_height)
-        eff_thick = p_print * h
-        p_i = gumbel_softmax(global_logits[j], tau_global, gumbel_keys[j], hard=False)
-        color_linear = jnp.dot(p_i, material_colors_linear)
-        TD_i = jnp.dot(p_i, material_TDs)
-        opac = jnp.minimum(1.0, eff_thick / (TD_i * 0.1))
-        new_comp = comp + remaining * opac * color_linear
-        new_remaining = remaining * (1 - opac)
-        return (new_comp, new_remaining), None
+    I_final, _ = jax.lax.scan(scan_fn, I_init, jnp.arange(max_layers))
+    return linear_to_srgb(I_final).astype(jnp.float64) * 255.0
 
-    init_state = (jnp.zeros(3), 1.0)
-    (comp, remaining), _ = jax.lax.scan(step_fn, init_state, jnp.arange(max_layers))
-
-    # Composite against the background in linear space.
-    result_linear = comp + remaining * background_linear
-
-    # Convert the result back to sRGB.
-    result_srgb = linear_to_srgb(result_linear)
-    return result_srgb * 255.0
 
 
 def composite_image_tempered_fn(pixel_height_logits, global_logits, tau_height, tau_global, gumbel_keys,
-                                h, max_layers, material_colors, material_TDs, background):
-    """
-    Composite an entire image using tempered Gumbel compositing.
-
-    """
+                                 h, max_layers, material_colors, material_TDs, background):
     return jax.vmap(jax.vmap(
-        lambda ph_logit: composite_pixel_tempered(ph_logit, global_logits, tau_height, tau_global,
-                                                  h, max_layers, material_colors, material_TDs, background, gumbel_keys)
+        lambda ph_logit: composite_pixel_tempered_layered(
+            ph_logit, global_logits, tau_height, tau_global, h, max_layers,
+            material_colors, material_TDs, background, gumbel_keys)
     ))(pixel_height_logits)
 
-
-# Apply jit with static_argnums for the static argument "max_layers" (index 6)
-composite_image_tempered_fn = jax.jit(composite_image_tempered_fn, static_argnums=(6,))
+# Compile and mark h and max_layers as static.
+composite_image_tempered_fn = jax.jit(composite_image_tempered_fn, static_argnums=(5, 6))
 
 
 def loss_fn(params, target, tau_height, tau_global, gumbel_keys, h, max_layers, material_colors, material_TDs, background):
@@ -277,42 +439,48 @@ def discretize_solution_jax(params, tau_global, gumbel_keys, h, max_layers):
     return discrete_global, discrete_height_image
 
 
-def composite_image_discrete_jax(discrete_height_image, discrete_global, h, max_layers, mat_colors, mat_TDs,
-                                 background):
-    # Convert sRGB colors to linear space.
-    mat_colors_linear = srgb_to_linear(mat_colors)
-    background_linear = srgb_to_linear(background)
+def composite_pixel_discrete_layered(discrete_printed_layers, discrete_global,
+                                     h, max_layers, mat_colors, mat_TDs,
+                                     background):
+    """
+    Compute a layered composite color for a single pixel using discrete assignment,
+    applying the modified transmission function and the global SATURATION_SCALE.
+    """
+    I_init = background.astype(jnp.float64)#srgb_to_linear(background).astype(jnp.float64)
 
-    def composite_pixel(pixel_printed_layers):
-        def step_fn(carry, l):
-            comp, remaining = carry
-            idx = max_layers - 1 - l
-            do_layer = idx < pixel_printed_layers
+    def scan_fn(carry, i):
+        def apply_layer(carry):
+            idx = discrete_printed_layers - 1 - i
+            mat_idx = discrete_global[idx]
+            color = mat_colors[mat_idx]
+            TD = mat_TDs[mat_idx]
+            #color_lin = srgb_to_linear(color).astype(jnp.float64)
 
-            def true_fn(carry):
-                comp, remaining = carry
-                mat_idx = discrete_global[idx]
-                color_linear = mat_colors_linear[mat_idx]
-                TD = mat_TDs[mat_idx]
-                opac = jnp.minimum(1.0, h / (TD * 0.1))
-                new_comp = comp + remaining * opac * color_linear
-                new_remaining = remaining * (1 - opac)
-                return (new_comp, new_remaining)
+            # For a full layer thickness h, if h >= TD then it's completely opaque.
+            T = jnp.where(h >= TD, 0.0, jnp.exp(-TRANSMISSION_SCALE * h / TD))
+            result = (1 - T) * color + T * carry
+            return result.astype(jnp.float64)
+        new_carry = jax.lax.cond(i < discrete_printed_layers,
+                                 apply_layer,
+                                 lambda x: x.astype(jnp.float64),
+                                 carry)
+        return new_carry, None
 
-            new_carry = jax.lax.cond(do_layer, true_fn, lambda c: c, (comp, remaining))
-            return new_carry, None
+    I_final, _ = jax.lax.scan(scan_fn, I_init, jnp.arange(max_layers))
+    return I_final.astype(jnp.float64) * 255.0#linear_to_srgb(
 
-        init_state = (jnp.zeros(3), 1.0)
-        (comp, remaining), _ = jax.lax.scan(step_fn, init_state, jnp.arange(max_layers))
-        result_linear = comp + remaining * background_linear
-        result_srgb = linear_to_srgb(result_linear)
-        return result_srgb * 255.0
 
-    return jax.vmap(jax.vmap(composite_pixel))(discrete_height_image)
+def composite_image_discrete_jax(discrete_height_image, discrete_global, h, max_layers, mat_colors, mat_TDs, background):
+    """
+    Layered composite for discrete assignments.
+    """
+    return jax.vmap(jax.vmap(
+        lambda printed_layers: composite_pixel_discrete_layered(
+            printed_layers, discrete_global, h, max_layers, mat_colors, mat_TDs, background)
+    ))(discrete_height_image)
 
-# Apply jit with static_argnums for "max_layers" (argument index 3)
-composite_image_discrete_jax = jax.jit(composite_image_discrete_jax, static_argnums=(3,))
-
+# Here, h and max_layers (arguments 2 and 3) are static.
+composite_image_discrete_jax = jax.jit(composite_image_discrete_jax, static_argnums=(2, 3))
 
 def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, material_TDs, background,
                   num_iters, learning_rate, decay_v, loss_function, visualize=False,save_max_tau=0.1):
@@ -387,6 +555,10 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
             highest_layer = np.max(np.array(actual_layer_height))
             fig.suptitle(f"Iteration {i}, Loss: {loss_val:.4f}, Best Loss: {best_loss:.4f}, Tau: {tau_height:.3f}, Highest Layer: {highest_layer:.2f}mm")
             plt.pause(0.01)
+            #also show side by side in opencv by combining the images
+            cv2.imshow("Combined", cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
+            cv2.waitKey(1)
+
         tbar.set_description(f"loss = {loss_val:.4f}, Best Loss = {best_loss:.4f}")
 
     if visualize:
@@ -508,136 +680,6 @@ def generate_swap_instructions(discrete_global, discrete_height_image, h, backgr
     instructions.append("For the rest, use " + material_names[int(discrete_global[L - 1])])
     return instructions
 
-
-def generate_project_file(project_filename, args, disc_global, disc_height_image,
-                          image_width_mm, image_height_mm,
-                          stl_filename, material_names, material_TDs, material_hex):
-    """
-    Generate a project file (JSON) that follows the expected external program format.
-
-    This function sets a number of fields from args and our code defaults.
-    In particular, it builds:
-
-      - slider_values: a list of 1-indexed printed layer positions where the material changes.
-      - filament_set: a list of filaments (one per slider event) corresponding to the material
-        that is applied at that layer. Duplicates are allowed if the same filament is used in multiple
-        positions.
-
-    Parameters:
-        project_filename (str): Path to write the JSON project file.
-        args: The argparse namespace (contains layer_height, background_height, etc.).
-        disc_global (array-like): 1D array (length max_layers) of material indices per layer.
-        disc_height_image (array-like): 2D array of printed layer counts (per pixel); its maximum
-            determines the number of printed layers (L).
-        image_width_mm (float): Printed object width in millimeters.
-        image_height_mm (float): Printed object height (printed region, excluding background) in mm.
-        stl_filename (str): Path/filename of the generated STL.
-        material_names (list): List of material names (from CSV).
-        material_TDs (list/array): Material transmissivity values.
-        material_hex (list): List of hex color strings for each material.
-    """
-    project = {}
-
-    # Basic settings
-    project["version"] = "0.7.0"
-    project["layer_height"] = args.layer_height
-    project["base_layer_height"] = args.background_height  # background as base layer height
-    project["border_height"] = args.background_height
-    project["border_width"] = 3
-    project["borderless"] = True
-    project["bright_adjust_zero"] = False
-    project["brightness_compensation_name"] = "Standard"
-    project["bw_tolerance"] = 8
-    project["color_match_method"] = 0
-    project["depth_mode"] = 2
-    project["edit_image"] = False
-    project["extra_gap"] = 2
-
-    # Determine printed layer count L (only layers 0 to L-1 are printed).
-    L = int(np.max(np.array(disc_height_image)))
-
-    # Build slider_values and filament_set.
-    # We assume that disc_global is ordered from bottom (layer 0) to top (layer max_layers-1).
-    slider_values = []
-    filament_set = []
-
-    if L > 0:
-        # Always add the first printed layer.
-        slider_values.append(1)  # 1-indexed
-        # Record the filament used at layer 0.
-        mat_idx = int(disc_global[0])
-        filament_set.append({
-            "Brand": "BambuLab Basic",  # or load from CSV if available
-            "Color": material_hex[mat_idx] if mat_idx < len(material_hex) else "#000000",
-            "Name": material_names[mat_idx],
-            "Owned": True,
-            "Transmissivity": float(material_TDs[mat_idx]),
-            "Type": "PLA",
-            "uuid": str(uuid.uuid4())
-        })
-        # For each subsequent printed layer (from layer 1 to L-1) add a slider event if the material changes.
-        for i in range(1, L):
-            if disc_global[i] != disc_global[i - 1]:
-                slider_values.append(i + 1)  # use 1-indexing
-                mat_idx = int(disc_global[i])
-                filament_set.append({
-                    "Brand": "BambuLab Basic",
-                    "Color": material_hex[mat_idx] if mat_idx < len(material_hex) else "#000000",
-                    "Name": material_names[mat_idx],
-                    "Owned": True,
-                    "Transmissivity": float(material_TDs[mat_idx]),
-                    "Type": "PLA",
-                    "uuid": str(uuid.uuid4())
-                })
-
-    project["slider_values"] = slider_values
-    project["filament_set"] = filament_set
-
-    # Other settings
-    project["flatten"] = False
-    project["full_range"] = True
-    project["green_shift"] = 0
-    project["gs_threshold"] = 0
-    project["width_in_mm"] = float(image_width_mm)
-    # Total printed height includes the printed part plus the background.
-    project["height_in_mm"] = float(image_height_mm) + args.background_height
-    project["hsl_invert"] = False
-    project["ignore_blue"] = False
-    project["ignore_green"] = False
-    project["ignore_red"] = False
-    project["invert_blue"] = False
-    project["invert_green"] = False
-    project["invert_red"] = False
-    project["inverted_color_pop"] = False
-    project["legacy_luminance"] = False
-    project["light_intensity"] = -1
-    project["light_temperature"] = 1
-    project["lighting_visualizer"] = 0
-    project["luminance_factor"] = 0
-    project["luminance_method"] = 2
-    project["luminance_offset"] = 0
-    project["luminance_offset_max"] = 100
-    project["luminance_power"] = 2
-    project["luminance_weight"] = 100
-    project["max_depth"] = args.background_height
-    project["median"] = 0
-    project["mesh_style_edit"] = True
-    project["min_depth"] = args.background_height / 2  # adjust as needed
-    project["min_detail"] = 0.2
-    project["negative"] = True
-    project["red_shift"] = 0
-    project["reverse_litho"] = True
-    project["smoothing"] = 0
-    project["srgb_linearize"] = False
-    project["stl"] = stl_filename
-    project["strict_tolerance"] = False
-    project["transparency"] = True
-
-    # Write out the JSON file.
-    with open(project_filename, "w") as f:
-        json.dump(project, f, indent=4)
-
-
 def main():
     """
     Main function to run the optimization and generate outputs.
@@ -733,12 +775,12 @@ def main():
     width_mm = new_w
     height_mm = new_h
 
-    #project saving is not yet implemented correctly
-
-    # project_filename = os.path.join(args.output_folder, "project_file.json")
-    # generate_project_file(project_filename, args, np.array(disc_global), np.array(disc_height_image),
-    #                       width_mm, height_mm, stl_filename,
-    #                       material_names, material_TDs, material_hex)
+    project_filename = os.path.join(args.output_folder, "project_file.hfp")
+    generate_project_file(project_filename, args,
+                          np.array(disc_global),
+                          np.array(disc_height_image),
+                          width_mm, height_mm, stl_filename, args.csv_file)
+    print("Project file saved to", project_filename)
     print("All outputs saved to", args.output_folder)
     print("Happy printing!")
 
