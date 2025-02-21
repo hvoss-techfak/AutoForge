@@ -372,7 +372,7 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
             highest_layer = np.max(height_map_np)
             fig.suptitle(f"Iteration {i}, Loss: {loss_val:.4f}, Best Loss: {best_loss:.4f}, Tau: {tau_height:.3f}, Highest Layer: {highest_layer:.2f}mm")
             plt.pause(0.01)
-        if checkpoint_interval is not None and i % checkpoint_interval == 0 and i > 0:
+        if checkpoint_interval is not None and i-1 % checkpoint_interval == 0 and i > 10:
 
             print("Saving intermediate outputs. This can take some time. You can turn off this feature by setting save_interval_pct to 0.")
             save_intermediate_outputs(i, best_params_since_last_save, tau_global, gumbel_keys, h, max_layers,
