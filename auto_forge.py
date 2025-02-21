@@ -70,9 +70,9 @@ def composite_pixel_combined(pixel_height_logit, global_logits, tau_height, tau_
 
     # Parameters for opacity calculation.
 
-    A = 0.11753787634145185
-    k = 189.93465923079648
-    b = 0.42164399960244126
+    A = 0.3489855138693261
+    k = 101.72142747530887
+    b = 0.9014283137171897
 
     def step_fn(carry, i):
         comp, remaining = carry
@@ -95,7 +95,6 @@ def composite_pixel_combined(pixel_height_logit, global_logits, tau_height, tau_
             )
         color_i = jnp.dot(p_i, material_colors)
         TD_i = jnp.dot(p_i, material_TDs) * 0.1
-
         # Compute opacity
         opac = A * jnp.log(1 + k * (eff_thick / TD_i)) + b * (eff_thick / TD_i)
         opac = jnp.clip(opac, 0.0, 1.0)
@@ -372,7 +371,7 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
             highest_layer = np.max(height_map_np)
             fig.suptitle(f"Iteration {i}, Loss: {loss_val:.4f}, Best Loss: {best_loss:.4f}, Tau: {tau_height:.3f}, Highest Layer: {highest_layer:.2f}mm")
             plt.pause(0.01)
-        if checkpoint_interval is not None and i-1 % checkpoint_interval == 0 and i > 10:
+        if checkpoint_interval is not None and (i+1) % checkpoint_interval == 0 and i > 10:
 
             print("Saving intermediate outputs. This can take some time. You can turn off this feature by setting save_interval_pct to 0.")
             save_intermediate_outputs(i, best_params_since_last_save, tau_global, gumbel_keys, h, max_layers,
