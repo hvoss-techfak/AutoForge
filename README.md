@@ -6,6 +6,7 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 
 
 
+
 ## Example
 All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge.
 <div style="display: flex; justify-content: center; gap: 20px;">
@@ -16,10 +17,19 @@ All examples use only the 13 BambuLab Basic filaments, currently available in Hu
   </div>
   <div style="text-align: center;">
     <h3>Autoforge Output (75 color layers (3.0mm) + 10 gray background layers (0.4mm)) </h3>
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_discretized.png" width="300" />
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_discretized.png" width="300" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_discretized.jpg" width="300" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_discretized.jpg" width="300" />
+  </div>
+  <div style="text-align: center;">
+    <h3>Imported Hueforge View</h3>
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_hueforge.png" width="300" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_hueforge.png" width="300" />
   </div>
 </div>
+
+If someone uses this program and 3d prints something with it, please let me know :) \
+I would love to see what you made!
+
 
 ## Features
 
@@ -108,7 +118,11 @@ For more artistic control or to reduce the number of swaps, consider buying [Hue
 
 ## Known Bugs
 
-- There is a slight color discrepancy between our output and hueforge. If anyone has an idea what the problem is, please don't hesitate to submit a pull request :)
+- There is a slight color discrepancy between our output and hueforge. If anyone has an idea what the problem is, please don't hesitate to submit a pull request :) \
+Although I would love to be it fully color compatible with hueforge, I don't think this will happen without a lot of work or the hueforge source code.
+- The optimizer can sometimes get stuck in a local minimum. If this happens, try running the optimization again with different settings.
+- Hueforge can't open STL files under linux. This is a known bug in hueforge.
+- The first version used a learnable height map which was nice but resulted in a lot of problems. Right now we compute the height map from the luminance values and slightly adjust the result. If somebody has an idea to make this better, please don't hesitate to submit a pull request :)
 
 ## License
 

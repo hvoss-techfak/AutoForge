@@ -13,6 +13,10 @@ import uuid
 import configargparse
 import cv2
 import jax
+
+from helper_functions import adaptive_round, gumbel_softmax, initialize_pixel_height_logits, hex_to_rgb, load_materials, \
+    generate_stl, generate_swap_instructions, generate_project_file
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import jax.random as random
@@ -29,269 +33,6 @@ import pandas as pd
 import numpy as np
 
 
-def load_materials_data(csv_filename):
-    """
-    Load the full material data from the CSV file.
-    Returns a list of dictionaries (one per material) with keys such as
-    "Brand", "Type", "Color", "Name", "TD", "Owned", and "Uuid".
-    """
-    df = pd.read_csv(csv_filename)
-    # Use a consistent key naming. For example, convert 'TD' to 'Transmissivity' and 'Uuid' to 'uuid'
-    records = df.to_dict(orient="records")
-    return records
-
-
-def extract_filament_swaps(disc_global, disc_height_image, background_layers):
-    """
-    Given the discrete global material assignment (disc_global) and the discrete height image,
-    extract the list of material indices (one per swap point) and the corresponding slider
-    values (which indicate at which layer the material change occurs).
-
-    This mimics the logic used in your generate_swap_instructions function.
-    """
-    # L is the total number of layers printed (maximum value in the height image)
-    L = int(np.max(np.array(disc_height_image)))
-    filament_indices = []
-    slider_values = []
-    prev = None
-    for i in range(L):
-        current = int(disc_global[i])
-        # If this is the first layer or the material changes from the previous layer…
-        if i == 0 or current != prev:
-            # As in your swap instructions: the layer (1-indexed) is offset by the background layer count
-            slider = i + background_layers
-            slider_values.append(slider)
-            filament_indices.append(current)
-        prev = current
-    return filament_indices, slider_values
-
-
-def generate_project_file(project_filename, args, disc_global, disc_height_image,
-                          width_mm, height_mm, stl_filename, csv_filename):
-    """
-    Export a project file containing the printing parameters, including:
-      - Key dimensions and layer information (from your command-line args and computed outputs)
-      - The filament_set: a list of filament definitions (each corresponding to a color swap)
-        where the same material may be repeated if used at different swap points.
-      - slider_values: a list of layer numbers (indices) where a filament swap occurs.
-
-    The filament_set entries are built using the full material data from the CSV file.
-    """
-    # Compute the number of background layers (as in your main())
-    background_layers = int(args.background_height / args.layer_height)
-
-    # Load full material data from CSV
-    material_data = load_materials_data(csv_filename)
-
-    # Extract the swap points from the discrete solution
-    filament_indices, slider_values = extract_filament_swaps(disc_global, disc_height_image, background_layers)
-
-    # Build the filament_set list. For each swap point, we look up the corresponding material from CSV.
-    # Here we map CSV columns to the project file’s expected keys.
-    filament_set = []
-    for idx in filament_indices:
-        mat = material_data[idx]
-        filament_entry = {
-            "Brand": mat["Brand"],
-            "Color": mat[" Color"],
-            "Name": mat[" Name"],
-            # Convert Owned to a boolean (in case it is read as a string)
-            "Owned": str(mat[" Owned"]).strip().lower() == "true",
-            "Transmissivity": float(mat[" TD"]) if not float(mat[" TD"]).is_integer() else int(mat[" TD"]),
-            "Type": mat[" Type"],
-            "uuid": mat[" Uuid"]
-        }
-        filament_set.append(filament_entry)
-
-    # add black as the first filament with background height as the first slider value
-    filament_set.insert(0, {
-            "Brand": "Black",
-            "Color": "#000000",
-            "Name": "Black",
-            "Owned": False,
-            "Transmissivity": 0.1,
-            "Type": "PLA",
-            "uuid": str(uuid.uuid4())
-    })
-    #add black to slider value
-    slider_values.insert(0, (args.background_height//args.layer_height)-1)
-
-    # reverse order of filament set
-    filament_set = filament_set[::-1]
-
-
-
-    # Build the project file dictionary.
-    # Many keys are filled in with default or derived values.
-    project_data = {
-        "base_layer_height": args.layer_height,  # you may adjust this if needed
-        "blue_shift": 0,
-        "border_height": args.background_height,  # here we use the background height
-        "border_width": 3,
-        "borderless": True,
-        "bright_adjust_zero": False,
-        "brightness_compensation_name": "Standard",
-        "bw_tolerance": 8,
-        "color_match_method": 0,
-        "depth_mode": 2,
-        "edit_image": False,
-        "extra_gap": 2,
-        "filament_set": filament_set,
-        "flatten": False,
-        "full_range": False,
-        "green_shift": 0,
-        "gs_threshold": 0,
-        "height_in_mm": height_mm,
-        "hsl_invert": False,
-        "ignore_blue": False,
-        "ignore_green": False,
-        "ignore_red": False,
-        "invert_blue": False,
-        "invert_green": False,
-        "invert_red": False,
-        "inverted_color_pop": False,
-        "layer_height": args.layer_height,
-        "legacy_luminance": False,
-        "light_intensity": -1,
-        "light_temperature": 1,
-        "lighting_visualizer": 0,
-        "luminance_factor": 0,
-        "luminance_method": 2,
-        "luminance_offset": 0,
-        "luminance_offset_max": 100,
-        "luminance_power": 2,
-        "luminance_weight": 100,
-        "max_depth": args.background_height+args.layer_height*args.max_layers,
-        "median": 0,
-        "mesh_style_edit": True,
-        "min_depth": 0.48,
-        "min_detail": 0.2,
-        "negative": True,
-        "red_shift": 0,
-        "reverse_litho": True,
-        "slider_values": slider_values,
-        "smoothing": 0,
-        "srgb_linearize": False,
-        "stl": os.path.basename(stl_filename),
-        "strict_tolerance": False,
-        "transparency": True,
-        "version": "0.7.0",
-        "width_in_mm": width_mm
-    }
-
-    # Write out the project file as JSON
-    with open(project_filename, "w") as f:
-        json.dump(project_data, f, indent=4)
-
-
-
-def hex_to_rgb(hex_str):
-    """
-    Convert a hex color string to a normalized RGB list.
-    """
-    hex_str = hex_str.lstrip('#')
-    return [int(hex_str[i:i+2], 16) / 255.0 for i in (0, 2, 4)]
-
-
-def load_materials(csv_filename):
-    """
-    Load material data from a CSV file.
-    """
-    df = pd.read_csv(csv_filename)
-    material_names = [brand + " - " + name for brand, name in zip(df["Brand"].tolist(), df[" Name"].tolist())]
-    material_TDs = (df[' TD'].astype(float)).to_numpy()
-    colors_list = df[' Color'].tolist()
-    # Use float64 for material colors.
-    material_colors = jnp.array([hex_to_rgb(color) for color in colors_list], dtype=jnp.float64)
-    material_TDs = jnp.array(material_TDs, dtype=jnp.float64)
-    return material_colors, material_TDs, material_names, colors_list
-
-
-def sample_gumbel(shape, key, eps=1e-20):
-    """
-    Sample from a Gumbel distribution.
-    """
-    U = random.uniform(key, shape=shape, minval=0.0, maxval=1.0)
-    return -jnp.log(-jnp.log(U + eps) + eps)
-
-
-def gumbel_softmax_sample(logits, temperature, key):
-    """
-    Sample from the Gumbel-Softmax distribution.
-    """
-    g = sample_gumbel(logits.shape, key)
-    return jax.nn.softmax((logits + g) / temperature)
-
-
-def gumbel_softmax(logits, temperature, key, hard=False):
-    """
-    Compute the Gumbel-Softmax.
-    """
-    y = gumbel_softmax_sample(logits, temperature, key)
-    if hard:
-        y_hard = jax.nn.one_hot(jnp.argmax(y, axis=-1), logits.shape[-1])
-        y = y_hard + jax.lax.stop_gradient(y - y_hard)
-    return y
-
-
-# ------------------ Color Conversion for Perceptual Loss ------------------
-
-def srgb_to_linear_lab(rgb):
-    """
-    Convert sRGB (range [0,1]) to linear RGB.
-    """
-    return jnp.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
-
-
-def linear_to_xyz(rgb_linear):
-    """
-    Convert linear RGB to XYZ using sRGB D65.
-    """
-    R = rgb_linear[..., 0]
-    G = rgb_linear[..., 1]
-    B = rgb_linear[..., 2]
-    X = 0.4124564 * R + 0.3575761 * G + 0.1804375 * B
-    Y = 0.2126729 * R + 0.7151522 * G + 0.0721750 * B
-    Z = 0.0193339 * R + 0.1191920 * G + 0.9503041 * B
-    return jnp.stack([X, Y, Z], axis=-1)
-
-
-def xyz_to_lab(xyz):
-    """
-    Convert XYZ to CIELAB. Assumes D65 reference white.
-    This could become a problem, but I'll keep it for now.
-    """
-    # Reference white for D65:
-    xyz_ref = jnp.array([0.95047, 1.0, 1.08883])
-    xyz = xyz / xyz_ref
-    delta = 6/29
-    f = jnp.where(xyz > delta**3, xyz ** (1/3), (xyz / (3 * delta**2)) + (4/29))
-    L = 116 * f[..., 1] - 16
-    a = 500 * (f[..., 0] - f[..., 1])
-    b = 200 * (f[..., 1] - f[..., 2])
-    return jnp.stack([L, a, b], axis=-1)
-
-
-def rgb_to_lab(rgb):
-    """
-    Convert an sRGB image (values in [0,1]) to CIELAB.
-    """
-    rgb_linear = srgb_to_linear_lab(rgb)
-    xyz = linear_to_xyz(rgb_linear)
-    lab = xyz_to_lab(xyz)
-    return lab
-
-
-def adaptive_round(x, tau, high_tau=1.0, low_tau=0.01, temp=0.1):
-    """
-    Compute a soft (adaptive) rounding of x.
-
-    When tau is high (>= high_tau) returns x (i.e. no rounding).
-    When tau is low (<= low_tau) returns round(x).
-    In between, linearly interpolates between x and round(x).
-    """
-    beta = jnp.clip((high_tau - tau) / (high_tau - low_tau), 0.0, 1.0)
-    return (1 - beta) * x + beta * jnp.round(x)
 
 def composite_pixel_combined(pixel_height_logit, global_logits, tau_height, tau_global,
                              h, max_layers, material_colors, material_TDs,
@@ -328,9 +69,10 @@ def composite_pixel_combined(pixel_height_logit, global_logits, tau_height, tau_
     discrete_layers = discrete_layers.astype(jnp.int32)
 
     # Parameters for opacity calculation.
-    A = 0.1490
-    k = 94.9845
-    b = 0.3423
+
+    A = 0.11753787634145185
+    k = 189.93465923079648
+    b = 0.42164399960244126
 
     def step_fn(carry, i):
         comp, remaining = carry
@@ -342,12 +84,15 @@ def composite_pixel_combined(pixel_height_logit, global_logits, tau_height, tau_
         eff_thick = p_print * h
 
         # For material selection, force a one-hot (hard) result when tau_global is very small.
-        p_i = jax.lax.cond(
-            tau_global < 1e-3,
-            lambda _: gumbel_softmax(global_logits[j], tau_global, gumbel_keys[j], hard=True),
-            lambda _: gumbel_softmax(global_logits[j], tau_global, gumbel_keys[j], hard=False),
-            operand=None
-        )
+        if mode == "discrete":
+            p_i = gumbel_softmax(global_logits[j], tau_global, gumbel_keys[j], hard=True)
+        else:
+            p_i = jax.lax.cond(
+                tau_global < 1e-3,
+                lambda _: gumbel_softmax(global_logits[j], tau_global, gumbel_keys[j], hard=True),
+                lambda _: gumbel_softmax(global_logits[j], tau_global, gumbel_keys[j], hard=False),
+                operand=None
+            )
         color_i = jnp.dot(p_i, material_colors)
         TD_i = jnp.dot(p_i, material_TDs) * 0.1
 
@@ -400,6 +145,21 @@ def loss_fn(params, target, tau_height, tau_global, gumbel_keys, h, max_layers, 
     """
     Compute the mean squared error loss between the composite and target images.
     By default, we use continuous (soft) compositing.
+
+    Args:
+        params (dict): Dictionary containing the parameters 'pixel_height_logits' and 'global_logits'.
+        target (jnp.ndarray): The target image array.
+        tau_height (float): Temperature parameter for height compositing.
+        tau_global (float): Temperature parameter for material selection.
+        gumbel_keys (jnp.ndarray): Random keys for sampling in each layer.
+        h (float): Layer thickness.
+        max_layers (int): Maximum number of layers.
+        material_colors (jnp.ndarray): Array of material colors.
+        material_TDs (jnp.ndarray): Array of material transmission/opacity parameters.
+        background (jnp.ndarray): Background color.
+
+    Returns:
+        jnp.ndarray: The mean squared error loss.
     """
     comp = composite_image_combined_jit(params['pixel_height_logits'], params['global_logits'],
                                         tau_height, tau_global, gumbel_keys,
@@ -410,10 +170,35 @@ def loss_fn(params, target, tau_height, tau_global, gumbel_keys, h, max_layers, 
 def create_update_step(optimizer, loss_function, h, max_layers, material_colors, material_TDs, background):
     """
     Create a JIT-compiled update step function using the specified loss function.
+
+    Args:
+        optimizer (optax.GradientTransformation): The optimizer to use for updating parameters.
+        loss_function (callable): The loss function to compute gradients.
+        h (float): Layer thickness.
+        max_layers (int): Maximum number of layers.
+        material_colors (jnp.ndarray): Array of material colors.
+        material_TDs (jnp.ndarray): Array of material transmission/opacity parameters.
+        background (jnp.ndarray): Background color.
+
+    Returns:
+        callable: A JIT-compiled function that performs a single update step.
     """
     @jax.jit
     def update_step(params, target, tau_height, tau_global, gumbel_keys, opt_state):
+        """
+        Perform a single update step.
 
+        Args:
+            params (dict): Dictionary containing the model parameters.
+            target (jnp.ndarray): The target image array.
+            tau_height (float): Temperature parameter for height compositing.
+            tau_global (float): Temperature parameter for material selection.
+            gumbel_keys (jnp.ndarray): Random keys for sampling in each layer.
+            opt_state (optax.OptState): The current state of the optimizer.
+
+        Returns:
+            tuple: A tuple containing the updated parameters, new optimizer state, and the loss value.
+        """
         loss_val, grads = jax.value_and_grad(loss_function)(
             params, target, tau_height, tau_global, gumbel_keys,
             h, max_layers, material_colors, material_TDs, background)
@@ -422,6 +207,7 @@ def create_update_step(optimizer, loss_function, h, max_layers, material_colors,
         new_params = optax.apply_updates(params, updates)
 
         return new_params, new_opt_state, loss_val
+
     return update_step
 
 
@@ -429,6 +215,16 @@ def discretize_solution_jax(params, tau_global, gumbel_keys, h, max_layers):
     """
     Discretize the continuous pixel height logits into integer layer counts,
     and force hard material selections.
+
+    Args:
+        params (dict): Dictionary containing the parameters 'pixel_height_logits' and 'global_logits'.
+        tau_global (float): Temperature parameter for material selection.
+        gumbel_keys (jnp.ndarray): Random keys for sampling in each layer.
+        h (float): Layer thickness.
+        max_layers (int): Maximum number of layers.
+
+    Returns:
+        tuple: A tuple containing the discrete global material assignments and the discrete height image.
     """
     pixel_height_logits = params['pixel_height_logits']
     global_logits = params['global_logits']
@@ -442,28 +238,31 @@ def discretize_solution_jax(params, tau_global, gumbel_keys, h, max_layers):
     discrete_global = jax.vmap(discretize_layer)(global_logits, gumbel_keys)
     return discrete_global, discrete_height_image
 
-def initialize_pixel_height_logits(target):
-    """
-    Initialize pixel height logits based on the luminance of the target image.
-
-    Assumes target is a jnp.array of shape (H, W, 3) in the range [0, 255].
-    Uses the formula: L = 0.299*R + 0.587*G + 0.114*B.
-    """
-    # Compute normalized luminance in [0,1]
-    normalized_lum = (0.299 * target[..., 0] +
-                      0.587 * target[..., 1] +
-                      0.114 * target[..., 2]) / 255.0
-    # To avoid log(0) issues, add a small epsilon.
-    eps = 1e-6
-    # Convert normalized luminance to logits using the inverse sigmoid (logit) function.
-    # This ensures that jax.nn.sigmoid(pixel_height_logits) approximates normalized_lum.
-    pixel_height_logits = jnp.log((normalized_lum + eps) / (1 - normalized_lum + eps))
-    return pixel_height_logits
 
 def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, material_TDs, background,
                   num_iters, learning_rate, decay_v, loss_function, visualize=False, save_max_tau=0.001):
     """
     Run the optimization loop to learn per-pixel heights and per-layer material assignments.
+
+    Args:
+        rng_key (jax.random.PRNGKey): The random key for JAX operations.
+        target (jnp.ndarray): The target image array.
+        H (int): Height of the target image.
+        W (int): Width of the target image.
+        max_layers (int): Maximum number of layers.
+        h (float): Layer thickness.
+        material_colors (jnp.ndarray): Array of material colors.
+        material_TDs (jnp.ndarray): Array of material transmission/opacity parameters.
+        background (jnp.ndarray): Background color.
+        num_iters (int): Number of optimization iterations.
+        learning_rate (float): Learning rate for optimization.
+        decay_v (float): Final tau value for Gumbel-Softmax.
+        loss_function (callable): The loss function to compute gradients.
+        visualize (bool, optional): Enable visualization during optimization. Defaults to False.
+        save_max_tau (float, optional): Tau threshold to save best result. Defaults to 0.001.
+
+    Returns:
+        tuple: A tuple containing the best parameters and the best composite image.
     """
     num_materials = material_colors.shape[0]
     rng_key, subkey = random.split(rng_key)
@@ -476,7 +275,7 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
     rng_key, subkey = random.split(rng_key)
 
     pixel_height_logits = initialize_pixel_height_logits(target)
-    #pixel_height_logits = random.uniform(subkey, (H, W), minval=-2.0, maxval=2.0)
+    # pixel_height_logits = random.uniform(subkey, (H, W), minval=-2.0, maxval=2.0)
 
     params = {'global_logits': global_logits, 'pixel_height_logits': pixel_height_logits}
 
@@ -488,6 +287,18 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
     decay_rate = -math.log(decay_v) / (num_iters - warmup_steps)
 
     def get_tau(i, tau_init=1.0, tau_final=decay_v, decay_rate=decay_rate):
+        """
+        Compute the tau value for the current iteration.
+
+        Args:
+            i (int): Current iteration.
+            tau_init (float): Initial tau value.
+            tau_final (float): Final tau value.
+            decay_rate (float): Decay rate for tau.
+
+        Returns:
+            float: The computed tau value.
+        """
         if i < warmup_steps:
             return tau_init
         else:
@@ -528,8 +339,8 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
             best_params = {k: jnp.array(v) for k, v in params.items()}
             if visualize:
                 comp = composite_image_combined_jit(best_params['pixel_height_logits'], best_params['global_logits'],
-                                                      tau_height, tau_global, gumbel_keys,
-                                                      h, max_layers, material_colors, material_TDs, background, mode="continuous")
+                                                    tau_height, tau_global, gumbel_keys,
+                                                    h, max_layers, material_colors, material_TDs, background, mode="continuous")
                 comp_np = np.clip(np.array(comp), 0, 255).astype(np.uint8)
                 best_comp_im.set_data(comp_np)
                 # For discrete composite visualization, force discrete mode.
@@ -557,120 +368,11 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
         plt.ioff()
         plt.close()
     best_comp = composite_image_combined_jit(best_params['pixel_height_logits'], best_params['global_logits'],
-                                              tau_height, tau_global, gumbel_keys,
-                                              h, max_layers, material_colors, material_TDs, background, mode="continuous")
+                                             tau_height, tau_global, gumbel_keys,
+                                             h, max_layers, material_colors, material_TDs, background, mode="continuous")
     return best_params, best_comp
 
 
-import struct
-
-def generate_stl(height_map, filename, background_height, scale=1.0):
-    """
-    Generate a binary STL file from a height map.
-    """
-    H, W = height_map.shape
-    vertices = np.zeros((H, W, 3), dtype=np.float32)
-    for i in range(H):
-        for j in range(W):
-            # Original coordinates: x = j*scale, y = (H - 1 - i), z = height + background
-            vertices[i, j, 0] = j * scale
-            vertices[i, j, 1] = (H - 1 - i)  # (Consider applying scale if needed)
-            vertices[i, j, 2] = height_map[i, j] + background_height
-
-    triangles = []
-
-    def add_triangle(v1, v2, v3):
-        triangles.append((v1, v2, v3))
-
-    for i in range(H - 1):
-        for j in range(W - 1):
-            v0 = vertices[i, j]
-            v1 = vertices[i, j + 1]
-            v2 = vertices[i + 1, j + 1]
-            v3 = vertices[i + 1, j]
-            # Reversed order so normals face upward
-            add_triangle(v2, v1, v0)
-            add_triangle(v3, v2, v0)
-
-    for j in range(W - 1):
-        v0 = vertices[0, j]
-        v1 = vertices[0, j + 1]
-        v0b = np.array([v0[0], v0[1], 0], dtype=np.float32)
-        v1b = np.array([v1[0], v1[1], 0], dtype=np.float32)
-        add_triangle(v0, v1, v1b)
-        add_triangle(v0, v1b, v0b)
-    for j in range(W - 1):
-        v0 = vertices[H - 1, j]
-        v1 = vertices[H - 1, j + 1]
-        v0b = np.array([v0[0], v0[1], 0], dtype=np.float32)
-        v1b = np.array([v1[0], v1[1], 0], dtype=np.float32)
-        add_triangle(v1, v0, v1b)
-        add_triangle(v0, v0b, v1b)
-    for i in range(H - 1):
-        v0 = vertices[i, 0]
-        v1 = vertices[i + 1, 0]
-        v0b = np.array([v0[0], v0[1], 0], dtype=np.float32)
-        v1b = np.array([v1[0], v1[1], 0], dtype=np.float32)
-        add_triangle(v1, v0, v1b)
-        add_triangle(v0, v0b, v1b)
-    for i in range(H - 1):
-        v0 = vertices[i, W - 1]
-        v1 = vertices[i + 1, W - 1]
-        v0b = np.array([v0[0], v0[1], 0], dtype=np.float32)
-        v1b = np.array([v1[0], v1[1], 0], dtype=np.float32)
-        add_triangle(v0, v1, v1b)
-        add_triangle(v0, v1b, v0b)
-
-    v0 = np.array([0, 0, 0], dtype=np.float32)
-    v1 = np.array([(W - 1) * scale, 0, 0], dtype=np.float32)
-    v2 = np.array([(W - 1) * scale, (H - 1) * scale, 0], dtype=np.float32)
-    v3 = np.array([0, (H - 1) * scale, 0], dtype=np.float32)
-    add_triangle(v2, v1, v0)
-    add_triangle(v3, v2, v0)
-
-    num_triangles = len(triangles)
-
-    # Write the binary STL file.
-    with open(filename, 'wb') as f:
-        header_str = "Binary STL generated from heightmap"
-        header = header_str.encode('utf-8')
-        header = header.ljust(80, b' ')
-        f.write(header)
-        f.write(struct.pack('<I', num_triangles))
-        for tri in triangles:
-            v1, v2, v3 = tri
-            normal = np.cross(v2 - v1, v3 - v1)
-            norm = np.linalg.norm(normal)
-            if norm == 0:
-                normal = np.array([0, 0, 0], dtype=np.float32)
-            else:
-                normal = normal / norm
-            f.write(struct.pack('<12fH',
-                                  normal[0], normal[1], normal[2],
-                                  v1[0], v1[1], v1[2],
-                                  v2[0], v2[1], v2[2],
-                                  v3[0], v3[1], v3[2],
-                                  0))
-
-
-
-
-def generate_swap_instructions(discrete_global, discrete_height_image, h, background_layers, background_height, material_names):
-    """
-    Generate swap instructions based on discrete material assignments.
-    """
-    L = int(np.max(np.array(discrete_height_image)))
-    instructions = []
-    if L == 0:
-        instructions.append("No layers printed.")
-        return instructions
-    instructions.append("Start with your background color")
-    for i in range(0, L):
-        if i == 0 or int(discrete_global[i]) != int(discrete_global[i - 1]):
-            ie = i + 1
-            instructions.append(f"At layer #{ie + background_layers} ({(ie * h) + background_height:.2f}mm) swap to {material_names[int(discrete_global[i])]}")
-    instructions.append("For the rest, use " + material_names[int(discrete_global[L - 1])])
-    return instructions
 
 def main():
     parser = configargparse.ArgParser()
