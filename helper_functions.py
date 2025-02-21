@@ -22,6 +22,10 @@ import numpy as np
 
 import struct
 
+
+
+
+
 def generate_stl(height_map, filename, background_height, scale=1.0):
     """
     Generate a binary STL file from a height map.

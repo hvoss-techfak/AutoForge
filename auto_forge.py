@@ -240,7 +240,10 @@ def discretize_solution_jax(params, tau_global, gumbel_keys, h, max_layers):
 
 
 def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, material_TDs, background,
-                  num_iters, learning_rate, decay_v, loss_function, visualize=False, save_max_tau=0.001):
+                  num_iters, learning_rate, decay_v, loss_function, visualize=False, save_max_tau=0.001,
+                  output_folder=None, save_interval_pct=None,
+                  img_width=None, img_height=None, background_height=None,
+                  material_names=None, csv_file=None,args=None):
     """
     Run the optimization loop to learn per-pixel heights and per-layer material assignments.
 
@@ -306,6 +309,10 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
 
     best_params = None
     best_loss = float('inf')
+    best_params_since_last_save = None
+    best_loss_since_last_save = float('inf')
+    # Determine the checkpoint interval (in iterations) based on percentage progress.
+    checkpoint_interval = int(num_iters * save_interval_pct / 100) if save_interval_pct is not None else None
 
     if visualize:
         plt.ion()
@@ -332,6 +339,9 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
         gumbel_keys = random.split(subkey, max_layers)
         params, opt_state, loss_val = update_step(params, target, tau_height, tau_global, gumbel_keys, opt_state)
         save_tau_bool = (tau_global < save_max_tau and not saved_new_tau)
+        if loss_val < best_loss_since_last_save:
+            best_loss_since_last_save = loss_val
+            best_params_since_last_save = {k: jnp.array(v) for k, v in params.items()}
         if loss_val < best_loss or save_tau_bool:
             if save_tau_bool:
                 saved_new_tau = True
@@ -362,6 +372,14 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
             highest_layer = np.max(height_map_np)
             fig.suptitle(f"Iteration {i}, Loss: {loss_val:.4f}, Best Loss: {best_loss:.4f}, Tau: {tau_height:.3f}, Highest Layer: {highest_layer:.2f}mm")
             plt.pause(0.01)
+        if checkpoint_interval is not None and i % checkpoint_interval == 0 and i > 0:
+
+            print("Saving intermediate outputs. This can take some time. You can turn off this feature by setting save_interval_pct to 0.")
+            save_intermediate_outputs(i, best_params_since_last_save, tau_global, gumbel_keys, h, max_layers,
+                                      material_colors, material_TDs, background,
+                                      output_folder, W, H, background_height, material_names, csv_file,args=args)
+            best_params_since_last_save = None
+            best_loss_since_last_save = float('inf')
         tbar.set_description(f"loss = {loss_val:.4f}, Best Loss = {best_loss:.4f}")
 
     if visualize:
@@ -372,6 +390,47 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
                                              h, max_layers, material_colors, material_TDs, background, mode="continuous")
     return best_params, best_comp
 
+
+def save_intermediate_outputs(iteration, params, tau_global, gumbel_keys, h, max_layers,
+                              material_colors, material_TDs, background,
+                              output_folder, img_width, img_height, background_height,
+                              material_names, csv_file, args):
+    import os
+    import cv2
+    import numpy as np
+
+    # Compute the discrete composite image.
+    disc_comp = composite_image_combined_jit(
+        params['pixel_height_logits'], params['global_logits'],
+        tau_global, tau_global, gumbel_keys,
+        h, max_layers, material_colors, material_TDs, background, mode="discrete")
+    discrete_comp_np = np.clip(np.array(disc_comp), 0, 255).astype(np.uint8)
+    image_filename = os.path.join(output_folder, f"intermediate_iter_{iteration}_comp.jpg")
+    cv2.imwrite(image_filename, cv2.cvtColor(discrete_comp_np, cv2.COLOR_RGB2BGR))
+
+    # Discretize the solution to obtain layer counts and material assignments.
+    disc_global, disc_height_image = discretize_solution_jax(params, tau_global, gumbel_keys, h, max_layers)
+
+    # Generate the STL file.
+    height_map_mm = (np.array(disc_height_image, dtype=np.float32)) * h
+    stl_filename = os.path.join(output_folder, f"intermediate_iter_{iteration}_model.stl")
+    generate_stl(height_map_mm, stl_filename, background_height, scale=1.0)
+
+    # Generate swap instructions.
+    background_layers = int(background_height // h)
+    swap_instructions = generate_swap_instructions(np.array(disc_global), np.array(disc_height_image),
+                                                   h, background_layers, background_height, material_names)
+    instructions_filename = os.path.join(output_folder, f"intermediate_iter_{iteration}_swap_instructions.txt")
+    with open(instructions_filename, "w") as f:
+        for line in swap_instructions:
+            f.write(line + "\n")
+
+    # Generate the project file.
+    project_filename = os.path.join(output_folder, f"intermediate_iter_{iteration}_project.hfp")
+    generate_project_file(project_filename, args,
+                          np.array(disc_global),
+                          np.array(disc_height_image),
+                          img_width, img_height, stl_filename, csv_file)
 
 
 def main():
@@ -390,6 +449,8 @@ def main():
     parser.add_argument("--save_max_tau", type=float, default=0.005, help="Tau threshold to save best result")
     parser.add_argument("--decay", type=float, default=0.0001, help="Final tau value for Gumbel-Softmax")
     parser.add_argument("--visualize", action="store_true", help="Enable visualization during optimization")
+    parser.add_argument("--save_interval_pct", type=float, default=20,help="Percentage interval to save intermediate results")
+
     args = parser.parse_args()
 
     os.makedirs(args.output_folder, exist_ok=True)
@@ -422,12 +483,21 @@ def main():
     target = jnp.array(target, dtype=jnp.float64)
 
     rng_key = random.PRNGKey(0)
-    best_params, _ = run_optimizer(rng_key, target, new_h, new_w, max_layers_value, h_value,
-                                   material_colors, material_TDs, background,
-                                   args.iterations, args.learning_rate, decay_v_value,
-                                   loss_function=loss_fn,
-                                   visualize=args.visualize,
-                                   save_max_tau=args.save_max_tau)
+    best_params, _ = run_optimizer(
+        rng_key, target, new_h, new_w, max_layers_value, h_value,
+        material_colors, material_TDs, background,
+        args.iterations, args.learning_rate, decay_v_value,
+        loss_function=loss_fn,
+        visualize=args.visualize,
+        save_max_tau=args.save_max_tau,
+        output_folder=args.output_folder,
+        save_interval_pct=args.save_interval_pct if args.save_interval_pct > 0 else None,
+        img_width=new_w, img_height=new_h,
+        background_height=background_height_value,
+        material_names=material_names,
+        csv_file=args.csv_file,
+        args=args
+    )
 
     # Generate discrete outputs for STL and instructions.
     rng_key, subkey = random.split(rng_key)
