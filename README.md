@@ -73,6 +73,9 @@ If you have a GPU, you can install the GPU version of JAX by running:
 pip install -U "jax[cuda12]"
 ```
 
+Currently, jax gpu support is only available under linux. \
+If you use Windows, please install WSL2 to use the GPU version of jax.
+
 ## Usage
 
 The script is run from the command line and accepts several arguments. Below is an example command:
