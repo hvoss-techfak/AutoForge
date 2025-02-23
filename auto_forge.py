@@ -336,12 +336,20 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
         tau_global = get_tau(i, tau_init=1.0, tau_final=decay_v, decay_rate=decay_rate)
         rng_key, subkey = random.split(rng_key)
         gumbel_keys = random.split(subkey, max_layers)
-        params, opt_state, loss_val = update_step(params, target, tau_height, tau_global, gumbel_keys, opt_state)
+        params, opt_state, loss = update_step(params, target, tau_height, tau_global, gumbel_keys, opt_state)
         save_tau_bool = (tau_global < save_max_tau and not saved_new_tau)
+
+        disc_comp = composite_image_combined_jit(params['pixel_height_logits'], params['global_logits'],
+                                                 decay_v, decay_v, gumbel_keys,
+                                                 h, max_layers, material_colors, material_TDs, background,
+                                                 mode="discrete")
+
+        loss_val = jnp.mean((disc_comp - target) ** 2)
         if loss_val < best_loss_since_last_save:
             best_loss_since_last_save = loss_val
             best_params_since_last_save = {k: jnp.array(v) for k, v in params.items()}
-        if loss_val < best_loss or save_tau_bool:
+
+        if loss_val < best_loss:
             if save_tau_bool:
                 saved_new_tau = True
             best_loss = loss_val
@@ -353,11 +361,10 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
                 comp_np = np.clip(np.array(comp), 0, 255).astype(np.uint8)
                 best_comp_im.set_data(comp_np)
                 # For discrete composite visualization, force discrete mode.
-                disc_comp = composite_image_combined_jit(best_params['pixel_height_logits'], best_params['global_logits'],
-                                                         tau_height, tau_global, gumbel_keys,
-                                                         h, max_layers, material_colors, material_TDs, background, mode="discrete")
+
                 disc_comp_np = np.clip(np.array(disc_comp), 0, 255).astype(np.uint8)
                 disc_comp_im.set_data(disc_comp_np)
+
         if visualize and (i % 50 == 0):
             comp = composite_image_combined_jit(params['pixel_height_logits'], params['global_logits'],
                                                 tau_height, tau_global, gumbel_keys,
@@ -369,7 +376,7 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
             height_map_np = np.array(height_map)
             height_map_im.set_data(height_map_np)
             highest_layer = np.max(height_map_np)
-            fig.suptitle(f"Iteration {i}, Loss: {loss_val:.4f}, Best Loss: {best_loss:.4f}, Tau: {tau_height:.3f}, Highest Layer: {highest_layer:.2f}mm")
+            fig.suptitle(f"Iteration {i}, Loss: {loss:.4f}, Best Validation Loss: {best_loss:.4f}, Tau: {tau_height:.3f}, Highest Layer: {highest_layer:.2f}mm")
             plt.pause(0.01)
         if checkpoint_interval is not None and (i+1) % checkpoint_interval == 0 and i > 10:
 
