@@ -270,7 +270,6 @@ def generate_project_file(project_filename, args, disc_global, disc_height_image
 
     # Build the filament_set list. For each swap point, we look up the corresponding material from CSV.
     # Here we map CSV columns to the project file’s expected keys.
-    print(filament_indices)
     filament_set = []
     for idx in filament_indices:
         mat = material_data[idx]
@@ -285,7 +284,6 @@ def generate_project_file(project_filename, args, disc_global, disc_height_image
             "uuid": mat[" Uuid"]
         }
         filament_set.append(filament_entry)
-    print(len(filament_set),len(slider_values))
 
     # add black as the first filament with background height as the first slider value
     filament_set.insert(0, {
@@ -297,7 +295,6 @@ def generate_project_file(project_filename, args, disc_global, disc_height_image
             "Type": "PLA",
             "uuid": str(uuid.uuid4())
     })
-    print(slider_values)
     # add black to slider value
     slider_values.insert(0, (args.background_height//args.layer_height)-1)
 

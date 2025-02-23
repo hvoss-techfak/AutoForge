@@ -15,7 +15,7 @@ import cv2
 import jax
 
 from helper_functions import adaptive_round, gumbel_softmax, initialize_pixel_height_logits, hex_to_rgb, load_materials, \
-    generate_stl, generate_swap_instructions, generate_project_file
+    generate_stl, generate_swap_instructions, generate_project_file, rgb_to_lab
 
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
@@ -139,6 +139,40 @@ def composite_image_combined(pixel_height_logits, global_logits, tau_height, tau
 
 composite_image_combined_jit = jax.jit(composite_image_combined, static_argnums=(5,6,10))
 
+def huber_loss(pred, target, delta=0.1):
+    """
+    Compute the Huber loss between predictions and targets.
+
+    Parameters:
+        pred (jnp.array): Predicted values.
+        target (jnp.array): Ground-truth values.
+        delta (float): Threshold at which to change between quadratic and linear loss.
+
+    Returns:
+        jnp.array: The Huber loss.
+    """
+    error = pred - target
+    abs_error = jnp.abs(error)
+    quadratic = jnp.minimum(abs_error, delta)
+    linear = abs_error - quadratic
+    return jnp.mean(0.5 * quadratic**2 + delta * linear)
+
+def loss_fn_perceptual(params, target, tau_height, tau_global, gumbel_keys, h, max_layers, material_colors, material_TDs, background):
+    """
+    Compute a perceptual loss between the composite and target images.
+
+    Both images are normalized to [0,1], converted to CIELAB, and then the MSE is computed.
+    """
+    comp = composite_image_combined_jit(params['pixel_height_logits'], params['global_logits'],
+                                        tau_height, tau_global, gumbel_keys,
+                                        h, max_layers, material_colors, material_TDs, background, mode="continuous")
+    comp_norm = comp# / 255.0
+    target_norm = target# / 255.0
+    comp_lab = rgb_to_lab(comp_norm)
+    target_lab = rgb_to_lab(target_norm)
+    loss_lab = jnp.mean((comp_lab - target_lab) ** 2)
+    #jax.debug.print("hello {bar}", bar=loss_lab)
+    return huber_loss(comp, target)
 
 def loss_fn(params, target, tau_height, tau_global, gumbel_keys, h, max_layers, material_colors, material_TDs, background):
     """
@@ -348,7 +382,7 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
             best_loss_since_last_save = loss_val
             best_params_since_last_save = {k: jnp.array(v) for k, v in params.items()}
 
-        if loss_val < best_loss:
+        if loss_val < best_loss or best_params is None:
             best_loss = loss_val
             best_params = {k: jnp.array(v) for k, v in params.items()}
             if visualize:
