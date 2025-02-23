@@ -239,7 +239,7 @@ def discretize_solution_jax(params, tau_global, gumbel_keys, h, max_layers):
 
 
 def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, material_TDs, background,
-                  num_iters, learning_rate, decay_v, loss_function, visualize=False, save_max_tau=0.001,
+                  num_iters, learning_rate, decay_v, loss_function, visualize=False,
                   output_folder=None, save_interval_pct=None,
                   img_width=None, img_height=None, background_height=None,
                   material_names=None, csv_file=None,args=None):
@@ -337,7 +337,6 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
         rng_key, subkey = random.split(rng_key)
         gumbel_keys = random.split(subkey, max_layers)
         params, opt_state, loss = update_step(params, target, tau_height, tau_global, gumbel_keys, opt_state)
-        save_tau_bool = (tau_global < save_max_tau and not saved_new_tau)
 
         disc_comp = composite_image_combined_jit(params['pixel_height_logits'], params['global_logits'],
                                                  decay_v, decay_v, gumbel_keys,
@@ -350,8 +349,6 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
             best_params_since_last_save = {k: jnp.array(v) for k, v in params.items()}
 
         if loss_val < best_loss:
-            if save_tau_bool:
-                saved_new_tau = True
             best_loss = loss_val
             best_params = {k: jnp.array(v) for k, v in params.items()}
             if visualize:
@@ -452,7 +449,6 @@ def main():
     parser.add_argument("--background_height", type=float, default=0.4, help="Height of the background in mm")
     parser.add_argument("--background_color", type=str, default="#8e9089", help="Background color")
     parser.add_argument("--max_size", type=int, default=512, help="Maximum dimension for target image")
-    parser.add_argument("--save_max_tau", type=float, default=0.005, help="Tau threshold to save best result")
     parser.add_argument("--decay", type=float, default=0.0001, help="Final tau value for Gumbel-Softmax")
     parser.add_argument("--visualize", action="store_true", help="Enable visualization during optimization")
     parser.add_argument("--save_interval_pct", type=float, default=20,help="Percentage interval to save intermediate results")
@@ -461,7 +457,6 @@ def main():
 
     os.makedirs(args.output_folder, exist_ok=True)
     assert (args.background_height / args.layer_height).is_integer(), "Background height must be divisible by layer height."
-    assert args.save_max_tau > args.decay, "save_max_tau must be greater than decay."
     assert args.max_size > 0, "max_size must be positive."
     assert args.iterations > 0, "iterations must be positive."
     assert args.learning_rate > 0, "learning_rate must be positive."
@@ -495,7 +490,6 @@ def main():
         args.iterations, args.learning_rate, decay_v_value,
         loss_function=loss_fn,
         visualize=args.visualize,
-        save_max_tau=args.save_max_tau,
         output_folder=args.output_folder,
         save_interval_pct=args.save_interval_pct if args.save_interval_pct > 0 else None,
         img_width=new_w, img_height=new_h,
