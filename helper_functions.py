@@ -153,7 +153,7 @@ def generate_swap_instructions(discrete_global, discrete_height_image, h, backgr
     instructions.append("Start with your background color")
     for i in range(0, L):
         if i == 0 or int(discrete_global[i]) != int(discrete_global[i - 1]):
-            ie = i + 1
+            ie = i
             instructions.append(f"At layer #{ie + background_layers} ({(ie * h) + background_height:.2f}mm) swap to {material_names[int(discrete_global[i])]}")
     instructions.append("For the rest, use " + material_names[int(discrete_global[L - 1])])
     return instructions
@@ -221,16 +221,20 @@ def extract_filament_swaps(disc_global, disc_height_image, background_layers):
     L = int(np.max(np.array(disc_height_image)))
     filament_indices = []
     slider_values = []
-    prev = None
+    prev = int(disc_global[0])
     for i in range(L):
         current = int(disc_global[i])
         # If this is the first layer or the material changes from the previous layer…
-        if i == 0 or current != prev:
-            # As in your swap instructions: the layer (1-indexed) is offset by the background layer count
-            slider = i + background_layers
+        if current != prev:
+            slider = (i + background_layers)-1
             slider_values.append(slider)
-            filament_indices.append(current)
+            filament_indices.append(prev)
         prev = current
+    # Add the last material index
+    filament_indices.append(prev)
+    slider = i + background_layers
+    slider_values.append(slider)
+
     return filament_indices, slider_values
 
 
@@ -266,6 +270,7 @@ def generate_project_file(project_filename, args, disc_global, disc_height_image
 
     # Build the filament_set list. For each swap point, we look up the corresponding material from CSV.
     # Here we map CSV columns to the project file’s expected keys.
+    print(filament_indices)
     filament_set = []
     for idx in filament_indices:
         mat = material_data[idx]
@@ -280,19 +285,21 @@ def generate_project_file(project_filename, args, disc_global, disc_height_image
             "uuid": mat[" Uuid"]
         }
         filament_set.append(filament_entry)
+    print(len(filament_set),len(slider_values))
 
     # add black as the first filament with background height as the first slider value
     filament_set.insert(0, {
-            "Brand": "Black",
-            "Color": "#000000",
-            "Name": "Black",
+            "Brand": "Autoforge",
+            "Color": args.background_color,
+            "Name": "Background",
             "Owned": False,
             "Transmissivity": 0.1,
             "Type": "PLA",
             "uuid": str(uuid.uuid4())
     })
+    print(slider_values)
     # add black to slider value
-    slider_values.insert(0, (args.background_height // args.layer_height) - 1)
+    slider_values.insert(0, (args.background_height//args.layer_height)-1)
 
     # reverse order of filament set
     filament_set = filament_set[::-1]
