@@ -70,9 +70,9 @@ def composite_pixel_combined(pixel_height_logit, global_logits, tau_height, tau_
 
     # Parameters for opacity calculation.
 
-    A = 0.3489855138693261
-    k = 101.72142747530887
-    b = 0.9014283137171897
+    A = 0.178763
+    k = 39.302848
+    b = 0.351177
 
     def step_fn(carry, i):
         comp, remaining = carry
