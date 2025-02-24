@@ -8,6 +8,7 @@ is exported as an STL file along with swap instructions.
 """
 import json
 import os
+import time
 import uuid
 from itertools import permutations
 
@@ -305,7 +306,7 @@ def init_height_map(target,max_layers,h):
     target_np = np.asarray(target).reshape(-1, 3)
 
     # First kmeans: cluster image pixels into max_layers colors
-    kmeans = KMeans(n_clusters=max_layers, random_state=0).fit(target_np)
+    kmeans = KMeans(n_clusters=max_layers).fit(target_np)
     labels = kmeans.labels_
     labels = labels.reshape(target.shape[0], target.shape[1])
     centroids = kmeans.cluster_centers_
@@ -316,7 +317,7 @@ def init_height_map(target,max_layers,h):
 
     # --- Step 2: Second clustering of centroids into bands ---
     num_bands = 10
-    band_kmeans = KMeans(n_clusters=num_bands, random_state=0).fit(centroids)
+    band_kmeans = KMeans(n_clusters=num_bands).fit(centroids)
     band_labels = band_kmeans.labels_
 
     # Group centroids by band and sort within each band by luminance
@@ -645,7 +646,7 @@ def main():
     target = cv2.resize(img, (new_w, new_h))
     target = jnp.array(target, dtype=jnp.float64)
 
-    rng_key = random.PRNGKey(0)
+    rng_key = random.PRNGKey(int(time.time()))
     best_params, _ = run_optimizer(
         rng_key, target, new_h, new_w, max_layers_value, h_value,
         material_colors, material_TDs, background,
