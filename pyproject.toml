@@ -27,3 +27,6 @@ dependencies = [
 gpu = [
   "jax[cuda12]",
 ]
+
+[project.scripts]
+autoforge = "autoforge.cli:main_cli"
