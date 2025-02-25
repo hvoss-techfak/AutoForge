@@ -507,7 +507,7 @@ def pruning(target,best_params,disc_global,tau_global_disc,gumbel_keys_disc,h,ma
         prev_color = -1
         start_i = -1
 
-        # Pruning test 1 - Try removing entire color bands
+
 
         for i in range(0, max_layers):
             if disc_global[i] != prev_color:
@@ -521,22 +521,43 @@ def pruning(target,best_params,disc_global,tau_global_disc,gumbel_keys_disc,h,ma
 
     color_bands = get_color_bands(disc_global)
 
-    tbar = tqdm(range(1,len(color_bands)))
-    for i in tbar:
-        band = color_bands[i]
-        disc_global_copy = np.asarray(disc_global).copy()
-        disc_global_copy[band[0]:band[1]+1] = color_bands[i-1][2]
-        disc_global_copy = jnp.array(disc_global_copy)
-        new_image = composite_image_combined_jit(best_params['pixel_height_logits'], disc_global_copy,
-                                             tau_global_disc, tau_global_disc, gumbel_keys_disc,
-                                             h, max_layers, material_colors, material_TDs, background, mode="pruning")
-        new_loss = jnp.mean((new_image - target) ** 2)
-        tbar.set_description(f"Pruning test 1: Started with loss {initial_loss}. Removing color band {band} results in loss {new_loss}")
-        if new_loss < max_loss:
-            disc_global = disc_global_copy
-            max_loss = new_loss
-            color_bands[i] = color_bands[i-1]
-    print(f"Pruning test 1 complete. Final loss: {max_loss}")
+    # Pruning test 1 - Try removing entire color bands
+    current_bands = len(color_bands)
+
+    for _ in tqdm(range(100),desc="Pruning - Removing entire color bands"):
+        for i in range(1,len(color_bands)):
+            band = color_bands[i]
+            disc_global_copy = np.asarray(disc_global).copy()
+            disc_global_copy[band[0]:band[1]+1] = color_bands[i-1][2]
+            disc_global_copy = jnp.array(disc_global_copy)
+            new_image = composite_image_combined_jit(best_params['pixel_height_logits'], disc_global_copy,
+                                                 tau_global_disc, tau_global_disc, gumbel_keys_disc,
+                                                 h, max_layers, material_colors, material_TDs, background, mode="pruning")
+            new_loss = jnp.mean((new_image - target) ** 2)
+            if new_loss < max_loss:
+                disc_global = disc_global_copy
+                max_loss = new_loss
+                color_bands[i] = color_bands[i-1]
+
+        # Same as above but in reverse
+        for i in reversed(range(0,len(color_bands)-1)):
+            band = color_bands[i]
+            disc_global_copy = np.asarray(disc_global).copy()
+            disc_global_copy[band[0]:band[1]+1] = color_bands[i+1][2]
+            disc_global_copy = jnp.array(disc_global_copy)
+            new_image = composite_image_combined_jit(best_params['pixel_height_logits'], disc_global_copy,
+                                                 tau_global_disc, tau_global_disc, gumbel_keys_disc,
+                                                 h, max_layers, material_colors, material_TDs, background, mode="pruning")
+            new_loss = jnp.mean((new_image - target) ** 2)
+            if new_loss < max_loss:
+                disc_global = disc_global_copy
+                max_loss = new_loss
+                color_bands[i] = color_bands[i+1]
+        if current_bands == get_color_bands(disc_global):
+            print("No changes in color bands. Exiting pruning.")
+            break
+        else:
+            current_bands = get_color_bands(disc_global)
     #calculate color band difference
     new_color_bands = get_color_bands(disc_global)
     print(f"Color bands before pruning: {len(color_bands)}")
