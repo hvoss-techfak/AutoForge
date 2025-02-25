@@ -23,10 +23,13 @@ dependencies = [
   "scikit-learn",
 ]
 
+[tool.setuptools]
+package-dir = {"" = "src"}
+
 [project.optional-dependencies]
 gpu = [
   "jax[cuda12]",
 ]
 
 [project.scripts]
-autoforge = "autoforge.cli:main_cli"
+autoforge = "autoforge.auto_forge:main"
