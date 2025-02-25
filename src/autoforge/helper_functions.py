@@ -15,6 +15,7 @@ import numpy as np
 import math
 
 from skimage.color import rgb2lab
+from sklearn.cluster import KMeans
 from tqdm import tqdm
 import pandas as pd
 
@@ -26,7 +27,16 @@ import numpy as np
 import struct
 
 
-
+def resize_image(img, max_size):
+    h_img, w_img, _ = img.shape
+    if w_img >= h_img:
+        new_w = max_size
+        new_h = int(max_size * h_img / w_img)
+    else:
+        new_h = max_size
+        new_w = int(max_size * w_img / h_img)
+    img_out = cv2.resize(img, (new_w, new_h))
+    return img_out
 
 
 def generate_stl(height_map, filename, background_height, scale=1.0):
@@ -366,7 +376,7 @@ def generate_project_file(project_filename, args, disc_global, disc_height_image
     with open(project_filename, "w") as f:
         json.dump(project_data, f, indent=4)
 
-def init_height_map(target,max_layers,h):
+def init_height_map(target,max_layers,h,eps = 1e-6):
     """
         Initialize pixel height logits based on the luminance of the target image.
 
@@ -379,31 +389,14 @@ def init_height_map(target,max_layers,h):
         Returns:
             jnp.ndarray: The initialized pixel height logits.
         """
-    # Compute normalized luminance in [0,1]
-    normalized_lum = (0.299 * target[..., 0] +
-                      0.587 * target[..., 1] +
-                      0.114 * target[..., 2]) / 255.0
-    # To avoid log(0) issues, add a small epsilon.
-    eps = 1e-2
-    # Convert normalized luminance to logits using the inverse sigmoid (logit) function.
-    # This ensures that jax.nn.sigmoid(pixel_height_logits) approximates normalized_lum.
 
-    #return pixel_height_logits
-
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from sklearn.cluster import KMeans
-
-    # Assume 'target' is your input image (e.g. a PIL image or an np.array)
     target_np = np.asarray(target).reshape(-1, 3)
 
-    # First kmeans: cluster image pixels into max_layers colors
     kmeans = KMeans(n_clusters=max_layers).fit(target_np)
     labels = kmeans.labels_
     labels = labels.reshape(target.shape[0], target.shape[1])
     centroids = kmeans.cluster_centers_
 
-    # Define a simple luminance function (Rec.601)
     def luminance(col):
         return 0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2]
 
@@ -472,15 +465,6 @@ def init_height_map(target,max_layers,h):
     # Remap each pixel's label so that it refers to its new palette index
     mapping = {old_idx: new_idx for new_idx, old_idx in enumerate(new_order)}
     new_labels = np.vectorize(lambda x: mapping[x])(labels)
-
-    # plt.figure(figsize=(10, 2))
-    # # Create an image (1 row) where each column is a block of one color from the new ordered palette.
-    # ordered_centroids = centroids[new_order]
-    # palette = np.uint8(ordered_centroids[np.newaxis, :])
-    # plt.imshow(palette)
-    # plt.axis('off')
-    # plt.title("Ordered Color Bands (Dark to Bright, Minimizing Color Edges)")
-    # plt.show()
 
     new_labels = new_labels.astype(np.float32) / new_labels.max()
 

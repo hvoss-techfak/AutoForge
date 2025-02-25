@@ -12,8 +12,8 @@ import configargparse
 import cv2
 import jax
 
-from .helper_functions import adaptive_round, gumbel_softmax, hex_to_rgb, load_materials, \
-    generate_stl, generate_swap_instructions, generate_project_file, rgb_to_lab, init_height_map
+from autoforge.helper_functions import adaptive_round, gumbel_softmax, hex_to_rgb, load_materials, \
+    generate_stl, generate_swap_instructions, generate_project_file, rgb_to_lab, init_height_map, resize_image
 
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
@@ -372,7 +372,6 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
         rng_key, subkey = random.split(rng_key)
         val_gumbel_keys_list.append(random.split(subkey, max_layers))
 
-    saved_new_tau = False
     tbar = tqdm(range(num_iters))
     for i in tbar:
         tau_height = get_tau(i, tau_init=1.0, tau_final=decay_v, decay_rate=decay_rate)
@@ -545,29 +544,58 @@ def pruning(target,best_params,disc_global,tau_global_disc,gumbel_keys_disc,h,ma
     return disc_global
 
 
+def gumbal_bruteforce(background, best_params, decay_v_value, h_value, material_TDs, material_colors, max_layers_value,
+                      rng_key, target, val_gumbel_keys, iterations=10000, desc="Searching Gumbal Keys"):
+    disc_comp = composite_image_combined_jit(best_params['pixel_height_logits'], best_params['global_logits'],
+                                             decay_v_value, decay_v_value, val_gumbel_keys,
+                                             h_value, max_layers_value, material_colors, material_TDs, background,
+                                             mode="discrete")
+    opt_loss = jnp.mean((disc_comp - target) ** 2)
+    print(f"Initial gumbal search loss: {opt_loss}")
+    tbar = tqdm(range(iterations), desc=f"{desc} with lowest loss: {opt_loss}")
+    for _ in tbar:
+        rng_key, subkey = random.split(rng_key)
+        gumbel_keys_disc = random.split(subkey, max_layers_value)
+        disc_comp = composite_image_combined_jit(best_params['pixel_height_logits'], best_params['global_logits'],
+                                                 decay_v_value, decay_v_value, gumbel_keys_disc,
+                                                 h_value, max_layers_value, material_colors, material_TDs, background,
+                                                 mode="discrete")
+        new_loss = jnp.mean((disc_comp - target) ** 2)
+        if new_loss < opt_loss:
+            opt_loss = new_loss
+            val_gumbel_keys = gumbel_keys_disc
+            tbar.set_description(f"{desc} with lowest loss: {opt_loss}")
+    return val_gumbel_keys
+
 
 def main():
     parser = configargparse.ArgParser()
     parser.add_argument("--config", is_config_file=True, help="Path to config file")
     parser.add_argument("--input_image", type=str, required=True, help="Path to input image")
     parser.add_argument("--csv_file", type=str, required=True, help="Path to CSV file with material data")
-    parser.add_argument("--output_folder", type=str, required=True, help="Folder to write outputs")
-    parser.add_argument("--iterations", type=int, default=20000, help="Number of optimization iterations")
-    parser.add_argument("--learning_rate", type=float, default=5e-3, help="Learning rate for optimization")
+    parser.add_argument("--output_folder", type=str, default="output", help="Folder to write outputs")
+    parser.add_argument("--iterations", type=int, default=5000, help="Number of optimization iterations")
+    parser.add_argument("--learning_rate", type=float, default=1e-2, help="Learning rate for optimization")
     parser.add_argument("--layer_height", type=float, default=0.04, help="Layer thickness in mm")
     parser.add_argument("--max_layers", type=int, default=75, help="Maximum number of layers")
     parser.add_argument("--background_height", type=float, default=0.4, help="Height of the background in mm")
     parser.add_argument("--background_color", type=str, default="#000000", help="Background color")
-    parser.add_argument("--max_size", type=int, default=512, help="Maximum dimension for target image")
-    parser.add_argument("--decay", type=float, default=0.0001, help="Final tau value for Gumbel-Softmax")
+    parser.add_argument("--output_size", type=int, default=1024, help="Maximum dimension for target image")
+    parser.add_argument("--solver_size", type=int, default=128, help="Maximum dimension for target image")
+    parser.add_argument("--decay", type=float, default=0.01, help="Final tau value for Gumbel-Softmax")
     parser.add_argument("--visualize", action="store_true", help="Enable visualization during optimization")
+    parser.add_argument("--perform_gumbal_search", type=bool, default=True, help="Perform gumbal search after optimization")
+    parser.add_argument("--perform_pruning", type=bool, default=True, help="Perform pruning after optimization")
     parser.add_argument("--save_interval_pct", type=float, default=20,help="Percentage interval to save intermediate results")
 
     args = parser.parse_args()
 
     os.makedirs(args.output_folder, exist_ok=True)
+    print("Output folder:", args.output_folder)
     assert (args.background_height / args.layer_height).is_integer(), "Background height must be divisible by layer height."
-    assert args.max_size > 0, "max_size must be positive."
+    assert args.max_layers > 1, "max_layers must be positive."
+    assert args.output_size > 0, "output_size must be positive."
+    assert args.solver_size > 0, "solver_size must be positive."
     assert args.iterations > 0, "iterations must be positive."
     assert args.learning_rate > 0, "learning_rate must be positive."
     assert args.layer_height > 0, "layer_height must be positive."
@@ -584,13 +612,12 @@ def main():
     img = cv2.imread(args.input_image)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     h_img, w_img, _ = img.shape
-    if w_img >= h_img:
-        new_w = args.max_size
-        new_h = int(args.max_size * h_img / w_img)
-    else:
-        new_h = args.max_size
-        new_w = int(args.max_size * w_img / h_img)
-    target = cv2.resize(img, (new_w, new_h))
+
+    target = resize_image(img,args.solver_size)
+    new_h, new_w, _ = target.shape
+
+    output_target = resize_image(img,args.output_size)
+
     target = jnp.array(target, dtype=jnp.float64)
 
     rng_key = random.PRNGKey(int(time.time()))
@@ -608,35 +635,25 @@ def main():
         csv_file=args.csv_file,
         args=args
     )
-    # Generate discrete outputs for STL and instructions.
 
     tau_global_disc = decay_v_value
 
-    disc_comp = composite_image_combined_jit(best_params['pixel_height_logits'], best_params['global_logits'],
-                                             decay_v_value, decay_v_value, val_gumbel_keys,
-                                             h_value, max_layers_value, material_colors, material_TDs, background,
-                                             mode="discrete")
-    opt_loss = jnp.mean((disc_comp - target) ** 2)
-    print(f"Final optimizer val_loss: {opt_loss}")
-    tbar = tqdm(range(10000),desc=f"Searching Gumbal Keys with lowest loss: {opt_loss}")
-    for i in tbar:
-        rng_key, subkey = random.split(rng_key)
-        gumbel_keys_disc = random.split(subkey, max_layers_value)
-        disc_comp = composite_image_combined_jit(best_params['pixel_height_logits'], best_params['global_logits'],
-                                                 decay_v_value, decay_v_value, gumbel_keys_disc,
-                                                 h_value, max_layers_value, material_colors, material_TDs, background,
-                                                 mode="discrete")
-        new_loss = jnp.mean((disc_comp - target) ** 2)
-        if new_loss < opt_loss:
-            opt_loss = new_loss
-            val_gumbel_keys = gumbel_keys_disc
-            tbar.set_description(f"Searching Gumbal Keys with lowest loss: {opt_loss}")
+    if args.perform_gumbal_search:
+        val_gumbel_keys = gumbal_bruteforce(background, best_params, decay_v_value, h_value, material_TDs, material_colors,
+                                            max_layers_value, rng_key, target, val_gumbel_keys,iterations=1000,desc="Searching small size image for best gumbal keys")
 
+    if args.solver_size != args.output_size and args.perform_gumbal_search:
+        best_params["pixel_height_logits"] = init_height_map(output_target, args.max_layers, h_value)
 
+        val_gumbel_keys = gumbal_bruteforce(background, best_params, decay_v_value, h_value, material_TDs, material_colors,
+                                            max_layers_value, rng_key, output_target, val_gumbel_keys, iterations=1000,
+                                            desc="Searching large size image for best gumbal keys")
 
     disc_global, disc_height_image = discretize_solution_jax(best_params, tau_global_disc, val_gumbel_keys, h_value, max_layers_value)
-    disc_global = pruning(target,best_params,disc_global,tau_global_disc,val_gumbel_keys,h_value,args.max_layers,material_colors,material_TDs,background)
-    # Use the combined composite function in discrete mode for visualization.
+
+    if args.perform_pruning:
+        disc_global = pruning(output_target,best_params,disc_global,tau_global_disc,val_gumbel_keys,h_value,args.max_layers,material_colors,material_TDs,background)
+
     disc_comp = composite_image_combined_jit(best_params['pixel_height_logits'], disc_global,
                                              tau_global_disc, tau_global_disc, val_gumbel_keys,
                                              h_value, max_layers_value, material_colors, material_TDs, background, mode="pruning")
@@ -666,6 +683,9 @@ def main():
     print("Project file saved to", project_filename)
     print("All outputs saved to", args.output_folder)
     print("Happy printing!")
+
+
+
 
 
 if __name__ == '__main__':
