@@ -12,7 +12,7 @@ import configargparse
 import cv2
 import jax
 
-from helper_functions import adaptive_round, gumbel_softmax, hex_to_rgb, load_materials, \
+from .helper_functions import adaptive_round, gumbel_softmax, hex_to_rgb, load_materials, \
     generate_stl, generate_swap_instructions, generate_project_file, rgb_to_lab, init_height_map
 
 jax.config.update("jax_enable_x64", True)
