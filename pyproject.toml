@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "AutoForge"
+version="0.0.1"
+description = "AutoForge is a Python tool for generating 3D printed layered models from an input image."
+authors = [{ name = "Hendric Voss", email = "hvoss@techfak.uni-bielefeld.de" }]
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "CC BY-NC-SA 4.0" }
+dependencies = [
+  "numpy>=1.19.0",
+  "jax>=0.3.10",
+  "jaxlib>=0.3.10",
+  "opencv-python>=4.2.0.32",
+  "matplotlib>=3.3.0",
+  "configargparse>=1.2.3",
+  "tqdm>=4.50.0",
+  "pandas>=1.1.0",
+  "scikit-image",
+  "scikit-learn",
+]
+
+[project.optional-dependencies]
+gpu = [
+  "jax[cuda12]",
+]

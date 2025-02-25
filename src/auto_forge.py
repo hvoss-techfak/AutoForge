@@ -6,33 +6,24 @@ This script uses a learned optimization with a Gumbel softmax formulation
 to assign materials per layer and produce both a discretized composite that
 is exported as an STL file along with swap instructions.
 """
-import json
-import os
 import time
-import uuid
-from itertools import permutations
 
 import configargparse
 import cv2
 import jax
-from skimage.color import rgb2lab
 
-from helper_functions import adaptive_round, gumbel_softmax, initialize_pixel_height_logits, hex_to_rgb, load_materials, \
-    generate_stl, generate_swap_instructions, generate_project_file, rgb_to_lab
+from helper_functions import adaptive_round, gumbel_softmax, hex_to_rgb, load_materials, \
+    generate_stl, generate_swap_instructions, generate_project_file, rgb_to_lab, init_height_map
 
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import jax.random as random
 import optax
 import matplotlib.pyplot as plt
-import numpy as np
 import math
 from tqdm import tqdm
-import pandas as pd
 
 import os
-import json
-import pandas as pd
 import numpy as np
 
 
@@ -55,7 +46,7 @@ def composite_pixel_combined(pixel_height_logit, global_logits, tau_height, tau_
         material_TDs: Array of material transmission/opacity parameters.
         background: Background color.
         gumbel_keys: Random keys for sampling in each layer.
-        mode: "continuous" for soft compositing, "discrete" for hard discretization.
+        mode: "continuous" for soft compositing, "discrete" for hard discretization, "pruning" for pruning discretization.
 
     Returns:
         Composite color for the pixel (scaled to [0,255]).
@@ -73,6 +64,9 @@ def composite_pixel_combined(pixel_height_logit, global_logits, tau_height, tau_
 
     # Parameters for opacity calculation.
 
+    if mode == "pruning":
+        global_logits = jax.nn.one_hot(global_logits, len(material_colors))
+
     A = 0.178763
     k = 39.302848
     b = 0.351177
@@ -89,13 +83,16 @@ def composite_pixel_combined(pixel_height_logit, global_logits, tau_height, tau_
         # For material selection, force a one-hot (hard) result when tau_global is very small.
         if mode == "discrete":
             p_i = gumbel_softmax(global_logits[j], tau_global, gumbel_keys[j], hard=True)
-        else:
+        elif mode == "continuous":
             p_i = jax.lax.cond(
                 tau_global < 1e-3,
                 lambda _: gumbel_softmax(global_logits[j], tau_global, gumbel_keys[j], hard=True),
                 lambda _: gumbel_softmax(global_logits[j], tau_global, gumbel_keys[j], hard=False),
                 operand=None
             )
+        else:
+            p_i = global_logits[j]
+        #jax.debug.print("foo {bar}", bar=p_i)
         color_i = jnp.dot(p_i, material_colors)
         TD_i = jnp.dot(p_i, material_TDs) * 0.1
         # Compute opacity
@@ -274,130 +271,7 @@ def discretize_solution_jax(params, tau_global, gumbel_keys, h, max_layers):
     discrete_global = jax.vmap(discretize_layer)(global_logits, gumbel_keys)
     return discrete_global, discrete_height_image
 
-def init_height_map(target,max_layers,h):
-    """
-        Initialize pixel height logits based on the luminance of the target image.
 
-        Assumes target is a jnp.array of shape (H, W, 3) in the range [0, 255].
-        Uses the formula: L = 0.299*R + 0.587*G + 0.114*B.
-
-        Args:
-            target (jnp.ndarray): The target image array with shape (H, W, 3).
-
-        Returns:
-            jnp.ndarray: The initialized pixel height logits.
-        """
-    # Compute normalized luminance in [0,1]
-    normalized_lum = (0.299 * target[..., 0] +
-                      0.587 * target[..., 1] +
-                      0.114 * target[..., 2]) / 255.0
-    # To avoid log(0) issues, add a small epsilon.
-    eps = 1e-2
-    # Convert normalized luminance to logits using the inverse sigmoid (logit) function.
-    # This ensures that jax.nn.sigmoid(pixel_height_logits) approximates normalized_lum.
-
-    #return pixel_height_logits
-
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from sklearn.cluster import KMeans
-
-    # Assume 'target' is your input image (e.g. a PIL image or an np.array)
-    target_np = np.asarray(target).reshape(-1, 3)
-
-    # First kmeans: cluster image pixels into max_layers colors
-    kmeans = KMeans(n_clusters=max_layers).fit(target_np)
-    labels = kmeans.labels_
-    labels = labels.reshape(target.shape[0], target.shape[1])
-    centroids = kmeans.cluster_centers_
-
-    # Define a simple luminance function (Rec.601)
-    def luminance(col):
-        return 0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2]
-
-    # --- Step 2: Second clustering of centroids into bands ---
-    num_bands = 10
-    band_kmeans = KMeans(n_clusters=num_bands).fit(centroids)
-    band_labels = band_kmeans.labels_
-
-    # Group centroids by band and sort within each band by luminance
-    bands = []  # each entry will be (band_avg_luminance, sorted_indices_in_this_band)
-    for b in range(num_bands):
-        indices = np.where(band_labels == b)[0]
-        if len(indices) == 0:
-            continue
-        lum_vals = np.array([luminance(centroids[i]) for i in indices])
-        sorted_indices = indices[np.argsort(lum_vals)]
-        band_avg = np.mean(lum_vals)
-        bands.append((band_avg, sorted_indices))
-
-    # --- Step 3: Compute a representative color for each band in Lab space ---
-    # (Using the average of the centroids in that band)
-    band_reps = []  # will hold Lab colors
-    for _, indices in bands:
-        band_avg_rgb = np.mean(centroids[indices], axis=0)
-        # Normalize if needed (assumes image pixel values are 0-255)
-        band_avg_rgb_norm = band_avg_rgb / 255.0 if band_avg_rgb.max() > 1 else band_avg_rgb
-        # Convert to Lab (expects image in [0,1])
-        lab = rgb2lab(np.array([[band_avg_rgb_norm]]))[0, 0, :]
-        band_reps.append(lab)
-
-    # --- Step 4: Identify darkest and brightest bands based on L channel ---
-    L_values = [lab[0] for lab in band_reps]
-    start_band = np.argmin(L_values)  # darkest band index
-    end_band = np.argmax(L_values)  # brightest band index
-
-    # --- Step 5: Find the best ordering for the middle bands ---
-    # We want to order the bands so that the total perceptual difference (Euclidean distance in Lab)
-    # between consecutive bands is minimized, while forcing the darkest band first and brightest band last.
-    all_indices = list(range(len(bands)))
-    middle_indices = [i for i in all_indices if i not in (start_band, end_band)]
-
-    min_total_distance = np.inf
-    best_order = None
-    total = len(middle_indices)*len(middle_indices)
-    # Try all permutations of the middle bands
-    ie = 0
-    tbar = tqdm(permutations(middle_indices),total=total,desc="Finding best ordering for color bands:")
-    for perm in tbar:
-        candidate = [start_band] + list(perm) + [end_band]
-        total_distance = 0
-        for i in range(len(candidate) - 1):
-            total_distance += np.linalg.norm(band_reps[candidate[i]] - band_reps[candidate[i + 1]])
-        if total_distance < min_total_distance:
-            min_total_distance = total_distance
-            best_order = candidate
-            tbar.set_description(f"Finding best ordering for color bands: Total distance = {min_total_distance:.2f}")
-        ie += 1
-        if ie > 500000:
-            break
-
-    new_order = []
-    for band_idx in best_order:
-        # Each band tuple is (band_avg, sorted_indices)
-        new_order.extend(bands[band_idx][1].tolist())
-
-    # Remap each pixel's label so that it refers to its new palette index
-    mapping = {old_idx: new_idx for new_idx, old_idx in enumerate(new_order)}
-    new_labels = np.vectorize(lambda x: mapping[x])(labels)
-
-    # plt.figure(figsize=(10, 2))
-    # # Create an image (1 row) where each column is a block of one color from the new ordered palette.
-    # ordered_centroids = centroids[new_order]
-    # palette = np.uint8(ordered_centroids[np.newaxis, :])
-    # plt.imshow(palette)
-    # plt.axis('off')
-    # plt.title("Ordered Color Bands (Dark to Bright, Minimizing Color Edges)")
-    # plt.show()
-
-    new_labels = new_labels.astype(np.float32) / new_labels.max()
-
-    normalized_lum = jnp.array(new_labels, dtype=jnp.float64)
-    #convert out to inverse sigmoid logit function
-    pixel_height_logits = jnp.log((normalized_lum + eps) / (1 - normalized_lum + eps))
-
-    H, W, _ = target.shape
-    return pixel_height_logits
 
 
 def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, material_TDs, background,
@@ -492,6 +366,12 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
         ax[4].set_title("Composite (Discrete)")
         plt.pause(0.1)
 
+    val_gumbel_keys_list = []
+    val_gumbel_keys_images = []
+    for i in range(3):
+        rng_key, subkey = random.split(rng_key)
+        val_gumbel_keys_list.append(random.split(subkey, max_layers))
+
     saved_new_tau = False
     tbar = tqdm(range(num_iters))
     for i in tbar:
@@ -501,19 +381,36 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
         gumbel_keys = random.split(subkey, max_layers)
         params, opt_state, loss = update_step(params, target, tau_height, tau_global, gumbel_keys, opt_state)
 
-        disc_comp = composite_image_combined_jit(params['pixel_height_logits'], params['global_logits'],
-                                                 decay_v, decay_v, gumbel_keys,
-                                                 h, max_layers, material_colors, material_TDs, background,
-                                                 mode="discrete")
+        val_loss_list = []
+        for j in range(3):
+            disc_comp = composite_image_combined_jit(params['pixel_height_logits'], params['global_logits'],
+                                                     decay_v, decay_v, val_gumbel_keys_list[j],
+                                                     h, max_layers, material_colors, material_TDs, background,
+                                                     mode="discrete")
 
-        loss_val = jnp.mean((disc_comp - target) ** 2)
+            loss_val = jnp.mean((disc_comp - target) ** 2)
+            val_loss_list.append(loss_val)
+            val_gumbel_keys_images.append(disc_comp)
+
+        #get index of the best validation loss
+        best_val_loss_idx = jnp.argmin(jnp.array(val_loss_list))
+        loss_val = val_loss_list[best_val_loss_idx]
+        val_gumbel_keys = val_gumbel_keys_list[best_val_loss_idx]
+        val_gumbel_keys_list = [val_gumbel_keys]
+        disc_comp = val_gumbel_keys_images[best_val_loss_idx]
+        val_gumbel_keys_images = []
+
+        for _ in range(9):
+            rng_key, subkey = random.split(rng_key)
+            val_gumbel_keys_list.append(random.split(subkey, max_layers))
+
         if loss_val < best_loss_since_last_save:
             best_loss_since_last_save = loss_val
-            best_params_since_last_save = {k: jnp.array(v) for k, v in params.items()}
+            best_params_since_last_save = {k: jnp.array(np.asarray(v)).copy() for k, v in params.items()}
 
         if loss_val < best_loss or best_params is None:
             best_loss = loss_val
-            best_params = {k: jnp.array(v) for k, v in params.items()}
+            best_params = {k: jnp.array(np.asarray(v)).copy() for k, v in params.items()}
             if visualize:
                 comp = composite_image_combined_jit(best_params['pixel_height_logits'], best_params['global_logits'],
                                                     tau_height, tau_global, gumbel_keys,
@@ -554,7 +451,7 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
     best_comp = composite_image_combined_jit(best_params['pixel_height_logits'], best_params['global_logits'],
                                              tau_height, tau_global, gumbel_keys,
                                              h, max_layers, material_colors, material_TDs, background, mode="continuous")
-    return best_params, best_comp
+    return best_params, best_comp,val_gumbel_keys
 
 
 def save_intermediate_outputs(iteration, params, tau_global, gumbel_keys, h, max_layers,
@@ -597,6 +494,56 @@ def save_intermediate_outputs(iteration, params, tau_global, gumbel_keys, h, max
                           np.array(disc_global),
                           np.array(disc_height_image),
                           img_width, img_height, stl_filename, csv_file)
+
+def pruning(target,best_params,disc_global,tau_global_disc,gumbel_keys_disc,h,max_layers,material_colors,material_TDs,background,max_loss_increase=0.05):
+    initial_image = composite_image_combined_jit(best_params['pixel_height_logits'], disc_global,
+                                             tau_global_disc, tau_global_disc, gumbel_keys_disc,
+                                             h, max_layers, material_colors, material_TDs, background, mode="pruning")
+    initial_loss = jnp.mean((initial_image - target) ** 2)
+    print(f"Initial Pruning loss: {np.asarray(initial_loss)}")
+    max_loss = initial_loss + initial_loss*max_loss_increase
+
+    def get_color_bands(disc_global):
+        color_bands = []
+        prev_color = -1
+        start_i = -1
+
+        # Pruning test 1 - Try removing entire color bands
+
+        for i in range(0, max_layers):
+            if disc_global[i] != prev_color:
+                if start_i != -1:
+                    color_bands.append((start_i, i - 1, prev_color))
+                start_i = i
+                prev_color = disc_global[i]
+        if start_i != -1:
+            color_bands.append((start_i, max_layers - 1, prev_color))
+        return color_bands
+
+    color_bands = get_color_bands(disc_global)
+
+    tbar = tqdm(range(1,len(color_bands)))
+    for i in tbar:
+        band = color_bands[i]
+        disc_global_copy = np.asarray(disc_global).copy()
+        disc_global_copy[band[0]:band[1]+1] = color_bands[i-1][2]
+        disc_global_copy = jnp.array(disc_global_copy)
+        new_image = composite_image_combined_jit(best_params['pixel_height_logits'], disc_global_copy,
+                                             tau_global_disc, tau_global_disc, gumbel_keys_disc,
+                                             h, max_layers, material_colors, material_TDs, background, mode="pruning")
+        new_loss = jnp.mean((new_image - target) ** 2)
+        tbar.set_description(f"Pruning test 1: Started with loss {initial_loss}. Removing color band {band} results in loss {new_loss}")
+        if new_loss < max_loss:
+            disc_global = disc_global_copy
+            max_loss = new_loss
+            color_bands[i] = color_bands[i-1]
+    print(f"Pruning test 1 complete. Final loss: {max_loss}")
+    #calculate color band difference
+    new_color_bands = get_color_bands(disc_global)
+    print(f"Color bands before pruning: {len(color_bands)}")
+    print(f"Color bands after pruning: {len(new_color_bands)}")
+    return disc_global
+
 
 
 def main():
@@ -647,7 +594,7 @@ def main():
     target = jnp.array(target, dtype=jnp.float64)
 
     rng_key = random.PRNGKey(int(time.time()))
-    best_params, _ = run_optimizer(
+    best_params, _, val_gumbel_keys = run_optimizer(
         rng_key, target, new_h, new_w, max_layers_value, h_value,
         material_colors, material_TDs, background,
         args.iterations, args.learning_rate, decay_v_value,
@@ -661,16 +608,38 @@ def main():
         csv_file=args.csv_file,
         args=args
     )
-
     # Generate discrete outputs for STL and instructions.
-    rng_key, subkey = random.split(rng_key)
-    gumbel_keys_disc = random.split(subkey, max_layers_value)
+
     tau_global_disc = decay_v_value
-    disc_global, disc_height_image = discretize_solution_jax(best_params, tau_global_disc, gumbel_keys_disc, h_value, max_layers_value)
-    # Use the combined composite function in discrete mode for visualization.
+
     disc_comp = composite_image_combined_jit(best_params['pixel_height_logits'], best_params['global_logits'],
-                                             tau_global_disc, tau_global_disc, gumbel_keys_disc,
-                                             h_value, max_layers_value, material_colors, material_TDs, background, mode="discrete")
+                                             decay_v_value, decay_v_value, val_gumbel_keys,
+                                             h_value, max_layers_value, material_colors, material_TDs, background,
+                                             mode="discrete")
+    opt_loss = jnp.mean((disc_comp - target) ** 2)
+    print(f"Final optimizer val_loss: {opt_loss}")
+    tbar = tqdm(range(10000),desc=f"Searching Gumbal Keys with lowest loss: {opt_loss}")
+    for i in tbar:
+        rng_key, subkey = random.split(rng_key)
+        gumbel_keys_disc = random.split(subkey, max_layers_value)
+        disc_comp = composite_image_combined_jit(best_params['pixel_height_logits'], best_params['global_logits'],
+                                                 decay_v_value, decay_v_value, gumbel_keys_disc,
+                                                 h_value, max_layers_value, material_colors, material_TDs, background,
+                                                 mode="discrete")
+        new_loss = jnp.mean((disc_comp - target) ** 2)
+        if new_loss < opt_loss:
+            opt_loss = new_loss
+            val_gumbel_keys = gumbel_keys_disc
+            tbar.set_description(f"Searching Gumbal Keys with lowest loss: {opt_loss}")
+
+
+
+    disc_global, disc_height_image = discretize_solution_jax(best_params, tau_global_disc, val_gumbel_keys, h_value, max_layers_value)
+    disc_global = pruning(target,best_params,disc_global,tau_global_disc,val_gumbel_keys,h_value,args.max_layers,material_colors,material_TDs,background)
+    # Use the combined composite function in discrete mode for visualization.
+    disc_comp = composite_image_combined_jit(best_params['pixel_height_logits'], disc_global,
+                                             tau_global_disc, tau_global_disc, val_gumbel_keys,
+                                             h_value, max_layers_value, material_colors, material_TDs, background, mode="pruning")
     discrete_comp_np = np.clip(np.array(disc_comp), 0, 255).astype(np.uint8)
     cv2.imwrite(os.path.join(args.output_folder, "discrete_comp.jpg"),
                 cv2.cvtColor(discrete_comp_np, cv2.COLOR_RGB2BGR))
