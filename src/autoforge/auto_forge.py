@@ -274,7 +274,7 @@ def discretize_solution_jax(params, tau_global, gumbel_keys, h, max_layers):
 
 
 
-def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, material_TDs, background,
+def run_optimizer(rng_key, target,pixel_height_logits, H, W, max_layers, h, material_colors, material_TDs, background,
                   num_iters, learning_rate, decay_v, loss_function, visualize=False,
                   output_folder=None, save_interval_pct=None,
                   img_width=None, img_height=None, background_height=None,
@@ -313,7 +313,7 @@ def run_optimizer(rng_key, target, H, W, max_layers, h, material_colors, materia
     rng_key, subkey = random.split(rng_key)
 
     #pixel_height_logits = initialize_pixel_height_logits(target)
-    pixel_height_logits = init_height_map(target,max_layers,h)
+
     #pixel_height_logits = random.uniform(subkey, (H, W), minval=-2.0, maxval=2.0)
 
     params = {'global_logits': global_logits, 'pixel_height_logits': pixel_height_logits}
@@ -524,40 +524,69 @@ def pruning(target,best_params,disc_global,tau_global_disc,gumbel_keys_disc,h,ma
     # Pruning test 1 - Try removing entire color bands
     current_bands = len(color_bands)
 
-    for _ in tqdm(range(100),desc="Pruning - Removing entire color bands"):
+    def get_image_loss(disc_global):
+        disc_global = jnp.array(disc_global)
+        return jnp.mean((composite_image_combined_jit(best_params['pixel_height_logits'], disc_global,
+                                             tau_global_disc, tau_global_disc, gumbel_keys_disc,
+                                             h, max_layers, material_colors, material_TDs, background, mode="pruning") - target) ** 2)
+
+    for _ in tqdm(range(10),desc="Pruning - Removing entire color bands"):
+        change = False
+        #testing removing color bands forward
         for i in range(1,len(color_bands)):
             band = color_bands[i]
             disc_global_copy = np.asarray(disc_global).copy()
             disc_global_copy[band[0]:band[1]+1] = color_bands[i-1][2]
-            disc_global_copy = jnp.array(disc_global_copy)
-            new_image = composite_image_combined_jit(best_params['pixel_height_logits'], disc_global_copy,
-                                                 tau_global_disc, tau_global_disc, gumbel_keys_disc,
-                                                 h, max_layers, material_colors, material_TDs, background, mode="pruning")
-            new_loss = jnp.mean((new_image - target) ** 2)
+            new_loss = get_image_loss(disc_global)
             if new_loss < max_loss:
+                change = True
                 disc_global = disc_global_copy
-                max_loss = new_loss
                 color_bands[i] = color_bands[i-1]
 
-        # Same as above but in reverse
+        # testing removing color bands backwards
         for i in reversed(range(0,len(color_bands)-1)):
             band = color_bands[i]
             disc_global_copy = np.asarray(disc_global).copy()
             disc_global_copy[band[0]:band[1]+1] = color_bands[i+1][2]
-            disc_global_copy = jnp.array(disc_global_copy)
-            new_image = composite_image_combined_jit(best_params['pixel_height_logits'], disc_global_copy,
-                                                 tau_global_disc, tau_global_disc, gumbel_keys_disc,
-                                                 h, max_layers, material_colors, material_TDs, background, mode="pruning")
-            new_loss = jnp.mean((new_image - target) ** 2)
+            new_loss = get_image_loss(disc_global)
             if new_loss < max_loss:
+                change = True
                 disc_global = disc_global_copy
-                max_loss = new_loss
                 color_bands[i] = color_bands[i+1]
-        if current_bands == get_color_bands(disc_global):
+
+        #we only check for these one if the loss decreases as otherwise we risk color band shifting
+        p2_initial_loss = get_image_loss(disc_global)
+        #testing border shifting forward
+        for i in range(0,len(color_bands)):
+            band = color_bands[i]
+            disc_global_copy = np.asarray(disc_global).copy()
+            disc_global_copy[band[0]:min(band[1]+2,max_layers)] = band[2]
+            new_loss = get_image_loss(disc_global)
+            if new_loss < p2_initial_loss:
+                #print(f"color band {i} shifted forwards - {band} - {new_loss}")
+                p2_initial_loss = new_loss
+                change = True
+                disc_global = disc_global_copy
+                color_bands[i] = (band[0],band[1]+1,band[2])
+
+        #testing border shifting backwards
+        for i in reversed(range(0,len(color_bands))):
+            band = color_bands[i]
+            disc_global_copy = np.asarray(disc_global).copy()
+            disc_global_copy[max(0,band[0]-1):band[1]+1] = band[2]
+            new_loss = get_image_loss(disc_global)
+            if new_loss < p2_initial_loss:
+                #print(f"color band {i} shifted backwards - {band} - {new_loss}")
+                p2_initial_loss = new_loss
+                change = True
+                disc_global = disc_global_copy
+                color_bands[i] = (band[0]-1,band[1],band[2])
+
+
+
+        if not change:
             print("No changes in color bands. Exiting pruning.")
             break
-        else:
-            current_bands = get_color_bands(disc_global)
     #calculate color band difference
     new_color_bands = get_color_bands(disc_global)
     print(f"Color bands before pruning: {len(color_bands)}")
@@ -638,12 +667,22 @@ def main():
     new_h, new_w, _ = target.shape
 
     output_target = resize_image(img,args.output_size)
+    print(target.shape)
+
+    pixel_height_logits = init_height_map(output_target, args.max_layers, h_value)
+    pixel_height_logits = np.asarray(pixel_height_logits)
+    print(pixel_height_logits.shape)
+
+    #resize to target size
+    o_shape = pixel_height_logits.shape
+    pixel_height_logits_solver = resize_image(pixel_height_logits.reshape(o_shape[0],o_shape[1],1),args.solver_size)
 
     target = jnp.array(target, dtype=jnp.float64)
 
+
     rng_key = random.PRNGKey(int(time.time()))
     best_params, _, val_gumbel_keys = run_optimizer(
-        rng_key, target, new_h, new_w, max_layers_value, h_value,
+        rng_key, target,pixel_height_logits_solver, new_h, new_w, max_layers_value, h_value,
         material_colors, material_TDs, background,
         args.iterations, args.learning_rate, decay_v_value,
         loss_function=loss_fn,
@@ -664,7 +703,7 @@ def main():
                                             max_layers_value, rng_key, target, val_gumbel_keys,iterations=1000,desc="Searching small size image for best gumbal keys")
 
     if args.solver_size != args.output_size and args.perform_gumbal_search:
-        best_params["pixel_height_logits"] = init_height_map(output_target, args.max_layers, h_value)
+        best_params["pixel_height_logits"] = pixel_height_logits
 
         val_gumbel_keys = gumbal_bruteforce(background, best_params, decay_v_value, h_value, material_TDs, material_colors,
                                             max_layers_value, rng_key, output_target, val_gumbel_keys, iterations=1000,

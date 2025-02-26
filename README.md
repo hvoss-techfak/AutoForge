@@ -152,5 +152,6 @@ AutoForge makes use of several open source libraries:
 Example Images:  
 <a href="https://www.vecteezy.com/free-photos/anime-girl">Anime Girl Stock photos by Vecteezy</a>  
 <a href="https://www.vecteezy.com/free-photos/nature">Nature Stock photos by Vecteezy</a>
+<a href="https://www.vecteezy.com/free-photos/ai-generated">Ai Generated Stock photos by Vecteezy</a>
 
 Happy printing!
