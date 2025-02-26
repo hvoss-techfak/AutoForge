@@ -27,6 +27,50 @@ import numpy as np
 import struct
 
 
+def extract_colors_from_swatches(swatch_data):
+
+    # we keep only data with transmission distance
+    swatch_data = [swatch for swatch in swatch_data if swatch["td"]]
+
+    #For now we load it and convert it in the same way as the hueforge csv files
+    out = {}
+    for swatch in swatch_data:
+        brand = swatch["manufacturer"]["name"]
+        name = swatch["color_name"]
+        color = swatch["hex_color"]
+        td = swatch["td"]
+        out[(brand, name)] = (color, td)
+
+    #convert to the same format as the hueforge csv files
+    material_names = [brand + " - " + name for (brand, name) in out.keys()]
+    material_colors = jnp.array([hex_to_rgb("#"+color) for color, _ in out.values()], dtype=jnp.float64)
+    material_TDs = jnp.array([td for _, td in out.values()], dtype=jnp.float64)
+    colors_list = [color for color, _ in out.values()]
+
+    return material_colors, material_TDs, material_names, colors_list
+
+def swatch_data_to_table(swatch_data):
+    """
+    Converts swatch JSON data into a table (list of dicts) with columns:
+    "Brand", "Name", "Transmission Distance", "Hex Color".
+    """
+    table = []
+    for swatch in swatch_data:
+        if not swatch["td"]:
+            continue
+        brand = swatch["manufacturer"]["name"]
+        name = swatch["color_name"]
+        hex_color = swatch["hex_color"]
+        td = swatch["td"]
+        table.append({
+            "Brand": brand,
+            "Name": name,
+            "Transmission Distance": td,
+            "Hex Color": f"#{hex_color}"
+        })
+    return table
+
+
 def resize_image(img, max_size):
     h_img, w_img, _ = img.shape
     if w_img >= h_img:
