@@ -563,7 +563,7 @@ def pruning(target,best_params,disc_global,tau_global_disc,gumbel_keys_disc,h,ma
             disc_global_copy[band[0]:min(band[1]+2,max_layers)] = band[2]
             new_loss = get_image_loss(disc_global)
             if new_loss < p2_initial_loss:
-                print(f"color band {i} shifted forwards - {band} - {new_loss}")
+                #print(f"color band {i} shifted forwards - {band} - {new_loss}")
                 p2_initial_loss = new_loss
                 change = True
                 disc_global = disc_global_copy
@@ -576,7 +576,7 @@ def pruning(target,best_params,disc_global,tau_global_disc,gumbel_keys_disc,h,ma
             disc_global_copy[max(0,band[0]-1):band[1]+1] = band[2]
             new_loss = get_image_loss(disc_global)
             if new_loss < p2_initial_loss:
-                print(f"color band {i} shifted backwards - {band} - {new_loss}")
+                #print(f"color band {i} shifted backwards - {band} - {new_loss}")
                 p2_initial_loss = new_loss
                 change = True
                 disc_global = disc_global_copy
