@@ -80,7 +80,7 @@ def download_all_pages(url):
         tbar.update(1)
     return all_results
 
-def main():
+def download_filament_info():
     """
     Main function to manage the swatch data update process.
 
@@ -120,4 +120,4 @@ def main():
     save_local_version(api_version)
     print("Download complete, data saved to", DATA_FILE)
 if __name__ == "__main__":
-    main()
+    download_filament_info()
