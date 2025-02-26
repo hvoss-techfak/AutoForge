@@ -44,33 +44,17 @@ I would love to see what you made!
 
 ## Installation
 
-1. **Clone the Repository**
+To install AutoForge, simply install the current version from PyPI:
+```bash
+   pip install autoforge
+```
 
-   ```bash
-   git clone https://github.com/hvoss-techfak/AutoForge.git
-   cd AutoForge
-   ```
-
-2. **Set Up a Virtual Environment (Optional but Recommended)**
-
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install Dependencies**
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-See the [requirements.txt](requirements.txt) file for a complete list of dependencies.  
-The optimizer is built using JAX, which benefits from a CUDA-compatible GPU for optimal performance.  
-Without a dedicated GPU the process can take significantly longer (up to 10-20x slower).  
-If you have a GPU, you can install the GPU version of JAX by running:
+The optimizer is built using JAX, which benefits from a CUDA-compatible GPU for optimal performance.  \
+Without a dedicated GPU the process can take significantly longer (up to 10-20x slower).  \
+If you have a GPU, you can install the GPU version of autoforge by running:\
 
 ```bash
-pip install -U "jax[cuda12]"
+   pip install autoforge[gpu]
 ```
 
 Currently, jax gpu support is only available under linux. \
