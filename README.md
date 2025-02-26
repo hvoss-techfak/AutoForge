@@ -12,18 +12,21 @@ All examples use only the 13 BambuLab Basic filaments, currently available in Hu
 <div style="display: flex; justify-content: center; gap: 20px;">
   <div style="text-align: center;">
     <h3>Input Image</h3>
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi.jpg" width="300" />
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature.jpg" width="300" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi.jpg" width="200" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature.jpg" width="200" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/cat.jpg" width="200" />
   </div>
   <div style="text-align: center;">
     <h3>Autoforge Output (75 color layers (3.0mm) + 10 gray background layers (0.4mm)) </h3>
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_discretized.jpg" width="300" />
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_discretized.jpg" width="300" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_discretized.jpg" width="200" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_discretized.jpg" width="200" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/cat_discretized.jpg" width="200" />
   </div>
   <div style="text-align: center;">
     <h3>Imported Hueforge View</h3>
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_hueforge.png" width="300" />
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_hueforge.png" width="300" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_hueforge.png" width="200" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_hueforge.png" width="200" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/cat_hueforge.png" width="200" />
   </div>
 </div>
 
