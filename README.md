@@ -81,18 +81,22 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--config`: *(Optional)* Path to a configuration file with the settings.
 - `--input_image`: **(Required)** Path to the input image.
 - `--csv_file`: **(Required)** Path to the CSV file containing material data. The CSV should include columns for the brand, name, color (hex code), and TD values.
-- `--output_folder`: **(Required)** Folder where output files will be saved.
-- `--iterations`: Number of optimization iterations (default: 20000).
-- `--learning_rate`: Learning rate for the optimizer (default: 5e-3).
+- `--output_folder`: Folder where output files will be saved (default: "output").
+- `--iterations`: Number of optimization iterations (default: 5000).
+- `--learning_rate`: Learning rate for the optimizer (default: 1e-2).
 - `--layer_height`: Layer thickness in millimeters (default: 0.04).
-- `--max_layers`: Maximum number of layers (default: 75). 
+- `--max_layers`: Maximum number of layers (default: 75).
   **Note:** This is about 3mm + the background height
-- `--background_height`: Height of the background in millimeters (default: 0.4).  
+- `--background_height`: Height of the background in millimeters (default: 0.4).
   **Note:** The background height must be divisible by the layer height.
-- `--background_color`: Background color in hexadecimal format (default: `#8e9089` aka Bambulab Grey).
-- `--max_size`: Maximum dimension (width or height) for the resized target image (default: 512).
+- `--background_color`: Background color in hexadecimal format (default: `#000000`).
+- `--solver_size`: Size to use for optimization (default: 128).
+- `--output_size`: Size of the output image (default: 1024).
+- `--save_interval_pct`: Save intermediate results every N% (default: 20).
+- `--perform_gumbal_search`: Enable Gumbel key search optimization (default: true).
+- `--perform_pruning`: Enable pruning of unnecessary layers (default: true).
+- `--pruning_max_loss_increase`: Maximum allowed loss increase during pruning (default: 0.1).
 - `--decay`: Final tau value for the Gumbel-Softmax formulation (default: 0.01).
-- `--loss`: Loss function to use. Choices are `mse`, `perceptual`, or `perceptual_l1` (default: `mse`).
 - `--visualize`: Flag to enable live visualization of the composite image during optimization.
 
 ## Outputs
