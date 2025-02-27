@@ -494,7 +494,7 @@ def save_intermediate_outputs(iteration, params, tau_global, gumbel_keys, h, max
                           np.array(disc_height_image),
                           img_width, img_height, stl_filename, csv_file)
 
-def pruning(target,best_params,disc_global,tau_global_disc,gumbel_keys_disc,h,max_layers,material_colors,material_TDs,background,max_loss_increase=0.05):
+def pruning(target,best_params,disc_global,tau_global_disc,gumbel_keys_disc,h,max_layers,material_colors,material_TDs,background,max_loss_increase=0.1):
     initial_image = composite_image_combined_jit(best_params['pixel_height_logits'], disc_global,
                                              tau_global_disc, tau_global_disc, gumbel_keys_disc,
                                              h, max_layers, material_colors, material_TDs, background, mode="pruning")
@@ -636,6 +636,7 @@ def main():
     parser.add_argument("--visualize", action="store_true", help="Enable visualization during optimization")
     parser.add_argument("--perform_gumbal_search", type=bool, default=True, help="Perform gumbal search after optimization")
     parser.add_argument("--perform_pruning", type=bool, default=True, help="Perform pruning after optimization")
+    parser.add_argument("--pruning_max_loss_increase", type=float, default=0.1, help="Maximum loss increase for pruning")
     parser.add_argument("--save_interval_pct", type=float, default=20,help="Percentage interval to save intermediate results")
 
     args = parser.parse_args()
@@ -712,7 +713,7 @@ def main():
     disc_global, disc_height_image = discretize_solution_jax(best_params, tau_global_disc, val_gumbel_keys, h_value, max_layers_value)
 
     if args.perform_pruning:
-        disc_global = pruning(output_target,best_params,disc_global,tau_global_disc,val_gumbel_keys,h_value,args.max_layers,material_colors,material_TDs,background)
+        disc_global = pruning(output_target,best_params,disc_global,tau_global_disc,val_gumbel_keys,h_value,args.max_layers,material_colors,material_TDs,background,max_loss_increase=args.pruning_max_loss_increase)
 
     disc_comp = composite_image_combined_jit(best_params['pixel_height_logits'], disc_global,
                                              tau_global_disc, tau_global_disc, val_gumbel_keys,
