@@ -67,9 +67,9 @@ def composite_pixel_combined(pixel_height_logit, global_logits, tau_height, tau_
     if mode == "pruning":
         global_logits = jax.nn.one_hot(global_logits, len(material_colors))
 
-    A = 0.13187095759166045
-    k = 51.66499684285074
-    b = 0.4544535692570477
+    A = 0.1215
+    k = 61.6970
+    b = 0.4773
 
     def step_fn(carry, i):
         comp, remaining = carry
