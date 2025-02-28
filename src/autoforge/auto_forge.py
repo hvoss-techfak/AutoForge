@@ -218,27 +218,56 @@ def huber_loss(pred: torch.Tensor, target: torch.Tensor, delta: float = 0.1) -> 
     return torch.mean(loss)
 
 
-
-
-def perceptual_loss_fn(compare_image: torch.Tensor,
-                       target_image: torch.Tensor,
-                       perceptual_weight: float,
-                       mse_weight: float,
-                       perceptual_module: nn.Module) -> torch.Tensor:
+def decoupled_perceptual_loss_fn(compare_image: torch.Tensor,
+                                 target_image: torch.Tensor,
+                                 perceptual_module: nn.Module,
+                                 lum_weight: float = 1.0,
+                                 color_weight: float = 1.0,
+                                 mse_weight: float = 1.0) -> torch.Tensor:
     """
-    Computes the perceptual loss between the composite image (computed via your
-    vectorized composite_image function) and the target image. Both images are converted
-    to shape (1, 3, H, W) and then passed through the perceptual network.
-    """
-    comp_batch = compare_image.permute(2, 0, 1).unsqueeze(0)
-    target_batch = target_image.permute(2, 0, 1).unsqueeze(0)
-    perc_loss = perceptual_module(comp_batch, target_batch) * perceptual_weight if perceptual_weight > 0 else 0
-    mse_loss = F.mse_loss(comp_batch, target_batch) * mse_weight if mse_weight > 0 else 0
-    mse_loss = mse_loss / 1000 # we divide by 1000 to bring it to the same scale as the perceptual loss
-    loss = perc_loss + mse_loss
-    #perceptual_module(comp_batch, target_batch) +
-    return loss
+    Computes a decoupled perceptual loss by separating luminance and chrominance.
 
+    - The luminance is computed as 0.299*R + 0.587*G + 0.114*B.
+    - The chrominance is defined as the residual (RGB - luminance).
+
+    Both components are passed separately through the perceptual network
+    (after replicating the luminance to 3 channels) and then combined.
+
+    Inputs:
+      - compare_image and target_image are assumed to be (H, W, 3) tensors with values in [0,255].
+
+    Returns:
+      - A weighted sum of the luminance and color perceptual losses.
+    """
+    # Compute luminance (grayscale)
+    comp_gray = 0.299 * compare_image[..., 0] + 0.587 * compare_image[..., 1] + 0.114 * compare_image[..., 2]
+    target_gray = 0.299 * target_image[..., 0] + 0.587 * target_image[..., 1] + 0.114 * target_image[..., 2]
+
+    # Replicate grayscale to 3 channels
+    comp_gray = comp_gray.unsqueeze(-1).repeat(1, 1, 3)
+    target_gray = target_gray.unsqueeze(-1).repeat(1, 1, 3)
+
+    # Prepare batches for VGG (N,3,H,W)
+    comp_batch_gray = comp_gray.permute(2, 0, 1).unsqueeze(0)
+    target_batch_gray = target_gray.permute(2, 0, 1).unsqueeze(0)
+
+    # Luminance perceptual loss
+    lum_loss = perceptual_module(comp_batch_gray, target_batch_gray)
+
+    # Compute chrominance: difference between the original and grayscale images.
+    comp_color = compare_image - comp_gray
+    target_color = target_image - target_gray
+    comp_batch_color = comp_color.permute(2, 0, 1).unsqueeze(0)
+    target_batch_color = target_color.permute(2, 0, 1).unsqueeze(0)
+
+    # Color perceptual loss
+    color_loss = perceptual_module(comp_batch_color, target_batch_color)
+
+    mse_loss = mse_weight * huber_loss(compare_image, target_image, delta=0.1) if mse_weight > 0 else 0.0
+
+    # Optionally, you can add a simple MSE term on one or both components.
+    # Here we simply return the weighted sum of perceptual losses.
+    return lum_weight * lum_loss + color_weight * color_loss + mse_loss
 
 
 def optimize_color_assignment(pixel_height_logits: torch.Tensor,
@@ -262,9 +291,9 @@ def optimize_color_assignment(pixel_height_logits: torch.Tensor,
     num_materials = material_colors.size(0)
     swap_params = nn.Parameter(torch.randn(num_swaps, device=device))
     color_logits = nn.Parameter(torch.randn(num_swaps + 1, num_materials, device=device))
-    optimizer = torch.optim.AdamW([swap_params, color_logits], lr=lr,weight_decay=1e-2)
+    optimizer = torch.optim.AdamW([swap_params, color_logits], lr=lr,weight_decay=1e-3)
 
-    warmup_steps = num_iters // 4
+    warmup_steps = int(num_iters * 0.75)
     decay_rate = -math.log(final_tau) / (num_iters - warmup_steps)
 
     def get_tau(i, tau_init=1.0, tau_final=final_tau, decay_rate=decay_rate):
@@ -289,7 +318,6 @@ def optimize_color_assignment(pixel_height_logits: torch.Tensor,
     best_loss = float('inf')
     best_params = None
 
-    initial_warmup_iters = num_iters // 4
     tbar = tqdm(range(num_iters))
     for it in tbar:
 
@@ -301,7 +329,7 @@ def optimize_color_assignment(pixel_height_logits: torch.Tensor,
                                     tau_height=final_tau, h=h, max_layers=max_layers,
                                     background=background)
 
-        loss = perceptual_loss_fn(comp, target,  5.0, 1.0, perceptual_module)
+        loss = decoupled_perceptual_loss_fn(comp, target, perceptual_module, lum_weight=1.0, color_weight=1.0, mse_weight=0.0)
 
         optimizer.zero_grad()
         loss.backward()
@@ -314,7 +342,7 @@ def optimize_color_assignment(pixel_height_logits: torch.Tensor,
             comp_val = composite_image_soft(pixel_height_logits, global_colors, global_TDs,
                                         tau_height=final_tau, h=h, max_layers=max_layers,
                                         background=background)
-            val_loss = perceptual_loss_fn(comp_val, target, 1.0, 0.0, perceptual_module)
+            val_loss = decoupled_perceptual_loss_fn(comp, target, perceptual_module, lum_weight=1.0, color_weight=1.0, mse_weight=0)
 
             if val_loss < best_loss:
                 best_loss = val_loss
@@ -336,7 +364,7 @@ def main():
     parser.add_argument("--csv_file", type=str, required=True, help="Path to CSV file with material data")
     parser.add_argument("--output_folder", type=str, default="output", help="Folder to write outputs")
     parser.add_argument("--iterations", type=int, default=10000, help="Number of optimization iterations")
-    parser.add_argument("--learning_rate", type=float, default=1e-2, help="Learning rate for optimization")
+    parser.add_argument("--learning_rate", type=float, default=5e-3, help="Learning rate for optimization")
     parser.add_argument("--layer_height", type=float, default=0.04, help="Layer thickness in mm")
     parser.add_argument("--max_layers", type=int, default=75, help="Maximum number of layers")
     parser.add_argument("--background_height", type=float, default=0.4, help="Height of the background in mm")
