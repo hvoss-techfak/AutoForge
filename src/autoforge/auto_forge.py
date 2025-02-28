@@ -318,8 +318,7 @@ def optimize_color_assignment(pixel_height_logits: torch.Tensor,
 
             if val_loss < best_loss:
                 best_loss = val_loss
-                #deep copy the parameters
-                print(global_colors)
+
                 best_params = (swap_params.clone(), color_logits.clone())
                 comp_val_np = comp_val.cpu().detach().numpy().clip(0, 255).astype(np.uint8)
                 plt.imshow(comp_val_np)
