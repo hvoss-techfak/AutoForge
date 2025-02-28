@@ -7,23 +7,17 @@ to assign materials per layer and produce both a discretized composite that
 is exported as an STL file along with swap instructions.
 """
 import time
-
 import configargparse
 import cv2
-import jax
 import torch
 
 from autoforge.helper_functions import hex_to_rgb, load_materials, \
     generate_stl, generate_swap_instructions, generate_project_file, init_height_map, resize_image
 
-jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp
-import jax.random as random
 import optax
 import matplotlib.pyplot as plt
 import math
 from tqdm import tqdm
-import torch.nn.functional as F
 
 import os
 import numpy as np
@@ -32,7 +26,6 @@ import torch.nn.functional as F
 import torchvision.models as models
 
 
-# Define a VGG-based perceptual loss module.
 class MultiLayerVGGPerceptualLoss(nn.Module):
     def __init__(self, layers: list = None, weights: list = None):
         """
@@ -86,6 +79,70 @@ class MultiLayerVGGPerceptualLoss(nn.Module):
                 loss += self.weights[self.layers.index(i)] * F.mse_loss(out, out_y)
         return loss
 
+
+def decode_assignment(swap_params: torch.Tensor,
+                      color_logits: torch.Tensor,
+                      max_layers: int,
+                      material_colors: torch.Tensor,
+                      material_TDs: torch.Tensor,
+                      tau: float) -> (torch.Tensor, torch.Tensor):
+    """
+    Given learnable parameters:
+      - swap_params: (num_swaps,) that control where color swaps occur,
+      - color_logits: (num_swaps+1, num_materials) for each segment,
+    this function computes a soft assignment for each layer.
+
+    For each segment, a gumbel softmax is applied to the logits (with temperature tau)
+    to obtain a probability distribution over the fixed palette. This is used to compute
+    both a weighted color and a weighted TD. Then, using soft memberships (via sigmoids
+    with steepness s), we combine the segments over layers.
+
+    Returns a tuple (global_colors, global_TDs) where:
+      - global_colors is (max_layers, 3)
+      - global_TDs is (max_layers,)
+    """
+    num_swaps = swap_params.shape[0]
+    num_segments = num_swaps + 1
+    # Make swap_params positive and compute cumulative sum.
+    pos = F.softplus(swap_params)  # (num_swaps,)
+    cum = torch.cumsum(pos, dim=0)
+    # Scale cumulative values to [1, max_layers-1]
+    swap_positions = 1 + (max_layers - 2) * (cum - cum.min()) / (cum.max() - cum.min() + 1e-8)  # (num_swaps,)
+    # Create layer indices 0,...,max_layers-1.
+    j = torch.arange(max_layers, device=swap_params.device).float()  # (max_layers,)
+    memberships = []
+    # For segment 0:
+    m0 = torch.sigmoid(swap_positions[0] - j)
+    memberships.append(m0)
+    # For segments 1 ... num_segments-1:
+    for i in range(1, num_segments):
+        if i < num_swaps:
+            mi = torch.sigmoid(j - swap_positions[i - 1]) - torch.sigmoid(j - swap_positions[i])
+        else:
+            mi = 1 - torch.sigmoid(j - swap_positions[-1])
+        memberships.append(mi)
+    # memberships: (num_segments, max_layers)
+    memberships = torch.stack(memberships, dim=0)  # (num_segments, max_layers)
+
+    # For each segment, compute the weighted color and TD.
+    segment_colors = []
+    segment_TDs = []
+    for i in range(num_segments):
+        probs = F.gumbel_softmax(color_logits[i], tau=tau, hard=False)  # (num_materials,)
+        color_i = torch.matmul(probs, material_colors)  # (3,)
+        td_i = torch.dot(probs, material_TDs)  # scalar
+        segment_colors.append(color_i)
+        segment_TDs.append(td_i)
+    segment_colors = torch.stack(segment_colors, dim=0)  # (num_segments, 3)
+    segment_TDs = torch.stack(segment_TDs, dim=0)  # (num_segments,)
+
+    # Combine segments for each layer:
+    # memberships: (num_segments, max_layers) --> transpose to (max_layers, num_segments)
+    global_colors = torch.matmul(memberships.t(), segment_colors)  # (max_layers, 3)
+    global_TDs = torch.matmul(memberships.t(), segment_TDs.unsqueeze(1))  # (max_layers, 1)
+    global_TDs = global_TDs.squeeze(1)  # (max_layers,)
+    return global_colors, global_TDs
+
 # An adaptive round function that chooses a soft or hard round based on tau.
 @torch.jit.script
 def adaptive_round(x: torch.Tensor, tau: float, high_tau: float, low_tau: float, temp: float) -> torch.Tensor:
@@ -104,102 +161,52 @@ def adaptive_round(x: torch.Tensor, tau: float, high_tau: float, low_tau: float,
         soft_round = floor_val + torch.sigmoid((diff - 0.5) / temp)
         return ratio * soft_round + (1 - ratio) * hard_round
 
+
 @torch.jit.script
-def composite_pixel(pixel_height_logit: torch.Tensor,
-                    global_material_indices: torch.Tensor,
-                    tau_height: float,
-                    h: float,
-                    max_layers: int,
-                    material_colors: torch.Tensor,
-                    material_TDs: torch.Tensor,
-                    background: torch.Tensor) -> torch.Tensor:
-
-    # Compute continuous pixel height (in physical units)
-    pixel_height = (max_layers * h) * torch.sigmoid(pixel_height_logit)
-    continuous_layers = pixel_height / h
-    adaptive_layers = adaptive_round(continuous_layers, tau_height, 0.1, 0.01, 0.1)
-    hard_round_val = torch.round(continuous_layers)
-    # Stop gradient equivalent: subtract hard round and add detached soft version.
-    discrete_layers = hard_round_val + (adaptive_layers - hard_round_val).detach()
-    d_layers = int(torch.round(discrete_layers).item())
-    # Opacity parameters
-    A = 0.1215
-    k = 61.6970
-    b = 0.4773
-    comp = torch.zeros(3, dtype=torch.float32)
-    remaining = 1.0
-    for i in range(max_layers):
-        j = max_layers - 1 - i  # process layers from top to bottom
-        p_print = 1.0 if j < d_layers else 0.0
-        eff_thick = p_print * h
-        # Look up the material index (global_material_indices is a 1D tensor of length max_layers)
-        material_index = int(global_material_indices[j].item())
-        color_i = material_colors[material_index]
-        TD_i = material_TDs[material_index] * 0.1
-        opac = A * torch.log(1 + k * (eff_thick / TD_i)) + b * (eff_thick / TD_i)
-        opac = torch.clamp(opac, 0.0, 1.0)
-        comp = comp + remaining * opac * color_i
-        remaining = remaining * (1 - opac)
-    result = comp + remaining * background
-    return result * 255.0
-
-
-# Composite an entire image by iterating over pixels.
-@torch.jit.script
-def composite_image(pixel_height_logits: torch.Tensor,
-                               global_material_indices: torch.Tensor,
-                               tau_height: float,
-                               h: float,
-                               max_layers: int,
-                               material_colors: torch.Tensor,
-                               material_TDs: torch.Tensor,
-                               background: torch.Tensor) -> torch.Tensor:
-
+def composite_image_soft(pixel_height_logits: torch.Tensor,
+                         global_colors: torch.Tensor,
+                         global_TDs: torch.Tensor,
+                         tau_height: float,
+                         h: float,
+                         max_layers: int,
+                         background: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the composite image given pixel height logits and a soft global assignment.
+    global_colors: (max_layers, 3) and global_TDs: (max_layers,) are used per layer.
+    """
     H, W = pixel_height_logits.shape
-
-    # Compute per-pixel continuous height
-    pixel_height = (max_layers * h) * torch.sigmoid(pixel_height_logits)  # shape (H, W)
-    continuous_layers = pixel_height / h  # shape (H, W)
-    adaptive_layers = adaptive_round(continuous_layers, tau_height, 0.1, 0.01, 0.1)  # shape (H, W)
+    pixel_height = (max_layers * h) * torch.sigmoid(pixel_height_logits)  # (H,W)
+    continuous_layers = pixel_height / h  # (H,W)
+    adaptive_layers = adaptive_round(continuous_layers, tau_height, 0.1, 0.01, 0.1)
     hard_round = torch.round(continuous_layers)
-    discrete_layers = torch.round(hard_round + (adaptive_layers - hard_round).detach()).to(torch.int64)  # shape (H, W)
+    discrete_layers = torch.round(hard_round + (adaptive_layers - hard_round).detach()).to(torch.int64)  # (H,W)
 
-    # Create a layers index tensor of shape (max_layers, 1, 1)
     layers = torch.arange(max_layers, device=pixel_height_logits.device).view(max_layers, 1, 1)
-    mask = (layers < discrete_layers.unsqueeze(0)).to(torch.float32)  # shape (max_layers, H, W)
-    eff_thick = mask * h  # shape (max_layers, H, W)
+    mask = (layers < discrete_layers.unsqueeze(0)).to(torch.float32)  # (max_layers, H, W)
+    eff_thick = mask * h  # (max_layers, H, W)
 
-    # Get per-layer material properties from global_material_indices.
-    # global_material_indices is of shape (max_layers,)
-    colors = material_colors[global_material_indices]  # shape (max_layers, 3)
-    TDs = (material_TDs[global_material_indices] * 0.1).view(max_layers, 1, 1)  # shape (max_layers, 1, 1)
-
-    # Compute opacity for each layer at every pixel.
     A: float = 0.1215
     k: float = 61.6970
     b: float = 0.4773
+    # For each layer j, use the corresponding TD from global_TDs:
+    # Expand global_TDs to (max_layers, 1, 1)
+    TDs = global_TDs.view(max_layers, 1, 1) * 0.1
+
     opac = A * torch.log(1 + k * (eff_thick / TDs)) + b * (eff_thick / TDs)
-    opac = torch.clamp(opac, 0.0, 1.0)  # shape (max_layers, H, W)
+    opac = torch.clamp(opac, 0.0, 1.0)
+    opac = opac.flip(0)
+    colors = global_colors.flip(0)  # (max_layers, 3)
 
-    # We need to accumulate contributions from layers from top (highest index) down to bottom.
-    # Reverse the order so that index 0 is the top layer.
-    opac = opac.flip(0)  # shape (max_layers, H, W)
-    colors = colors.flip(0)  # shape (max_layers, 3)
-
-    # Initialize composite image and remaining "ink"
     comp = torch.zeros((H, W, 3), dtype=torch.float32, device=pixel_height_logits.device)
     remaining = torch.ones((H, W), dtype=torch.float32, device=pixel_height_logits.device)
-
-    # Loop over layers (this loop now runs only max_layers times, which is small)
     for j in range(max_layers):
-        # Get the j-th layer's opacity map (H, W)
-        opac_j = opac[j]  # shape (H, W)
-        # Get the j-th layer's color (3,), then expand to (H, W, 3)
+        opac_j = opac[j]  # (H, W)
         color_j = colors[j].view(1, 1, 3)
         comp = comp + remaining.unsqueeze(-1) * opac_j.unsqueeze(-1) * color_j
         remaining = remaining * (1 - opac_j)
     result = comp + remaining.unsqueeze(-1) * background.view(1, 1, 3)
     return result * 255.0
+
 
 @torch.jit.script
 def huber_loss(pred: torch.Tensor, target: torch.Tensor, delta: float = 0.1) -> torch.Tensor:
@@ -213,137 +220,93 @@ def huber_loss(pred: torch.Tensor, target: torch.Tensor, delta: float = 0.1) -> 
 
 
 
-def perceptual_loss_fn(pixel_height_logits: torch.Tensor,
-                       global_material_indices: torch.Tensor,
-                       target: torch.Tensor,
-                       tau_height: float,
-                       h: float,
-                       max_layers: int,
-                       material_colors: torch.Tensor,
-                       material_TDs: torch.Tensor,
-                       background: torch.Tensor,
+def perceptual_loss_fn(compare_image: torch.Tensor,
+                       target_image: torch.Tensor,
+                       perceptual_weight: float,
+                       mse_weight: float,
                        perceptual_module: nn.Module) -> torch.Tensor:
     """
     Computes the perceptual loss between the composite image (computed via your
     vectorized composite_image function) and the target image. Both images are converted
     to shape (1, 3, H, W) and then passed through the perceptual network.
     """
-    comp = composite_image(pixel_height_logits, global_material_indices, tau_height,
-                           h, max_layers, material_colors, material_TDs, background)
-    # Convert composite and target to (1, 3, H, W)
-    comp_batch = comp.permute(2, 0, 1).unsqueeze(0)
-    target_batch = target.permute(2, 0, 1).unsqueeze(0)
-    return perceptual_module(comp_batch, target_batch) + F.mse_loss(comp_batch, target_batch)
+    comp_batch = compare_image.permute(2, 0, 1).unsqueeze(0)
+    target_batch = target_image.permute(2, 0, 1).unsqueeze(0)
+    perc_loss = perceptual_module(comp_batch, target_batch) * perceptual_weight if perceptual_weight > 0 else 0
+    mse_loss = F.mse_loss(comp_batch, target_batch) * mse_weight if mse_weight > 0 else 0
+    mse_loss = mse_loss / 1000 # we divide by 1000 to bring it to the same scale as the perceptual loss
+    loss = perc_loss + mse_loss
+    #perceptual_module(comp_batch, target_batch) +
+    return loss
 
-
-def create_update_step(optimizer, loss_function, h, max_layers, material_colors, material_TDs, background):
+def optimize_color_assignment(pixel_height_logits: torch.Tensor,
+                              target: torch.Tensor,
+                              h: float,
+                              max_layers: int,
+                              material_colors: torch.Tensor,
+                              material_TDs: torch.Tensor,
+                              background: torch.Tensor,
+                              num_swaps: int,
+                              initial_tau: float,
+                              final_tau: float,
+                              perceptual_module: nn.Module,
+                              num_iters: int,
+                              lr: float,
+                              device) -> (torch.Tensor, torch.Tensor):
     """
-    Create a JIT-compiled update step function using the specified loss function.
-
-    Args:
-        optimizer (optax.GradientTransformation): The optimizer to use for updating parameters.
-        loss_function (callable): The loss function to compute gradients.
-        h (float): Layer thickness.
-        max_layers (int): Maximum number of layers.
-        material_colors (jnp.ndarray): Array of material colors.
-        material_TDs (jnp.ndarray): Array of material transmission/opacity parameters.
-        background (jnp.ndarray): Background color.
-
-    Returns:
-        callable: A JIT-compiled function that performs a single update step.
+    Jointly optimize the low-dimensional parameters that define the global color assignment.
+    Returns a tuple (global_colors, global_TDs) from the optimized parameters.
     """
+    num_materials = material_colors.size(0)
+    swap_params = nn.Parameter(torch.randn(num_swaps, device=device))
+    color_logits = nn.Parameter(torch.randn(num_swaps + 1, num_materials, device=device))
+    optimizer = torch.optim.Adam([swap_params, color_logits], lr=lr)
 
-    @jax.jit
-    def update_step(params, target, global_material_indices, tau_height, opt_state):
-        loss_val, grads = jax.value_and_grad(loss_function)(
-            params, global_material_indices, target, tau_height, h, max_layers, material_colors, material_TDs,
-            background)
-        updates, new_opt_state = optimizer.update(grads, opt_state)
-        new_params = optax.apply_updates(params, updates)
-        return new_params, new_opt_state, loss_val
+    best_loss = float('inf')
+    best_params = None
 
-    return update_step
+    initial_warmup_iters = num_iters // 4
+    tbar = tqdm(range(num_iters))
+    for it in tbar:
 
+        if it < initial_warmup_iters:
+            tau = initial_tau
+        else:
+            tau = initial_tau + (final_tau - initial_tau) * (it - initial_warmup_iters) / (num_iters - initial_warmup_iters)
 
+        global_colors, global_TDs = decode_assignment(swap_params, color_logits, max_layers,
+                                                      material_colors, material_TDs, tau)
+        comp = composite_image_soft(pixel_height_logits, global_colors, global_TDs,
+                                    tau_height=final_tau, h=h, max_layers=max_layers,
+                                    background=background)
 
-# A helper for decoding a GA individual into a full material assignment.
-def decode_gene(swap_positions, segment_colors, max_layers):
-    gene_array = np.empty(max_layers, dtype=np.int32)
-    prev = 0
-    for pos, color in zip(swap_positions, segment_colors):
-        gene_array[prev:pos] = color
-        prev = pos
-    gene_array[prev:max_layers] = segment_colors[-1]
-    return gene_array
+        loss = perceptual_loss_fn(comp, target,  10.0, 1.0, perceptual_module)
 
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
-def genetic_algorithm_color_swaps(pixel_height_logits, target, tau_height, h, max_layers,
-                                  material_colors, material_TDs, background, num_swaps,
-                                  material_count, population_size=50, generations=100,
-                                  mutation_rate=0.1, visualize=False, perceptual_module=None):
-    """
-    Use a genetic algorithm to optimize the global color assignment.
-    Each individual is represented as a tuple (swap_positions, segment_colors),
-    and is decoded into a full material assignment.
-    """
-    import random as pyrandom
+        if it % 10 == 0:
 
-    def random_individual():
-        swap_positions = np.sort(np.random.choice(np.arange(1, max_layers), size=num_swaps, replace=False))
-        segment_colors = np.random.randint(0, material_count, size=num_swaps + 1)
-        return (swap_positions, segment_colors)
+            global_colors, global_TDs = decode_assignment(swap_params, color_logits, max_layers,
+                                                          material_colors, material_TDs, final_tau)
+            comp_val = composite_image_soft(pixel_height_logits, global_colors, global_TDs,
+                                        tau_height=final_tau, h=h, max_layers=max_layers,
+                                        background=background)
+            val_loss = perceptual_loss_fn(comp_val, target, 0.0, 1.0, perceptual_module)
 
-    def fitness(individual):
-        swap_positions, segment_colors = individual
-        candidate = decode_gene(swap_positions, segment_colors, max_layers)
-        candidate_tensor = torch.tensor(candidate, dtype=torch.int64, device=pixel_height_logits.device)
-        # Use the composite image (from your fast vectorized function) as input.
-        loss_val = perceptual_loss_fn(pixel_height_logits, candidate_tensor, target,
-                                      tau_height, h, max_layers,
-                                      material_colors, material_TDs, background,
-                                      perceptual_module)
-        return loss_val.item()
+            if val_loss < best_loss:
+                best_loss = val_loss
+                #deep copy the parameters
+                best_params = (swap_params.clone(), color_logits.clone())
+                comp_val_np = comp_val.cpu().detach().numpy().clip(0, 255).astype(np.uint8)
+                plt.imshow(comp_val_np)
+                plt.title(f"Iter {it}")
+                plt.pause(0.1)
+            tbar.set_description(f"Iter {it}/{num_iters}, Loss: {loss.item():.4f}, Val Loss: {best_loss.item():.4f}, tau: {tau:.4f}")
+    # Return the final global assignment.
+    return best_params
 
-    population = [random_individual() for _ in range(population_size)]
-    best_individual = None
-    best_fitness = float('inf')
-    for gen in tqdm(range(generations)):
-        fitness_values = [fitness(ind) for ind in population]
-        for ind, fit in zip(population, fitness_values):
-            if fit < best_fitness:
-                best_fitness = fit
-                best_individual = ind
-        print(f"Generation {gen}, best fitness: {best_fitness:.4f}, best gene: {best_individual}")
-        if visualize:
-            swap_positions, segment_colors = best_individual
-            candidate = decode_gene(swap_positions, segment_colors, max_layers)
-            candidate_tensor = torch.tensor(candidate, dtype=torch.int64)
-            comp = composite_image(pixel_height_logits, candidate_tensor, tau_height,
-                                   h, max_layers, material_colors, material_TDs, background)
-            comp_np = comp.cpu().numpy().astype(np.uint8)
-            plt.imshow(comp_np)
-            plt.title(f"Generation {gen}, Loss: {best_fitness:.4f}")
-            plt.pause(0.001)
-        new_population = []
-        while len(new_population) < population_size:
-            ind1 = min(pyrandom.sample(population, 3), key=lambda x: fitness(x))
-            ind2 = min(pyrandom.sample(population, 3), key=lambda x: fitness(x))
-            swap_pos1, seg_colors1 = ind1
-            swap_pos2, seg_colors2 = ind2
-            child_swap = np.array([np.random.choice([a, b]) for a, b in zip(swap_pos1, swap_pos2)])
-            child_swap = np.sort(child_swap)
-            child_seg = np.array([np.random.choice([a, b]) for a, b in zip(seg_colors1, seg_colors2)])
-            if np.random.rand() < mutation_rate:
-                idx = np.random.randint(0, num_swaps)
-                child_swap[idx] = np.clip(child_swap[idx] + np.random.randint(-5, 6), 1, max_layers - 1)
-                child_swap = np.sort(child_swap)
-            if np.random.rand() < mutation_rate:
-                idx = np.random.randint(0, num_swaps + 1)
-                child_seg[idx] = np.random.randint(0, material_count)
-            new_population.append((child_swap, child_seg))
-        population = new_population
-    best_global_material_indices = decode_gene(best_individual[0], best_individual[1], max_layers)
-    return torch.tensor(best_global_material_indices, dtype=torch.int64), best_fitness
 
 def main():
     parser = configargparse.ArgParser()
@@ -359,13 +322,14 @@ def main():
     parser.add_argument("--background_color", type=str, default="#000000", help="Background color")
     parser.add_argument("--output_size", type=int, default=1024, help="Maximum dimension for target image")
     parser.add_argument("--solver_size", type=int, default=128, help="Maximum dimension for target image")
-    parser.add_argument("--decay", type=float, default=0.01, help="Final tau value for optimization")
+
+    parser.add_argument("--decay", type=float, default=0.001, help="Final tau value for optimization")
     parser.add_argument("--visualize", action="store_true", help="Enable visualization during optimization")
-    parser.add_argument("--num_color_swaps", type=int, default=40, help="Number of color swaps for genetic algorithm")
-    parser.add_argument("--ga_population", type=int, default=50, help="GA population size")
-    parser.add_argument("--ga_generations", type=int, default=200, help="Number of GA generations")
-    parser.add_argument("--ga_mutation_rate", type=float, default=0.1, help="GA mutation rate")
+    parser.add_argument("--max_num_color_swaps", type=int, default=5, help="Number of color swaps for genetic algorithm")
+
+
     parser.add_argument("--save_interval_pct", type=float, default=20,help="Percentage interval to save intermediate results")
+
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
@@ -384,7 +348,6 @@ def main():
     h_value = args.layer_height
     max_layers_value = args.max_layers
     background_height_value = args.background_height
-    decay_v_value = args.decay
 
     background_rgb = hex_to_rgb(args.background_color)
     background = torch.tensor(background_rgb, dtype=torch.float32, device=device)
@@ -392,7 +355,6 @@ def main():
     material_colors, material_TDs, material_names, material_hex = load_materials(args.csv_file)
     material_colors = torch.tensor(material_colors, dtype=torch.float32, device=device)
     material_TDs = torch.tensor(material_TDs, dtype=torch.float32, device=device)
-    material_count = material_colors.size(0)
 
     img = cv2.imread(args.input_image)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -411,30 +373,19 @@ def main():
     perceptual_module.eval()
     perceptual_module = torch.compile(perceptual_module)
 
-
-    # For optimization, we use a default material assignment (e.g. all zeros)
-    #global_material_indices = torch.zeros(max_layers_value, dtype=torch.int64)
-
-    # Optimize pixel height logits using PyTorch.
-    # best_pixel_height_logits, opt_loss = run_optimizer(
-    #     target, pixel_height_logits_solver, global_material_indices,
-    #     tau_init=1.0, h=h_value, max_layers=max_layers_value,
-    #     material_colors=material_colors, material_TDs=material_TDs,
-    #     background=background, num_iters=args.iterations,
-    #     learning_rate=args.learning_rate, decay_v=decay_v_value,
-    #     visualize=args.visualize
-    # )
-    # print("Optimization loss:", opt_loss)
-
-    # Run the genetic algorithm to optimize material (color) swaps.
-    best_global_material_indices, ga_fitness = genetic_algorithm_color_swaps(
-        pixel_height_logits_solver, target, decay_v_value, h_value, max_layers_value,
-        material_colors, material_TDs, background, args.num_color_swaps,
-        material_count, population_size=args.ga_population,
-        generations=args.ga_generations, mutation_rate=args.ga_mutation_rate,
-        visualize=args.visualize, perceptual_module=perceptual_module
-    )
-    print("GA best fitness (loss):", ga_fitness)
+    # Optimize the color assignment parameters by gradient descent.
+    global_assignment = optimize_color_assignment(pixel_height_logits_solver, target,
+                                                  h=args.layer_height, max_layers=args.max_layers,
+                                                  material_colors=material_colors,
+                                                  material_TDs=material_TDs,
+                                                  background=background,
+                                                  num_swaps=args.max_num_color_swaps,
+                                                  initial_tau=1,
+                                                  final_tau=args.decay,
+                                                  perceptual_module=perceptual_module,
+                                                  num_iters=args.iterations,
+                                                  lr=args.learning_rate,
+                                                  device=device)
 
 
     if args.perform_pruning:

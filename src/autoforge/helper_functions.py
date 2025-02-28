@@ -443,7 +443,7 @@ def init_height_map(target,max_layers,h,eps = 1e-6):
         return 0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2]
 
     # --- Step 2: Second clustering of centroids into bands ---
-    num_bands = 5
+    num_bands = 8
     band_kmeans = KMeans(n_clusters=num_bands).fit(centroids)
     band_labels = band_kmeans.labels_
 
