@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import math
 
+import torch
 from skimage.color import rgb2lab
 from sklearn.cluster import KMeans
 from tqdm import tqdm
@@ -256,40 +257,53 @@ def load_materials_data(csv_filename):
     return records
 
 
-def extract_filament_swaps(disc_global, disc_height_image, background_layers):
+def extract_filament_swaps(global_colors: torch.tensor, disc_height_image: np.ndarray, background_layers: int, material_colors: torch.tensor):
     """
-    Given the discrete global material assignment (disc_global) and the discrete height image,
-    extract the list of material indices (one per swap point) and the corresponding slider
-    values (which indicate at which layer the material change occurs).
+    Given the optimized global color assignment (global_colors, shape: (max_layers, 3))
+    and the discrete height image (disc_height_image, shape: (H, W)), as well as the
+    number of background layers, this function computes a discrete material assignment
+    by matching each layer's color (from global_colors) to the closest fixed palette color.
+
+    Then, it extracts the list of filament indices (material indices) and slider values
+    (layer numbers where the material changes) to generate swap instructions.
 
     Args:
-        disc_global (jnp.ndarray): Discrete global material assignments.
-        disc_height_image (jnp.ndarray): Discrete height image.
+        global_colors (torch.Tensor or np.ndarray): Optimized soft global color assignment (max_layers, 3).
+        disc_height_image (np.ndarray): Discrete height image.
         background_layers (int): Number of background layers.
+        material_colors (torch.Tensor or np.ndarray): Fixed material color palette (num_materials, 3).
 
     Returns:
-        tuple: A tuple containing:
-            - filament_indices (list): List of material indices for each swap point.
-            - slider_values (list): List of layer numbers where a material change occurs.
+        filament_indices (list): List of discrete material indices (one per swap).
+        slider_values (list): List of layer numbers where a swap occurs.
     """
-    # L is the total number of layers printed (maximum value in the height image)
-    L = int(np.max(np.array(disc_height_image)))
+    # Convert inputs to numpy arrays if necessary.
+    if torch.is_tensor(global_colors):
+        global_colors = global_colors.cpu().detach().numpy()
+    if torch.is_tensor(material_colors):
+        material_colors = material_colors.cpu().detach().numpy()
+
+    # For each layer, assign the material whose color is closest (Euclidean distance).
+    # global_colors: (max_layers, 3), material_colors: (num_materials, 3)
+    diff = global_colors[:, None, :] - material_colors[None, :, :]  # (max_layers, num_materials, 3)
+    distances = np.linalg.norm(diff, axis=2)  # (max_layers, num_materials)
+    disc_global = np.argmin(distances, axis=1)  # (max_layers,) discrete assignment
+
+    # Now, similar to the original function, determine swap points.
+    L = int(np.max(disc_height_image))
     filament_indices = []
     slider_values = []
     prev = int(disc_global[0])
     for i in range(L):
         current = int(disc_global[i])
-        # If this is the first layer or the material changes from the previous layer…
         if current != prev:
-            slider = (i + background_layers)-1
+            slider = (i + background_layers) - 1
             slider_values.append(slider)
             filament_indices.append(prev)
         prev = current
-    # Add the last material index
     filament_indices.append(prev)
     slider = i + background_layers
     slider_values.append(slider)
-
     return filament_indices, slider_values
 
 

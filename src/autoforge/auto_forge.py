@@ -10,6 +10,7 @@ import time
 import configargparse
 import cv2
 import torch
+from torchvision.models import VGG16_Weights
 
 from autoforge.helper_functions import hex_to_rgb, load_materials, \
     generate_stl, generate_swap_instructions, generate_project_file, init_height_map, resize_image
@@ -39,7 +40,7 @@ class MultiLayerVGGPerceptualLoss(nn.Module):
         self.layers = layers
 
         # Load pretrained VGG16 and freeze parameters.
-        vgg = models.vgg16(pretrained=True).features
+        vgg = models.vgg16(weights=VGG16_Weights.DEFAULT).features
         for param in vgg.parameters():
             param.requires_grad = False
 
@@ -85,7 +86,7 @@ def decode_assignment(swap_params: torch.Tensor,
                       max_layers: int,
                       material_colors: torch.Tensor,
                       material_TDs: torch.Tensor,
-                      tau: float) -> (torch.Tensor, torch.Tensor):
+                      tau: float,hard: bool = False) -> (torch.Tensor, torch.Tensor):
     """
     Given learnable parameters:
       - swap_params: (num_swaps,) that control where color swaps occur,
@@ -128,7 +129,7 @@ def decode_assignment(swap_params: torch.Tensor,
     segment_colors = []
     segment_TDs = []
     for i in range(num_segments):
-        probs = F.gumbel_softmax(color_logits[i], tau=tau, hard=False)  # (num_materials,)
+        probs = F.gumbel_softmax(color_logits[i], tau=tau, hard=hard)  # (num_materials,)
         color_i = torch.matmul(probs, material_colors)  # (3,)
         td_i = torch.dot(probs, material_TDs)  # scalar
         segment_colors.append(color_i)
@@ -136,12 +137,19 @@ def decode_assignment(swap_params: torch.Tensor,
     segment_colors = torch.stack(segment_colors, dim=0)  # (num_segments, 3)
     segment_TDs = torch.stack(segment_TDs, dim=0)  # (num_segments,)
 
-    # Combine segments for each layer:
-    # memberships: (num_segments, max_layers) --> transpose to (max_layers, num_segments)
-    global_colors = torch.matmul(memberships.t(), segment_colors)  # (max_layers, 3)
-    global_TDs = torch.matmul(memberships.t(), segment_TDs.unsqueeze(1))  # (max_layers, 1)
-    global_TDs = global_TDs.squeeze(1)  # (max_layers,)
-    return global_colors, global_TDs
+    if hard:
+        # For each layer, select the segment with the highest membership.
+        hard_assignments = torch.argmax(memberships, dim=0)  # (max_layers,)
+        global_colors = segment_colors[hard_assignments]  # (max_layers, 3)
+        global_TDs = segment_TDs[hard_assignments]  # (max_layers,)
+        return global_colors, global_TDs
+    else:
+        # Combine segments for each layer:
+        # memberships: (num_segments, max_layers) --> transpose to (max_layers, num_segments)
+        global_colors = torch.matmul(memberships.t(), segment_colors)  # (max_layers, 3)
+        global_TDs = torch.matmul(memberships.t(), segment_TDs.unsqueeze(1))  # (max_layers, 1)
+        global_TDs = global_TDs.squeeze(1)  # (max_layers,)
+        return global_colors, global_TDs
 
 # An adaptive round function that chooses a soft or hard round based on tau.
 @torch.jit.script
@@ -338,7 +346,7 @@ def optimize_color_assignment(pixel_height_logits: torch.Tensor,
         if it % 10 == 0:
 
             global_colors, global_TDs = decode_assignment(swap_params, color_logits, max_layers,
-                                                          material_colors, material_TDs, final_tau)
+                                                          material_colors, material_TDs, final_tau,hard=True)
             comp_val = composite_image_soft(pixel_height_logits, global_colors, global_TDs,
                                         tau_height=final_tau, h=h, max_layers=max_layers,
                                         background=background)
@@ -354,7 +362,9 @@ def optimize_color_assignment(pixel_height_logits: torch.Tensor,
                 plt.pause(0.1)
             tbar.set_description(f"Iter {it}/{num_iters}, Loss: {loss.item():.4f}, Val Loss: {best_loss.item():.4f}, tau: {tau:.4f}")
     # Return the final global assignment.
-    return best_params
+    global_colors, global_TDs = decode_assignment(best_params[0], best_params[1], max_layers,
+                                                  material_colors, material_TDs, final_tau,hard=True)
+    return global_colors, global_TDs
 
 
 def main():
@@ -364,7 +374,7 @@ def main():
     parser.add_argument("--csv_file", type=str, required=True, help="Path to CSV file with material data")
     parser.add_argument("--output_folder", type=str, default="output", help="Folder to write outputs")
     parser.add_argument("--iterations", type=int, default=10000, help="Number of optimization iterations")
-    parser.add_argument("--learning_rate", type=float, default=5e-3, help="Learning rate for optimization")
+    parser.add_argument("--learning_rate", type=float, default=1e-2, help="Learning rate for optimization")
     parser.add_argument("--layer_height", type=float, default=0.04, help="Layer thickness in mm")
     parser.add_argument("--max_layers", type=int, default=75, help="Maximum number of layers")
     parser.add_argument("--background_height", type=float, default=0.4, help="Height of the background in mm")
@@ -423,7 +433,7 @@ def main():
     perceptual_module = torch.compile(perceptual_module)
 
     # Optimize the color assignment parameters by gradient descent.
-    global_assignment = optimize_color_assignment(pixel_height_logits_solver, target,
+    global_colors, global_TDs = optimize_color_assignment(pixel_height_logits_solver, target,
                                                   h=args.layer_height, max_layers=args.max_layers,
                                                   material_colors=material_colors,
                                                   material_TDs=material_TDs,
@@ -435,8 +445,8 @@ def main():
                                                   num_iters=args.iterations,
                                                   lr=args.learning_rate,
                                                   device=device)
-
-
+    print(global_colors,global_TDs)
+    # Generate the final composite image and save it.
     if args.perform_pruning:
         disc_global = pruning(output_target,best_params,disc_global,tau_global_disc,val_gumbel_keys,h_value,args.max_layers,material_colors,material_TDs,background,max_loss_increase=args.pruning_max_loss_increase)
 
