@@ -239,6 +239,8 @@ def perceptual_loss_fn(compare_image: torch.Tensor,
     #perceptual_module(comp_batch, target_batch) +
     return loss
 
+
+
 def optimize_color_assignment(pixel_height_logits: torch.Tensor,
                               target: torch.Tensor,
                               h: float,
@@ -260,7 +262,29 @@ def optimize_color_assignment(pixel_height_logits: torch.Tensor,
     num_materials = material_colors.size(0)
     swap_params = nn.Parameter(torch.randn(num_swaps, device=device))
     color_logits = nn.Parameter(torch.randn(num_swaps + 1, num_materials, device=device))
-    optimizer = torch.optim.Adam([swap_params, color_logits], lr=lr)
+    optimizer = torch.optim.AdamW([swap_params, color_logits], lr=lr,weight_decay=1e-2)
+
+    warmup_steps = num_iters // 4
+    decay_rate = -math.log(final_tau) / (num_iters - warmup_steps)
+
+    def get_tau(i, tau_init=1.0, tau_final=final_tau, decay_rate=decay_rate):
+        """
+        Compute the tau value for the current iteration.
+
+        Args:
+            i (int): Current iteration.
+            tau_init (float): Initial tau value.
+            tau_final (float): Final tau value.
+            decay_rate (float): Decay rate for tau.
+
+        Returns:
+            float: The computed tau value.
+        """
+        if i < warmup_steps:
+            return tau_init
+        else:
+            return max(tau_final, tau_init * math.exp(-decay_rate * (i - warmup_steps)))
+
 
     best_loss = float('inf')
     best_params = None
@@ -269,10 +293,7 @@ def optimize_color_assignment(pixel_height_logits: torch.Tensor,
     tbar = tqdm(range(num_iters))
     for it in tbar:
 
-        if it < initial_warmup_iters:
-            tau = initial_tau
-        else:
-            tau = initial_tau + (final_tau - initial_tau) * (it - initial_warmup_iters) / (num_iters - initial_warmup_iters)
+        tau = get_tau(it, tau_init=initial_tau, tau_final=final_tau, decay_rate=decay_rate)
 
         global_colors, global_TDs = decode_assignment(swap_params, color_logits, max_layers,
                                                       material_colors, material_TDs, tau)
@@ -280,7 +301,7 @@ def optimize_color_assignment(pixel_height_logits: torch.Tensor,
                                     tau_height=final_tau, h=h, max_layers=max_layers,
                                     background=background)
 
-        loss = perceptual_loss_fn(comp, target,  10.0, 1.0, perceptual_module)
+        loss = perceptual_loss_fn(comp, target,  5.0, 1.0, perceptual_module)
 
         optimizer.zero_grad()
         loss.backward()
@@ -293,11 +314,12 @@ def optimize_color_assignment(pixel_height_logits: torch.Tensor,
             comp_val = composite_image_soft(pixel_height_logits, global_colors, global_TDs,
                                         tau_height=final_tau, h=h, max_layers=max_layers,
                                         background=background)
-            val_loss = perceptual_loss_fn(comp_val, target, 0.0, 1.0, perceptual_module)
+            val_loss = perceptual_loss_fn(comp_val, target, 1.0, 0.0, perceptual_module)
 
             if val_loss < best_loss:
                 best_loss = val_loss
                 #deep copy the parameters
+                print(global_colors)
                 best_params = (swap_params.clone(), color_logits.clone())
                 comp_val_np = comp_val.cpu().detach().numpy().clip(0, 255).astype(np.uint8)
                 plt.imshow(comp_val_np)
@@ -314,7 +336,7 @@ def main():
     parser.add_argument("--input_image", type=str, required=True, help="Path to input image")
     parser.add_argument("--csv_file", type=str, required=True, help="Path to CSV file with material data")
     parser.add_argument("--output_folder", type=str, default="output", help="Folder to write outputs")
-    parser.add_argument("--iterations", type=int, default=5000, help="Number of optimization iterations")
+    parser.add_argument("--iterations", type=int, default=10000, help="Number of optimization iterations")
     parser.add_argument("--learning_rate", type=float, default=1e-2, help="Learning rate for optimization")
     parser.add_argument("--layer_height", type=float, default=0.04, help="Layer thickness in mm")
     parser.add_argument("--max_layers", type=int, default=75, help="Maximum number of layers")
