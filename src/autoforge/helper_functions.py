@@ -1,29 +1,20 @@
-
 import json
 import os
-import random
+import struct
 import uuid
 from itertools import permutations
 
-import configargparse
 import cv2
-import optax
-import matplotlib.pyplot as plt
 import numpy as np
-import math
-
+import pandas as pd
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.models as models
 from skimage.color import rgb2lab
 from sklearn.cluster import KMeans
+from torchvision.models import VGG16_Weights
 from tqdm import tqdm
-import pandas as pd
-
-import os
-import json
-import pandas as pd
-import numpy as np
-
-import struct
 
 
 def extract_colors_from_swatches(swatch_data):
@@ -257,53 +248,40 @@ def load_materials_data(csv_filename):
     return records
 
 
-def extract_filament_swaps(global_colors: torch.tensor, disc_height_image: np.ndarray, background_layers: int, material_colors: torch.tensor):
+def extract_filament_swaps(disc_global, disc_height_image, background_layers):
     """
-    Given the optimized global color assignment (global_colors, shape: (max_layers, 3))
-    and the discrete height image (disc_height_image, shape: (H, W)), as well as the
-    number of background layers, this function computes a discrete material assignment
-    by matching each layer's color (from global_colors) to the closest fixed palette color.
-
-    Then, it extracts the list of filament indices (material indices) and slider values
-    (layer numbers where the material changes) to generate swap instructions.
+    Given the discrete global material assignment (disc_global) and the discrete height image,
+    extract the list of material indices (one per swap point) and the corresponding slider
+    values (which indicate at which layer the material change occurs).
 
     Args:
-        global_colors (torch.Tensor or np.ndarray): Optimized soft global color assignment (max_layers, 3).
-        disc_height_image (np.ndarray): Discrete height image.
+        disc_global (jnp.ndarray): Discrete global material assignments.
+        disc_height_image (jnp.ndarray): Discrete height image.
         background_layers (int): Number of background layers.
-        material_colors (torch.Tensor or np.ndarray): Fixed material color palette (num_materials, 3).
 
     Returns:
-        filament_indices (list): List of discrete material indices (one per swap).
-        slider_values (list): List of layer numbers where a swap occurs.
+        tuple: A tuple containing:
+            - filament_indices (list): List of material indices for each swap point.
+            - slider_values (list): List of layer numbers where a material change occurs.
     """
-    # Convert inputs to numpy arrays if necessary.
-    if torch.is_tensor(global_colors):
-        global_colors = global_colors.cpu().detach().numpy()
-    if torch.is_tensor(material_colors):
-        material_colors = material_colors.cpu().detach().numpy()
-
-    # For each layer, assign the material whose color is closest (Euclidean distance).
-    # global_colors: (max_layers, 3), material_colors: (num_materials, 3)
-    diff = global_colors[:, None, :] - material_colors[None, :, :]  # (max_layers, num_materials, 3)
-    distances = np.linalg.norm(diff, axis=2)  # (max_layers, num_materials)
-    disc_global = np.argmin(distances, axis=1)  # (max_layers,) discrete assignment
-
-    # Now, similar to the original function, determine swap points.
-    L = int(np.max(disc_height_image))
+    # L is the total number of layers printed (maximum value in the height image)
+    L = int(np.max(np.array(disc_height_image)))
     filament_indices = []
     slider_values = []
     prev = int(disc_global[0])
     for i in range(L):
         current = int(disc_global[i])
+        # If this is the first layer or the material changes from the previous layer…
         if current != prev:
-            slider = (i + background_layers) - 1
+            slider = (i + background_layers)-1
             slider_values.append(slider)
             filament_indices.append(prev)
         prev = current
+    # Add the last material index
     filament_indices.append(prev)
     slider = i + background_layers
     slider_values.append(slider)
+
     return filament_indices, slider_values
 
 
@@ -567,3 +545,132 @@ def load_materials(csv_filename):
     material_colors = np.array([hex_to_rgb(color) for color in colors_list], dtype=np.float64)
     material_TDs = np.array(material_TDs, dtype=np.float64)
     return material_colors, material_TDs, material_names, colors_list
+
+def count_distinct_colors(dg: torch.Tensor) -> int:
+    """
+    Count how many distinct color/material IDs appear in dg.
+    """
+    unique_mats = torch.unique(dg)
+    return len(unique_mats)
+
+def count_swaps(dg: torch.Tensor) -> int:
+    """
+    Count how many color changes (swaps) occur between adjacent layers.
+    """
+    # A 'swap' is whenever dg[i] != dg[i+1].
+    return int((dg[:-1] != dg[1:]).sum().item())
+
+def merge_color(dg: torch.Tensor, c_from: int, c_to: int) -> torch.Tensor:
+    """
+    Return a copy of dg where every layer with material c_from is replaced by c_to.
+    """
+    dg_new = dg.clone()
+    dg_new[dg_new == c_from] = c_to
+    return dg_new
+
+def find_color_bands(dg: torch.Tensor):
+    """
+    Return a list of (start_idx, end_idx, color_id) for each contiguous band
+    in 'dg'. Example: if dg = [0,0,1,1,1,2,2], we get:
+       [(0,1,0), (2,4,1), (5,6,2)]
+    """
+    bands = []
+    dg_cpu = dg.detach().cpu().numpy()
+    start_idx = 0
+    current_color = dg_cpu[0]
+    n = len(dg_cpu)
+
+    for i in range(1, n):
+        if dg_cpu[i] != current_color:
+            # finish previous band
+            bands.append((start_idx, i - 1, current_color))
+            # start new band
+            start_idx = i
+            current_color = dg_cpu[i]
+    # finish last band
+    bands.append((start_idx, n - 1, current_color))
+
+    return bands
+
+
+def merge_bands(dg: torch.Tensor,
+                band_a: (int, int, int),
+                band_b: (int, int, int),
+                direction: str):
+    """
+    Merge band_a and band_b.  If direction == "forward", we unify the color of band_b
+    to be band_a's color. If direction == "backward", unify band_a's color to band_b.
+
+    band_a, band_b = (start_idx, end_idx, color_id)
+
+    We assume band_a and band_b are *adjacent* in the layering order, i.e. band_a.end+1 == band_b.start
+    or vice versa.
+    """
+    dg_new = dg.clone()
+    c_a = band_a[2]
+    c_b = band_b[2]
+
+    if direction == "forward":
+        # unify band_b to c_a
+        dg_new[(band_b[0]):(band_b[1] + 1)] = c_a
+    else:
+        # unify band_a to c_b
+        dg_new[(band_a[0]):(band_a[1] + 1)] = c_b
+
+    return dg_new
+
+
+
+class MultiLayerVGGPerceptualLoss(nn.Module):
+    def __init__(self, layers: list = None, weights: list = None):
+        """
+        Uses a pretrained VGG16 model to extract features from multiple layers.
+        By default, it uses layers [3, 8, 15, 22] (approximately conv1_2, conv2_2, conv3_3, conv4_3).
+        """
+        super(MultiLayerVGGPerceptualLoss, self).__init__()
+        # Choose layers from VGG16.features
+        if layers is None:
+            layers = [8,]
+        self.layers = layers
+
+        # Load pretrained VGG16 and freeze parameters.
+        vgg = models.vgg16(weights=VGG16_Weights.DEFAULT).features
+        for param in vgg.parameters():
+            param.requires_grad = False
+
+        # We want to run the network up to the highest required layer.
+        self.vgg = nn.Sequential(*[vgg[i] for i in range(max(layers) + 1)]).eval()
+
+        # Weights for each selected layer loss; default: equal weighting.
+        if weights is None:
+            weights = [1.0 / len(layers)] * len(layers)
+        self.weights = weights
+
+        # Register ImageNet normalization constants as buffers.
+        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """
+        x and y are expected to be of shape (N, 3, H, W) with values in [0, 255].
+        They are normalized to ImageNet stats and then passed through VGG16.
+        The loss is computed as a weighted sum of MSE losses on the selected layers.
+        """
+        # Normalize images
+        x = (x / 255.0 - self.mean) / self.std
+        y = (y / 255.0 - self.mean) / self.std
+
+        loss = 0.0
+        out = x
+        # Loop through VGG layers and compute losses at the selected layers.
+        for i, layer in enumerate(self.vgg):
+            out = layer(out)
+            if i in self.layers:
+                # Extract corresponding feature for y by running y through the same layers.
+                with torch.no_grad():
+                    out_y = y
+                    for j in range(i + 1):
+                        out_y = self.vgg[j](out_y)
+                loss += self.weights[self.layers.index(i)] * F.mse_loss(out, out_y)
+        return loss
+

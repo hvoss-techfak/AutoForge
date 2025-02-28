@@ -82,18 +82,26 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--input_image`: **(Required)** Path to the input image.
 - `--csv_file`: **(Required)** Path to the CSV file containing material data. The CSV should include columns for the brand, name, color (hex code), and TD values.
 - `--output_folder`: **(Required)** Folder where output files will be saved.
-- `--iterations`: Number of optimization iterations (default: 20000).
-- `--learning_rate`: Learning rate for the optimizer (default: 5e-3).
+- `--iterations`: Number of optimization iterations (default: 5000).
+- `--best_loss_iterations`: Percentage of optimization iterations after which we start to record the best loss (default: 4000).
+  **Note:** We currently do this as we increase a penalty loss for color and color swaps as the time goes on. Without this the penalties would have no impact.
+- `--learning_rate`: Learning rate for the optimizer (default: 1e-2).
 - `--layer_height`: Layer thickness in millimeters (default: 0.04).
 - `--max_layers`: Maximum number of layers (default: 75). 
   **Note:** This is about 3mm + the background height
 - `--background_height`: Height of the background in millimeters (default: 0.4).  
   **Note:** The background height must be divisible by the layer height.
-- `--background_color`: Background color in hexadecimal format (default: `#8e9089` aka Bambulab Grey).
-- `--max_size`: Maximum dimension (width or height) for the resized target image (default: 512).
+- `--background_color`: Background color in hexadecimal format (default: `#000000` aka Black).
+- `--output_size`: Maximum dimension for target image (default: 1024).
+- `--solver_size`: Maximum dimension for solver (fast) image (default: 128).
+  **Note:** We solve on a smaller size as this is many times faster, but also a bit less accurate. Increase if you need more accuracy.
 - `--decay`: Final tau value for the Gumbel-Softmax formulation (default: 0.01).
-- `--loss`: Loss function to use. Choices are `mse`, `perceptual`, or `perceptual_l1` (default: `mse`).
 - `--visualize`: Flag to enable live visualization of the composite image during optimization.
+- `--perform_pruning`: Perform pruning after optimization (default: True).
+- `--pruning_max_colors`: Max number of colors allowed after pruning (default: 10).
+- `--pruning_max_swaps`: Max number of swaps allowed after pruning (default: 20).
+- `--save_interval_pct`: Percentage interval to save checkpoints of the solved colors (default: 20).
+  **Note:** You can disable checkpointing by setting this to zero.
 
 ## Outputs
 
