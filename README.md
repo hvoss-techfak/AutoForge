@@ -79,8 +79,6 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--csv_file`: **(Required)** Path to the CSV file containing material data. The CSV should include columns for the brand, name, color (hex code), and TD values.
 - `--output_folder`: Folder where output files will be saved. (default: `./outputs`).
 - `--iterations`: Number of optimization iterations (default: 5000).
-- `--best_loss_iterations`: Percentage of optimization iterations after which we start to record the best loss (default: 0.25). \
-  **Note:** We currently do this as we increase a penalty loss for color and color swaps as the time goes on. Without this the penalties would have no impact.
 - `--learning_rate`: Learning rate for the optimizer (default: 1e-2).
 - `--layer_height`: Layer thickness in millimeters (default: 0.04).
 - `--max_layers`: Maximum number of layers (default: 75). \

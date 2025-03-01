@@ -44,12 +44,6 @@ def main():
     parser.add_argument(
         "--iterations", type=int, default=5000, help="Number of optimization iterations"
     )
-    parser.add_argument(
-        "--best_loss_iterations",
-        type=float,
-        default=0.25,
-        help="Percentage of optimization iterations after which we start to record the best loss",
-    )
 
     parser.add_argument(
         "--learning_rate",
@@ -250,9 +244,7 @@ def main():
     print("Starting optimization...")
     tbar = tqdm(range(args.iterations))
     for i in tbar:
-        loss_val = optimizer.step(
-            record_best=i > args.best_loss_iterations * args.iterations and i % 10 == 0
-        )
+        loss_val = optimizer.step(record_best=i % 3 == 0)
         optimizer.visualize(interval=25)
         if (i + 1) % 100 == 0:
             tbar.set_description(f"Iteration {i + 1}, Loss = {loss_val:.4f}")
