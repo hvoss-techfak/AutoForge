@@ -40,7 +40,7 @@ I would love to see what you made!
 ## Features
 
 - **Image-to-Model Conversion**: Converts an input image into a layered model suitable for 3D printing.
-- **Learned Optimization**: Optimizes per-pixel height and per-layer material assignments using PyTorch and Optax.
+- **Learned Optimization**: Optimizes per-pixel height and per-layer material assignments using PyTorch.
 - **Gumbel Softmax Sampling**: Leverages the Gumbel softmax method to decide material assignments for each layer.
 - **STL File Generation**: Exports an ASCII STL file based on the optimized height map.
 - **Swap Instructions**: Generates clear swap instructions for changing materials during printing.
