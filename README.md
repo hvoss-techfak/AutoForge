@@ -40,7 +40,7 @@ I would love to see what you made!
 ## Features
 
 - **Image-to-Model Conversion**: Converts an input image into a layered model suitable for 3D printing.
-- **Learned Optimization**: Optimizes per-pixel height and per-layer material assignments using JAX and Optax.
+- **Learned Optimization**: Optimizes per-pixel height and per-layer material assignments using PyTorch and Optax.
 - **Gumbel Softmax Sampling**: Leverages the Gumbel softmax method to decide material assignments for each layer.
 - **STL File Generation**: Exports an ASCII STL file based on the optimized height map.
 - **Swap Instructions**: Generates clear swap instructions for changing materials during printing.
@@ -54,17 +54,6 @@ To install AutoForge, simply install the current version from PyPI:
 ```bash
    pip install autoforge
 ```
-
-The optimizer is built using JAX, which benefits from a CUDA-compatible GPU for optimal performance.  \
-Without a dedicated GPU the process can take significantly longer (up to 10-20x slower).  \
-If you have a GPU, you can install the GPU version of autoforge by running:\
-
-```bash
-   pip install autoforge[gpu]
-```
-
-Currently, jax gpu support is only available under linux. \
-If you use Windows, please install WSL2 to use the GPU version of jax.
 
 ## Usage
 
@@ -142,7 +131,7 @@ Without it, this project would not have been possible.
 
 AutoForge makes use of several open source libraries:
 
-- [JAX](https://github.com/google/jax)
+- [PyTorch](https://pytorch.org/)
 - [Optax](https://github.com/deepmind/optax)
 - [OpenCV](https://opencv.org/)
 - [Matplotlib](https://matplotlib.org/)
