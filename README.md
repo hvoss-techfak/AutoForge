@@ -73,27 +73,45 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--config`: *(Optional)* Path to a configuration file with the settings.
 - `--input_image`: **(Required)** Path to the input image.
 - `--csv_file`: **(Required)** Path to the CSV file containing material data. The CSV should include columns for the brand, name, color (hex code), and TD values.
-- `--output_folder`: **(Required)** Folder where output files will be saved.
+- `--output_folder`: Folder where output files will be saved. (default: `./outputs`).
 - `--iterations`: Number of optimization iterations (default: 5000).
-- `--best_loss_iterations`: Percentage of optimization iterations after which we start to record the best loss (default: 4000).
+- `--best_loss_iterations`: Percentage of optimization iterations after which we start to record the best loss (default: 4000). \
   **Note:** We currently do this as we increase a penalty loss for color and color swaps as the time goes on. Without this the penalties would have no impact.
 - `--learning_rate`: Learning rate for the optimizer (default: 1e-2).
 - `--layer_height`: Layer thickness in millimeters (default: 0.04).
-- `--max_layers`: Maximum number of layers (default: 75). 
+- `--max_layers`: Maximum number of layers (default: 75). \
   **Note:** This is about 3mm + the background height
-- `--background_height`: Height of the background in millimeters (default: 0.4).  
+- `--background_height`: Height of the background in millimeters (default: 0.4).  \
   **Note:** The background height must be divisible by the layer height.
-- `--background_color`: Background color in hexadecimal format (default: `#000000` aka Black).
+- `--background_color`: Background color in hexadecimal format (default: `#000000` aka Black). \
   **Note:** The solver currently assumes that you have a solid color in the background, which means a color with a TD value of 4 or less (if you have a background height of 0.4)
 - `--output_size`: Maximum dimension for target image (default: 1024).
-- `--solver_size`: Maximum dimension for solver (fast) image (default: 128).
+- `--solver_size`: Maximum dimension for solver (fast) image (default: 128). \
   **Note:** We solve on a smaller size as this is many times faster, but also a bit less accurate. Increase if you need more accuracy.
 - `--decay`: Final tau value for the Gumbel-Softmax formulation (default: 0.01).
 - `--visualize`: Flag to enable live visualization of the composite image during optimization.
-- `--perform_pruning`: Perform pruning after optimization (default: True).
-- `--pruning_max_colors`: Max number of colors allowed after pruning (default: 10).
-- `--pruning_max_swaps`: Max number of swaps allowed after pruning (default: 20).
+- `--perform_pruning`: Perform pruning after optimization (default: True). \
+  **Note:** This is highly recommended even if you don't have a color/color swap limit, as it actually increases the quality of the output.
+- `--pruning_max_colors`: Max number of colors allowed after pruning (default: 100).
+- `--pruning_max_swaps`: Max number of swaps allowed after pruning (default: 100).
 - `--random_seed`: Random seed for reproducibility (default: 0 (disabled) ).
+
+### Experimental Deph Anything V2 parameters
+I got a request to add a initializing function that takes the original deph of the image into account when initializing. \
+In theory this should give you a nice background/foreground separation, but in practice it can degrade the quality of the output. \
+In addition you need the VRAM to run the depth model. \
+I currently don't recommend it as the output is not as good as without it, but I will leave it in for now. \
+
+- `--use_depth_anything`: Use a depth anything v2 model to initialize the height map (default: False).
+  **Note:** This will give you a nice background/foreground separation, but will could degrade quality in some cases.
+  **Note:** In addition you need the VRAM to run the depth model.
+
+- `--depth_strength`: Weight for blending even spacing with the cluster’s average depth when using depth initialization. (default: 0.25)
+- `--depth_threshold`: Threshold for splitting two distinct colors based on depth. (default: 0.05)
+- `--min_cluster_value`: Minimum normalized value for the lowest cluster (to avoid pure black). (default: 0.1)
+- `--w_depth`: Weight for depth difference in ordering. (default: 0.5)
+- `--w_lum`: Weight for luminance difference in ordering. (default: 1.0)
+- `--order_blend`: Blending factor between original luminance ordering (0) and depth-informed ordering (1). (default: 0.1)
 
 
 ## Outputs

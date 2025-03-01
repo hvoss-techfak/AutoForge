@@ -1,7 +1,7 @@
 import torch
 from tqdm import tqdm
 
-from autoforge.Helper.OptimizerHelper import composite_image
+from autoforge.Helper.OptimizerHelper import composite_image, discretize_solution
 from autoforge.Loss.LossFunctions import compute_loss
 
 
@@ -66,7 +66,7 @@ def prune_num_colors(
                 material_TDs,
                 background,
                 mode="discrete",
-                rng_seed = rng_seed
+                rng_seed=rng_seed,
             )
 
         # For the loss, we pass the actual dg_test so that compute_loss() knows it’s a discrete assignment
@@ -86,16 +86,16 @@ def prune_num_colors(
     distinct_mats = torch.unique(best_dg)
     tbar = tqdm(
         range(100),
-        desc=f"Pruning colors down to {max_colors_allowed}. Current colors: {len(distinct_mats)}, Loss: {best_loss:.4f}",
+        desc=f"Pruning colors down to {max_colors_allowed} or until loss increases. Current colors: {len(distinct_mats)}, Loss: {best_loss:.4f}",
     )
-    while len(distinct_mats) > max_colors_allowed:
+    while True:
         found_merge = False
         best_merge_loss = None
         best_merge_dg_candidate = None
 
         distinct_mats = torch.unique(best_dg)
         tbar.set_description(
-            f"Pruning colors down to {max_colors_allowed}. Current colors: {len(distinct_mats)}, Loss: {best_loss:.4f}",
+            f"Pruning colors down to {max_colors_allowed} or until loss increases. Current colors: {len(distinct_mats)}, Loss: {best_loss:.4f}",
         )
         tbar.update(1)
 
@@ -111,7 +111,7 @@ def prune_num_colors(
                     best_merge_dg_candidate = dg_test
 
         if best_merge_dg_candidate is not None:
-            if best_merge_loss < best_loss or True:
+            if best_merge_loss < best_loss or len(distinct_mats) > max_colors_allowed:
                 best_dg = best_merge_dg_candidate
                 best_loss = best_merge_loss
                 found_merge = True
@@ -159,7 +159,7 @@ def prune_num_swaps(
                 material_TDs,
                 background,
                 mode="discrete",
-                rng_seed=rng_seed
+                rng_seed=rng_seed,
             )
         return compute_loss(
             material_assignment=dg_test,
@@ -175,17 +175,15 @@ def prune_num_swaps(
     best_loss = get_image_loss(best_dg)
     tbar = tqdm(
         range(100),
-        desc=f"Pruning swaps down to {max_swaps_allowed}. Current swaps: {len(find_color_bands(best_dg)) - 1}, Loss = {best_loss:.4f}",
+        desc=f"Pruning swaps down to {max_swaps_allowed} or until loss increases. Current swaps: {len(find_color_bands(best_dg)) - 1}, Loss = {best_loss:.4f}",
     )
     while True:
         bands = find_color_bands(best_dg)
         num_swaps = len(bands) - 1
         tbar.set_description(
-            f"Pruning swaps down to {max_swaps_allowed}. Current swaps: {num_swaps}, Loss = {best_loss:.4f}",
+            f"Pruning swaps down to {max_swaps_allowed} or until loss increases. Current swaps: {num_swaps}, Loss = {best_loss:.4f}",
         )
         tbar.update(1)
-        if num_swaps <= max_swaps_allowed:
-            break
 
         best_merge_loss = None
         best_merge_dg_candidate = None
@@ -211,7 +209,9 @@ def prune_num_swaps(
                 best_merge_loss = candidate_loss
                 best_merge_dg_candidate = candidate_dg
 
-        if best_merge_dg_candidate is not None:
+        if best_merge_dg_candidate is not None and (
+            best_merge_loss < best_loss or num_swaps > max_swaps_allowed
+        ):
             best_dg = best_merge_dg_candidate
             best_loss = best_merge_loss
         else:
@@ -234,7 +234,6 @@ def prune_colors_and_swaps(
     tau_for_comp: float,
     rng_seed: int,
     perception_loss_module: torch.nn.Module,
-
 ) -> torch.Tensor:
     """
     First limit # colors, then limit # swaps.
@@ -318,3 +317,183 @@ def merge_bands(
     else:
         dg_new[band_a[0] : band_a[1] + 1] = c_b
     return dg_new
+
+
+def remove_layer_from_solution(
+    params, layer_to_remove, final_tau, h, current_max_layers, rng_seed
+):
+    """
+    Remove one layer from the solution.
+
+    Args:
+        params (dict): Current parameters with keys "global_logits" and "pixel_height_logits".
+        layer_to_remove (int): Candidate layer index to remove.
+        final_tau (float): Final tau value used in discretization/compositing.
+        h (float): Layer height.
+        current_max_layers (int): Current total number of layers.
+        rng_seed (int): Seed used in discretization/compositing.
+
+    Returns:
+        new_params (dict): New parameters with the candidate layer removed.
+        new_max_layers (int): Updated number of layers.
+    """
+    # Get the current discrete height image (used to decide which pixels need adjusting)
+    _, disc_height = discretize_solution(
+        params, final_tau, h, current_max_layers, rng_seed
+    )
+
+    # Remove the candidate layer from the global (color) assignment.
+    new_global_logits = torch.cat(
+        [
+            params["global_logits"][:layer_to_remove],
+            params["global_logits"][layer_to_remove + 1 :],
+        ],
+        dim=0,
+    )
+    new_max_layers = current_max_layers - 1
+
+    # Compute current effective height: height = (current_max_layers * h) * sigmoid(pixel_height_logits)
+    current_height = (
+        current_max_layers * h * torch.sigmoid(params["pixel_height_logits"])
+    )
+
+    # For pixels where the discrete height is at or above the removed layer, subtract h.
+    new_height = current_height.clone()
+    mask = disc_height >= layer_to_remove  # <-- Changed from > to >= here
+    new_height[mask] = new_height[mask] - h
+
+    # Invert the sigmoid mapping:
+    # We need new_pixel_height_logits such that:
+    #    sigmoid(new_pixel_height_logits) = new_height / (new_max_layers * h)
+    eps = 1e-6
+    new_ratio = torch.clamp(new_height / (new_max_layers * h), eps, 1 - eps)
+    new_pixel_height_logits = torch.log(new_ratio) - torch.log(1 - new_ratio)
+
+    new_params = {
+        "global_logits": new_global_logits,
+        "pixel_height_logits": new_pixel_height_logits,
+    }
+    return new_params, new_max_layers
+
+
+def prune_redundant_layers(
+    params,
+    final_tau,
+    h,
+    target,
+    material_colors,
+    material_TDs,
+    background,
+    rng_seed,
+    perception_loss_module,
+    tolerance=1e-3,
+):
+    """
+    Iteratively check each layer and remove it if the removal does not worsen the loss by more than `tolerance`.
+
+    Args:
+        params (dict): Dictionary with keys "global_logits" and "pixel_height_logits".
+        final_tau (float): Final tau (decay) value for discretization.
+        h (float): Layer height.
+        target (torch.Tensor): Target image tensor.
+        material_colors (torch.Tensor): Tensor of material colors.
+        material_TDs (torch.Tensor): Tensor of material transmission parameters.
+        background (torch.Tensor): Background color tensor.
+        rng_seed (int): Random seed for discretization.
+        perception_loss_module (torch.nn.Module): Perceptual loss module.
+        tolerance (float): Acceptable increase in loss.
+
+    Returns:
+        current_params (dict): Updated parameters with redundant layers removed.
+        best_loss (float): Loss corresponding to the pruned solution.
+        current_max_layers (int): New number of layers after pruning.
+    """
+    current_params = params
+    current_max_layers = current_params["global_logits"].shape[0]
+
+    # Compute baseline composite and loss.
+    comp = composite_image(
+        current_params["pixel_height_logits"],
+        current_params["global_logits"],
+        final_tau,
+        final_tau,
+        h,
+        current_max_layers,
+        material_colors,
+        material_TDs,
+        background,
+        mode="discrete",
+        rng_seed=rng_seed,
+    )
+    disc_global, _ = discretize_solution(
+        current_params, final_tau, h, current_max_layers, rng_seed
+    )
+    best_loss = compute_loss(
+        disc_global,
+        comp,
+        target,
+        perception_loss_module,
+        final_tau,
+        material_colors.shape[0],
+        add_penalty_loss=False,
+    ).item()
+
+    improvement = True
+    # Optional: use a progress bar to indicate the number of layers removed.
+    from tqdm import tqdm
+
+    tbar = tqdm(
+        desc=f"Pruning redundant layers: Loss {best_loss:.4f}",
+        total=current_max_layers - 1,
+    )
+    removed_layers = 0
+
+    # Continue until no layer can be removed.
+    while improvement and current_max_layers > 1:
+        tbar.update(1)
+        improvement = False
+        # Try each layer as a candidate for removal.
+        for layer in range(current_max_layers):
+            candidate_params, candidate_max_layers = remove_layer_from_solution(
+                current_params, layer, final_tau, h, current_max_layers, rng_seed
+            )
+            candidate_comp = composite_image(
+                candidate_params["pixel_height_logits"],
+                candidate_params["global_logits"],
+                final_tau,
+                final_tau,
+                h,
+                candidate_max_layers,
+                material_colors,
+                material_TDs,
+                background,
+                mode="discrete",
+                rng_seed=rng_seed,
+            )
+            candidate_disc_global, _ = discretize_solution(
+                candidate_params, final_tau, h, candidate_max_layers, rng_seed
+            )
+            candidate_loss = compute_loss(
+                candidate_disc_global,
+                candidate_comp,
+                target,
+                perception_loss_module,
+                final_tau,
+                material_colors.shape[0],
+                add_penalty_loss=False,
+            ).item()
+
+            # Accept the removal if loss increase is within tolerance.
+            if candidate_loss <= best_loss + tolerance:
+                removed_layers += 1
+                tbar.set_description(
+                    f"Pruning redundant layers: Loss {candidate_loss:.4f}, Removed {removed_layers}, new max layers {candidate_max_layers}"
+                )
+                current_params = candidate_params
+                current_max_layers = candidate_max_layers
+                best_loss = candidate_loss
+                improvement = True
+                break  # Restart search after a successful removal.
+        # End for each candidate.
+    tbar.close()
+    return current_params, best_loss, current_max_layers

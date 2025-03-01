@@ -108,7 +108,7 @@ class FilamentOptimizer:
                 "We only record the best discrete function at the end to allow for penalty loss to function correctly."
             )
             plt.ion()
-            self.fig, self.ax = plt.subplots(1, 3, figsize=(14, 6))
+            self.fig, self.ax = plt.subplots(1, 4, figsize=(14, 6))
             self.target_im_ax = self.ax[0].imshow(
                 np.array(self.target.cpu(), dtype=np.uint8)
             )
@@ -117,10 +117,16 @@ class FilamentOptimizer:
                 np.zeros((self.H, self.W, 3), dtype=np.uint8)
             )
             self.ax[1].set_title("Current Composite")
-            self.best_comp_ax = self.ax[2].imshow(
+
+            self.depth_map_ax = self.ax[2].imshow(
+                np.zeros((self.H, self.W), dtype=np.uint8), cmap="viridis"
+            )
+            self.ax[2].set_title("Current Depth Map")
+
+            self.best_comp_ax = self.ax[3].imshow(
                 np.zeros((self.H, self.W, 3), dtype=np.uint8)
             )
-            self.ax[2].set_title("Best Discrete Composite")
+            self.ax[3].set_title("Best Discrete Composite")
             plt.pause(0.1)
 
     def _get_tau(self):
@@ -231,6 +237,26 @@ class FilamentOptimizer:
                 np.uint8
             )
             self.best_comp_ax.set_data(best_comp_np)
+
+        # Update the depth map correctly.
+        with torch.no_grad():
+            height_map = (self.max_layers * self.h) * torch.sigmoid(
+                self.params["pixel_height_logits"]
+            )
+            height_map = height_map.cpu().detach().numpy()
+
+        # Normalize safely, checking for a constant image.
+        if np.allclose(height_map.max(), height_map.min()):
+            height_map_norm = np.zeros_like(height_map)
+        else:
+            height_map_norm = (height_map - height_map.min()) / (
+                height_map.max() - height_map.min()
+            )
+
+        height_map_uint8 = (height_map_norm * 255).astype(np.uint8)
+        self.depth_map_ax.set_data(height_map_uint8)
+        # Update the color limits so that the colormap correctly maps the range 0–255.
+        self.depth_map_ax.set_clim(0, 255)
 
         self.fig.suptitle(
             f"Step {self.num_steps_done}, Tau: {tau_g:.4f}, Loss: {self.loss:.4f}, Best Discrete Loss: {self.best_discrete_loss:.4f}"

@@ -12,12 +12,14 @@ from autoforge.Helper.OptimizerHelper import (
     init_height_map,
     composite_image,
     discretize_solution,
+    init_height_map_depth_color_adjusted,
 )
 from autoforge.Helper.OutputHelper import (
     generate_stl,
     generate_swap_instructions,
     generate_project_file,
 )
+from autoforge.Helper.PruningHelper import prune_redundant_layers
 from autoforge.Loss.PerceptionLoss import MultiLayerVGGPerceptualLoss
 from autoforge.Modules.Optimizer import FilamentOptimizer
 
@@ -102,13 +104,13 @@ def main():
     parser.add_argument(
         "--pruning_max_colors",
         type=int,
-        default=10,
+        default=100,
         help="Max number of colors allowed after pruning",
     )
     parser.add_argument(
         "--pruning_max_swaps",
         type=int,
-        default=20,
+        default=100,
         help="Max number of swaps allowed after pruning",
     )
 
@@ -117,6 +119,48 @@ def main():
         type=int,
         default=0,
         help="Specify the random seed, or use 0 for automatic generation",
+    )
+
+    parser.add_argument(
+        "--use_depth_anything_height_initialization",
+        action="store_true",
+        help="Use Depth Anything v2 for height image initialization",
+    )
+    parser.add_argument(
+        "--depth_strength",
+        type=float,
+        default=0.25,
+        help="Weight (0 to 1) for blending even spacing with the cluster's average depth",
+    )
+    parser.add_argument(
+        "--depth_threshold",
+        type=float,
+        default=0.05,
+        help="Threshold for splitting two distinct colors based on depth",
+    )
+    parser.add_argument(
+        "--min_cluster_value",
+        type=float,
+        default=0.1,
+        help="Minimum normalized value for the lowest cluster (to avoid pure black)",
+    )
+    parser.add_argument(
+        "--w_depth",
+        type=float,
+        default=0.5,
+        help="Weight for depth difference in ordering_depth",
+    )
+    parser.add_argument(
+        "--w_lum",
+        type=float,
+        default=1.0,
+        help="Weight for luminance difference in ordering_depth",
+    )
+    parser.add_argument(
+        "--order_blend",
+        type=float,
+        default=0.1,
+        help="Slider (0 to 1) blending original luminance ordering (0) and depth-informed ordering (1).",
     )
 
     args = parser.parse_args()
@@ -163,9 +207,22 @@ def main():
     output_target = torch.tensor(output_img_np, dtype=torch.float32, device=device)
 
     # Initialize pixel_height_logits from the large (final) image
-    pixel_height_logits_init = init_height_map(
-        output_img_np, args.max_layers, args.layer_height, random_seed=random_seed
-    )
+    if args.use_depth_anything_height_initialization:
+        pixel_height_logits_init = init_height_map_depth_color_adjusted(
+            output_img_np,
+            args.max_layers,
+            depth_strength=args.depth_strength,
+            depth_threshold=args.depth_threshold,
+            min_cluster_value=args.min_cluster_value,
+            w_depth=args.w_depth,
+            w_lum=args.w_lum,
+            order_blend=args.order_blend,
+        )
+    else:
+        # Default initialization using your existing method
+        pixel_height_logits_init = init_height_map(
+            output_img_np, args.max_layers, args.layer_height, random_seed=random_seed
+        )
 
     # But we will solve at the smaller resolution => resize that init to solver size
     # Add a dummy channel so that cv2.resize can handle it
@@ -231,16 +288,27 @@ def main():
         "global_logits": disc_global,
         "pixel_height_logits": torch.from_numpy(pixel_height_logits_init).to(device),
     }
+
+    if args.perform_pruning:
+        print("Removing redundant layers from the discrete solution...")
+        params, pruned_loss, max_layers = prune_redundant_layers(
+            params,
+            final_tau=args.decay,
+            h=args.layer_height,
+            target=output_target,  # or whichever target image you use for final compositing
+            material_colors=material_colors,
+            material_TDs=material_TDs,
+            background=background,
+            rng_seed=optimizer.best_seed,  # using the best seed from your optimizer
+            perception_loss_module=perception_loss_module,
+            tolerance=1e-3,  # adjust as needed
+        )
+        args.max_layers = max_layers
+
     disc_global, disc_height_image = discretize_solution(
         params, args.decay, args.layer_height, args.max_layers
     )
-    # Overwrite the big resolution height logits into optimizer params
-    # If you want to do a final compositing or more sophisticated approach, do it here:
-    # Example: (but keep in mind the shapes might differ)
-    # _, disc_height_image = optimizer.get_discretized_solution(
-    #     best=True,
-    #     custom_height_logits=torch.from_numpy(pixel_height_logits_init).to(device),
-    # )
+
     print("Done. Saving outputs...")
     # Save Image
     comp_disc = composite_image(
