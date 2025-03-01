@@ -10,6 +10,10 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 We recently switched from JAX to PyTorch, to allow for a more streamlined development process. \
 This can have some unforeseen consequences, so please report any bugs you find. 
 
+This release should give better gpu support for more users, especially on windows. \
+If you have problems running the code on your gpu, please refer to the [Pytorch Homepage](https://pytorch.org/) for help. \
+Both CUDA and ROCm are supported, but you need to install the correct version of pytorch for your system.
+
 ## Example
 All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge.
 <div style="display: flex; justify-content: center; gap: 20px;">
