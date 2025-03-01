@@ -1,4 +1,5 @@
 import random
+from itertools import permutations
 
 import numpy as np
 import torch
@@ -7,6 +8,7 @@ from skimage.color import rgb2lab
 from sklearn.cluster import KMeans
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.utils._testing import ignore_warnings
+from tqdm import tqdm
 from transformers import pipeline
 from PIL import Image
 from sklearn.metrics import silhouette_score
@@ -610,7 +612,7 @@ def init_height_map(target, max_layers, h, eps=1e-6, random_seed=None):
 
     # --- Step 2: Second clustering of centroids into bands ---
     num_bands = choose_optimal_num_bands(
-        centroids, min_bands=5, max_bands=max_layers // 2, random_seed=random_seed
+        centroids, min_bands=3, max_bands=10, random_seed=random_seed
     )
     band_kmeans = KMeans(n_clusters=num_bands, random_state=random_seed).fit(centroids)
     band_labels = band_kmeans.labels_
@@ -643,7 +645,39 @@ def init_height_map(target, max_layers, h, eps=1e-6, random_seed=None):
     L_values = [lab[0] for lab in band_reps]
     start_band = np.argmin(L_values)  # darkest band index
     end_band = np.argmax(L_values)  # brightest band index
-    best_order = tsp_simulated_annealing(band_reps, start_band, end_band)
+
+    # --- Step 5: Find the best ordering for the middle bands ---
+    # We want to order the bands so that the total perceptual difference (Euclidean distance in Lab)
+    # between consecutive bands is minimized, while forcing the darkest band first and brightest band last.
+    all_indices = list(range(len(bands)))
+    middle_indices = [i for i in all_indices if i not in (start_band, end_band)]
+
+    min_total_distance = np.inf
+    best_order = None
+    total = len(middle_indices) * len(middle_indices)
+    # Try all permutations of the middle bands
+    ie = 0
+    tbar = tqdm(
+        permutations(middle_indices),
+        total=total,
+        desc="Finding best ordering for color bands:",
+    )
+    for perm in tbar:
+        candidate = [start_band] + list(perm) + [end_band]
+        total_distance = 0
+        for i in range(len(candidate) - 1):
+            total_distance += np.linalg.norm(
+                band_reps[candidate[i]] - band_reps[candidate[i + 1]]
+            )
+        if total_distance < min_total_distance:
+            min_total_distance = total_distance
+            best_order = candidate
+            tbar.set_description(
+                f"Finding best ordering for color bands: Total distance = {min_total_distance:.2f}"
+            )
+        ie += 1
+        if ie > 500000:
+            break
 
     new_order = []
     for band_idx in best_order:
