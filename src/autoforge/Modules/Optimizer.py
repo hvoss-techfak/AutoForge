@@ -105,7 +105,7 @@ class FilamentOptimizer:
                 "Please dont panic if the best discretize composite is blank for a while."
             )
             print(
-                "We only record the best discrete function at the end to allow for penalty loss to function correctly."
+                "We only record the best discrete function after some time to allow for the penalty loss to function correctly."
             )
             plt.ion()
             self.fig, self.ax = plt.subplots(1, 4, figsize=(14, 6))
