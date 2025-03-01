@@ -5,7 +5,10 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 **TLDR:** It uses a picture to generate a 3D layer image that you can print with a 3d printer. Similar to [Hueforge](https://shop.thehueforge.com/), but without the manual work (and without the artistic control).
 
 
+## Important Information
 
+We recently switched from JAX to PyTorch, to allow for a more streamlined development process. \
+This can have some unforeseen consequences, so please report any bugs you find. \
 
 ## Example
 All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge.
@@ -92,6 +95,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--background_height`: Height of the background in millimeters (default: 0.4).  
   **Note:** The background height must be divisible by the layer height.
 - `--background_color`: Background color in hexadecimal format (default: `#000000` aka Black).
+  **Note:** The solver currently assumes that you have a solid color in the background, which means a color with a TD value of 4 or less (if you have a background height of 0.4)
 - `--output_size`: Maximum dimension for target image (default: 1024).
 - `--solver_size`: Maximum dimension for solver (fast) image (default: 128).
   **Note:** We solve on a smaller size as this is many times faster, but also a bit less accurate. Increase if you need more accuracy.
@@ -100,8 +104,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--perform_pruning`: Perform pruning after optimization (default: True).
 - `--pruning_max_colors`: Max number of colors allowed after pruning (default: 10).
 - `--pruning_max_swaps`: Max number of swaps allowed after pruning (default: 20).
-- `--save_interval_pct`: Percentage interval to save checkpoints of the solved colors (default: 20).
-  **Note:** You can disable checkpointing by setting this to zero.
+- `--random_seed`: Random seed for reproducibility (default: 0 (disabled) ).
 
 ## Outputs
 
@@ -127,6 +130,9 @@ Although I would love to be it fully color compatible with hueforge, I don't thi
 ## License
 
 AutoForge © 2025 by Hendric Voss is licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+The software is provided as-is and comes with no warranty or guarantee of support.
+
+The 
 
 ## Acknowledgements
 
