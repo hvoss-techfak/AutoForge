@@ -260,6 +260,15 @@ def main():
     # After we finish, we can get the final discrete solution at solver resolution
     disc_global, disc_height_image = optimizer.get_discretized_solution(best=True)
 
+    # Do a quick search for a better rng seed
+    new_rng_seed, new_loss = optimizer.rng_seed_search(
+        optimizer.best_discrete_loss, 1000
+    )
+    if new_loss < optimizer.best_discrete_loss:
+        optimizer.best_seed = new_rng_seed
+        optimizer.best_discrete_loss = new_loss
+        print(f"New best seed found: {new_rng_seed} with loss: {new_loss}")
+
     # Optionally prune
     if args.perform_pruning:
         disc_global = optimizer.prune(
@@ -270,14 +279,14 @@ def main():
             tau_g=optimizer.best_tau,
         )
 
-    # Do a quick search for a better rng seed
-    new_rng_seed, new_loss = optimizer.rng_seed_search(
-        optimizer.best_discrete_loss, 1000
-    )
-    if new_loss < optimizer.best_discrete_loss:
-        optimizer.best_seed = new_rng_seed
-        optimizer.best_discrete_loss = new_loss
-        print(f"New best seed found: {new_rng_seed} with loss: {new_loss}")
+        # Do a quick search for a better rng seed
+        new_rng_seed, new_loss = optimizer.rng_seed_search(
+            optimizer.best_discrete_loss, 1000
+        )
+        if new_loss < optimizer.best_discrete_loss:
+            optimizer.best_seed = new_rng_seed
+            optimizer.best_discrete_loss = new_loss
+            print(f"New best seed found: {new_rng_seed} with loss: {new_loss}")
     else:
         print(
             f"No better seed found. Best seed loss: {optimizer.best_discrete_loss}. Best searched loss: {new_loss}"

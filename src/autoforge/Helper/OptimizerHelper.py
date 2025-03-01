@@ -1,5 +1,3 @@
-from itertools import permutations
-
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -7,7 +5,6 @@ from skimage.color import rgb2lab
 from sklearn.cluster import KMeans
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.utils._testing import ignore_warnings
-from tqdm import tqdm
 from transformers import pipeline
 from PIL import Image
 from sklearn.metrics import silhouette_score
@@ -487,6 +484,70 @@ def init_height_map_depth_color_adjusted(
     return pixel_height_logits
 
 
+def tsp_nearest_neighbor(band_reps, start_band, end_band):
+    """
+    Generate an ordering for the bands using the nearest neighbor heuristic.
+
+    Args:
+        band_reps (list or np.ndarray): List of Lab color representations for each band.
+        start_band (int): Index of the darkest band.
+        end_band (int): Index of the brightest band.
+
+    Returns:
+        list: An ordering of band indices from start_band to end_band.
+    """
+    # Get middle band indices (those that are not fixed as start or end)
+    middle_indices = [
+        i for i in range(len(band_reps)) if i not in (start_band, end_band)
+    ]
+    current = start_band
+    path = [start_band]
+
+    # Choose the nearest neighbor iteratively
+    while middle_indices:
+        next_band = min(
+            middle_indices,
+            key=lambda i: np.linalg.norm(band_reps[current] - band_reps[i]),
+        )
+        path.append(next_band)
+        middle_indices.remove(next_band)
+        current = next_band
+
+    path.append(end_band)
+    return path
+
+
+def choose_optimal_num_bands(centroids, min_bands=2, max_bands=15, random_seed=None):
+    """
+    Determine the optimal number of clusters (bands) for the centroids
+    by maximizing the silhouette score.
+
+    Args:
+        centroids (np.ndarray): Array of centroid colors (e.g., shape (n_clusters, 3)).
+        min_bands (int): Minimum number of clusters to try.
+        max_bands (int): Maximum number of clusters to try.
+        random_seed (int, optional): Random seed for reproducibility.
+
+    Returns:
+        int: Optimal number of bands.
+    """
+    best_num = min_bands
+    best_score = -1
+
+    for num in range(min_bands, max_bands + 1):
+        kmeans = KMeans(n_clusters=num, random_state=random_seed).fit(centroids)
+        labels = kmeans.labels_
+        # If there's only one unique label, skip to avoid errors.
+        if len(np.unique(labels)) < 2:
+            continue
+        score = silhouette_score(centroids, labels)
+        if score > best_score:
+            best_score = score
+            best_num = num
+
+    return best_num
+
+
 def init_height_map(target, max_layers, h, eps=1e-6, random_seed=None):
     """
     Initialize pixel height logits based on the luminance of the target image.
@@ -512,7 +573,10 @@ def init_height_map(target, max_layers, h, eps=1e-6, random_seed=None):
         return 0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2]
 
     # --- Step 2: Second clustering of centroids into bands ---
-    num_bands = 9
+    num_bands = choose_optimal_num_bands(
+        centroids, min_bands=5, max_bands=max_layers // 2, random_seed=random_seed
+    )
+    print(num_bands)
     band_kmeans = KMeans(n_clusters=num_bands, random_state=random_seed).fit(centroids)
     band_labels = band_kmeans.labels_
 
@@ -544,39 +608,7 @@ def init_height_map(target, max_layers, h, eps=1e-6, random_seed=None):
     L_values = [lab[0] for lab in band_reps]
     start_band = np.argmin(L_values)  # darkest band index
     end_band = np.argmax(L_values)  # brightest band index
-
-    # --- Step 5: Find the best ordering for the middle bands ---
-    # We want to order the bands so that the total perceptual difference (Euclidean distance in Lab)
-    # between consecutive bands is minimized, while forcing the darkest band first and brightest band last.
-    all_indices = list(range(len(bands)))
-    middle_indices = [i for i in all_indices if i not in (start_band, end_band)]
-
-    min_total_distance = np.inf
-    best_order = None
-    total = len(middle_indices) * len(middle_indices)
-    # Try all permutations of the middle bands
-    ie = 0
-    tbar = tqdm(
-        permutations(middle_indices),
-        total=total,
-        desc="Finding best ordering for color bands:",
-    )
-    for perm in tbar:
-        candidate = [start_band] + list(perm) + [end_band]
-        total_distance = 0
-        for i in range(len(candidate) - 1):
-            total_distance += np.linalg.norm(
-                band_reps[candidate[i]] - band_reps[candidate[i + 1]]
-            )
-        if total_distance < min_total_distance:
-            min_total_distance = total_distance
-            best_order = candidate
-            tbar.set_description(
-                f"Finding best ordering for color bands: Total distance = {min_total_distance:.2f}"
-            )
-        ie += 1
-        if ie > 500000:
-            break
+    best_order = tsp_nearest_neighbor(band_reps, start_band, end_band)
 
     new_order = []
     for band_idx in best_order:

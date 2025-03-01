@@ -173,6 +173,7 @@ class FilamentOptimizer:
             material_TDs=self.material_TDs,
             background=self.background,
             perception_loss_module=self.perception_loss_module,
+            add_penalty_loss=False,
         )
         loss.backward()
         self.optimizer.step()
@@ -370,7 +371,7 @@ class FilamentOptimizer:
         and update the best solution if it improves.
         """
 
-        for i in range(1):
+        for i in range(3):
             # draw random integer seed
             seed = np.random.randint(0, 1000000)
 

@@ -188,85 +188,98 @@ def generate_project_file(
 
 def generate_stl(height_map, filename, background_height, scale=1.0):
     """
-    Generate a binary STL file from a height map.
+    Generate a binary STL file from a height map with shared boundary vertices
+    to fix non-manifold edge warnings.
 
     Args:
         height_map (np.ndarray): 2D array representing the height map.
         filename (str): The name of the output STL file.
         background_height (float): The height of the background in the STL model.
-        scale (float, optional): Scale factor for the x and y dimensions. Defaults to 1.0.
+        scale (float, optional): Scale factor for the x dimension (and optionally y). Defaults to 1.0.
     """
     H, W = height_map.shape
-    vertices = np.zeros((H, W, 3), dtype=np.float32)
+
+    # Create the top vertices grid.
+    # Note: y is computed as H-1-i. (Apply scale to y if desired.)
+    top_vertices = np.zeros((H, W, 3), dtype=np.float32)
     for i in range(H):
         for j in range(W):
-            # Original coordinates: x = j*scale, y = (H - 1 - i), z = height + background
-            vertices[i, j, 0] = j * scale
-            vertices[i, j, 1] = H - 1 - i  # (Consider applying scale if needed)
-            vertices[i, j, 2] = height_map[i, j] + background_height
+            top_vertices[i, j, 0] = j * scale
+            top_vertices[i, j, 1] = H - 1 - i  # or (H - 1 - i) * scale if you want uniform scaling
+            top_vertices[i, j, 2] = height_map[i, j] + background_height
+
+    # Create the bottom vertices for the boundary by copying the x and y coordinates,
+    # but setting z to 0. Using these ensures that adjacent triangles share the same vertices.
+    bottom_vertices = top_vertices.copy()
+    bottom_vertices[:, :, 2] = 0
 
     triangles = []
 
     def add_triangle(v1, v2, v3):
-        """
-        Add a triangle to the list of triangles.
-
-        Args:
-            v1 (np.ndarray): First vertex of the triangle.
-            v2 (np.ndarray): Second vertex of the triangle.
-            v3 (np.ndarray): Third vertex of the triangle.
-        """
+        """Add a triangle defined by vertices v1, v2, and v3."""
         triangles.append((v1, v2, v3))
 
+    # --- Top Surface ---
     for i in range(H - 1):
         for j in range(W - 1):
-            v0 = vertices[i, j]
-            v1 = vertices[i, j + 1]
-            v2 = vertices[i + 1, j + 1]
-            v3 = vertices[i + 1, j]
-            # Reversed order so normals face upward
+            v0 = top_vertices[i, j]
+            v1 = top_vertices[i, j + 1]
+            v2 = top_vertices[i + 1, j + 1]
+            v3 = top_vertices[i + 1, j]
+            # Using reversed order so that normals face upward.
             add_triangle(v2, v1, v0)
             add_triangle(v3, v2, v0)
 
+    # --- Side Walls ---
+    # Top edge (i = 0)
     for j in range(W - 1):
-        v0 = vertices[0, j]
-        v1 = vertices[0, j + 1]
-        v0b = np.array([v0[0], v0[1], 0], dtype=np.float32)
-        v1b = np.array([v1[0], v1[1], 0], dtype=np.float32)
-        add_triangle(v0, v1, v1b)
-        add_triangle(v0, v1b, v0b)
-    for j in range(W - 1):
-        v0 = vertices[H - 1, j]
-        v1 = vertices[H - 1, j + 1]
-        v0b = np.array([v0[0], v0[1], 0], dtype=np.float32)
-        v1b = np.array([v1[0], v1[1], 0], dtype=np.float32)
-        add_triangle(v1, v0, v1b)
-        add_triangle(v0, v0b, v1b)
-    for i in range(H - 1):
-        v0 = vertices[i, 0]
-        v1 = vertices[i + 1, 0]
-        v0b = np.array([v0[0], v0[1], 0], dtype=np.float32)
-        v1b = np.array([v1[0], v1[1], 0], dtype=np.float32)
-        add_triangle(v1, v0, v1b)
-        add_triangle(v0, v0b, v1b)
-    for i in range(H - 1):
-        v0 = vertices[i, W - 1]
-        v1 = vertices[i + 1, W - 1]
-        v0b = np.array([v0[0], v0[1], 0], dtype=np.float32)
-        v1b = np.array([v1[0], v1[1], 0], dtype=np.float32)
-        add_triangle(v0, v1, v1b)
-        add_triangle(v0, v1b, v0b)
+        vt0 = top_vertices[0, j]
+        vt1 = top_vertices[0, j + 1]
+        vb0 = bottom_vertices[0, j]
+        vb1 = bottom_vertices[0, j + 1]
+        add_triangle(vt0, vt1, vb1)
+        add_triangle(vt0, vb1, vb0)
 
-    v0 = np.array([0, 0, 0], dtype=np.float32)
-    v1 = np.array([(W - 1) * scale, 0, 0], dtype=np.float32)
-    v2 = np.array([(W - 1) * scale, (H - 1) * scale, 0], dtype=np.float32)
-    v3 = np.array([0, (H - 1) * scale, 0], dtype=np.float32)
-    add_triangle(v2, v1, v0)
-    add_triangle(v3, v2, v0)
+    # Bottom edge (i = H - 1)
+    for j in range(W - 1):
+        vt0 = top_vertices[H - 1, j]
+        vt1 = top_vertices[H - 1, j + 1]
+        vb0 = bottom_vertices[H - 1, j]
+        vb1 = bottom_vertices[H - 1, j + 1]
+        add_triangle(vt1, vt0, vb0)
+        add_triangle(vt1, vb0, vb1)
+
+    # Left edge (j = 0)
+    for i in range(H - 1):
+        vt0 = top_vertices[i, 0]
+        vt1 = top_vertices[i + 1, 0]
+        vb0 = bottom_vertices[i, 0]
+        vb1 = bottom_vertices[i + 1, 0]
+        add_triangle(vt1, vt0, vb0)
+        add_triangle(vt1, vb0, vb1)
+
+    # Right edge (j = W - 1)
+    for i in range(H - 1):
+        vt0 = top_vertices[i, W - 1]
+        vt1 = top_vertices[i + 1, W - 1]
+        vb0 = bottom_vertices[i, W - 1]
+        vb1 = bottom_vertices[i + 1, W - 1]
+        add_triangle(vt0, vt1, vb1)
+        add_triangle(vt0, vb1, vb0)
+
+    # --- Bottom Face ---
+    # Use the four corner vertices from the bottom_vertices grid.
+    b_top_left = bottom_vertices[0, 0]
+    b_top_right = bottom_vertices[0, W - 1]
+    b_bottom_right = bottom_vertices[H - 1, W - 1]
+    b_bottom_left = bottom_vertices[H - 1, 0]
+    # Triangulate the bottom face (ensure the normal faces downward).
+    add_triangle(b_bottom_right, b_top_right, b_top_left)
+    add_triangle(b_bottom_left, b_bottom_right, b_top_left)
 
     num_triangles = len(triangles)
 
-    # Write the binary STL file.
+    # --- Write Binary STL ---
     with open(filename, "wb") as f:
         header_str = "Binary STL generated from heightmap"
         header = header_str.encode("utf-8")

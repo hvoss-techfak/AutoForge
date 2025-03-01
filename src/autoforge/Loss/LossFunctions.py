@@ -15,6 +15,7 @@ def loss_fn(
     material_TDs: torch.Tensor,
     background: torch.Tensor,
     perception_loss_module: torch.nn.Module,
+    add_penalty_loss: bool = True,
 ) -> torch.Tensor:
     """
     Full forward pass for continuous assignment:
@@ -39,6 +40,7 @@ def loss_fn(
         perception_loss_module=perception_loss_module,
         tau_global=tau_global,
         num_materials=material_colors.shape[0],
+        add_penalty_loss=add_penalty_loss,
     )
 
 
