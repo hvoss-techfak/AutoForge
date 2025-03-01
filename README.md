@@ -95,6 +95,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--pruning_max_swaps`: Max number of swaps allowed after pruning (default: 20).
 - `--random_seed`: Random seed for reproducibility (default: 0 (disabled) ).
 
+
 ## Outputs
 
 After running, the following files will be created in your specified output folder:
