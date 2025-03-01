@@ -47,7 +47,7 @@ def main():
     parser.add_argument(
         "--best_loss_iterations",
         type=float,
-        default=0.9,
+        default=0.25,
         help="Percentage of optimization iterations after which we start to record the best loss",
     )
 
