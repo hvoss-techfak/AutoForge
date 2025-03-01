@@ -9,6 +9,7 @@ is exported as an STL file along with swap instructions.
 import argparse
 import math
 import os
+import time
 from typing import Optional, List, Tuple, Dict
 
 import configargparse
@@ -984,6 +985,7 @@ def main():
     parser.add_argument("--pruning_max_colors", type=int, default=10, help="Max number of colors allowed after pruning")
     parser.add_argument("--pruning_max_swaps", type=int, default=20, help="Max number of swaps allowed after pruning")
     parser.add_argument("--save_interval_pct", type=float, default=20, help="Percentage interval to save checkpoints")
+    parser.add_argument("--random_seed", type=int, default=0, help="Specify the random seed, or use 0 for automatic generation")
 
     args = parser.parse_args()
 
@@ -1005,6 +1007,12 @@ def main():
     background_height_value = args.background_height
     background_layers_value = int(background_height_value // h_value)
     decay_v_value = args.decay
+
+    random_seed = args.random_seed
+    if random_seed == 0:
+        random_seed = int(time.time())
+    print("Using random_seed:",random_seed)
+    torch.manual_seed(random_seed)
 
     # Load background as torch
     background = torch.tensor(hex_to_rgb(args.background_color), dtype=torch.float32,device=device)
@@ -1028,7 +1036,7 @@ def main():
     output_target    = torch.tensor(output_target_np, dtype=torch.float32,device=device)
 
     # Initialize pixel_height logits from the full-size image
-    pixel_height_logits_init = init_height_map(output_target_np, args.max_layers, h_value)
+    pixel_height_logits_init = init_height_map(output_target_np, args.max_layers, h_value, random_seed=random_seed)
     pixel_height_logits_init = np.asarray(pixel_height_logits_init)
 
     # Reshape to solver size for the actual optimization

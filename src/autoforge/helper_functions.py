@@ -410,7 +410,7 @@ def generate_project_file(project_filename, args, disc_global, disc_height_image
     with open(project_filename, "w") as f:
         json.dump(project_data, f, indent=4)
 
-def init_height_map(target,max_layers,h,eps = 1e-6):
+def init_height_map(target,max_layers,h,eps = 1e-6,random_seed=None):
     """
         Initialize pixel height logits based on the luminance of the target image.
 
@@ -426,7 +426,7 @@ def init_height_map(target,max_layers,h,eps = 1e-6):
 
     target_np = np.asarray(target).reshape(-1, 3)
 
-    kmeans = KMeans(n_clusters=max_layers).fit(target_np)
+    kmeans = KMeans(n_clusters=max_layers,random_state=random_seed).fit(target_np)
     labels = kmeans.labels_
     labels = labels.reshape(target.shape[0], target.shape[1])
     centroids = kmeans.cluster_centers_
@@ -436,7 +436,7 @@ def init_height_map(target,max_layers,h,eps = 1e-6):
 
     # --- Step 2: Second clustering of centroids into bands ---
     num_bands = 9
-    band_kmeans = KMeans(n_clusters=num_bands).fit(centroids)
+    band_kmeans = KMeans(n_clusters=num_bands,random_state=random_seed).fit(centroids)
     band_labels = band_kmeans.labels_
 
     # Group centroids by band and sort within each band by luminance
