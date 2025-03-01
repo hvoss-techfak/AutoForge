@@ -1,3 +1,5 @@
+import random
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -484,37 +486,71 @@ def init_height_map_depth_color_adjusted(
     return pixel_height_logits
 
 
-def tsp_nearest_neighbor(band_reps, start_band, end_band):
+def tsp_simulated_annealing(
+    band_reps,
+    start_band,
+    end_band,
+    initial_order=None,
+    initial_temp=1000,
+    cooling_rate=0.995,
+    num_iter=10000,
+):
     """
-    Generate an ordering for the bands using the nearest neighbor heuristic.
+    Solve the band ordering problem using simulated annealing.
 
     Args:
-        band_reps (list or np.ndarray): List of Lab color representations for each band.
-        start_band (int): Index of the darkest band.
-        end_band (int): Index of the brightest band.
+        band_reps (list or np.ndarray): List of Lab color representations.
+        start_band (int): Index for the darkest band.
+        end_band (int): Index for the brightest band.
+        initial_order (list, optional): Initial ordering of band indices.
+        initial_temp (float): Starting temperature.
+        cooling_rate (float): Factor to cool the temperature.
+        num_iter (int): Maximum number of iterations.
 
     Returns:
         list: An ordering of band indices from start_band to end_band.
     """
-    # Get middle band indices (those that are not fixed as start or end)
-    middle_indices = [
-        i for i in range(len(band_reps)) if i not in (start_band, end_band)
-    ]
-    current = start_band
-    path = [start_band]
+    if initial_order is None:
+        # Use a simple ordering: start, middle bands as given, then end.
+        middle_indices = [
+            i for i in range(len(band_reps)) if i not in (start_band, end_band)
+        ]
+        order = [start_band] + middle_indices + [end_band]
+    else:
+        order = initial_order.copy()
 
-    # Choose the nearest neighbor iteratively
-    while middle_indices:
-        next_band = min(
-            middle_indices,
-            key=lambda i: np.linalg.norm(band_reps[current] - band_reps[i]),
+    def total_distance(order):
+        return sum(
+            np.linalg.norm(band_reps[order[i]] - band_reps[order[i + 1]])
+            for i in range(len(order) - 1)
         )
-        path.append(next_band)
-        middle_indices.remove(next_band)
-        current = next_band
 
-    path.append(end_band)
-    return path
+    current_distance = total_distance(order)
+    best_order = order.copy()
+    best_distance = current_distance
+    temp = initial_temp
+
+    for _ in range(num_iter):
+        # Randomly swap two indices in the middle of the order
+        new_order = order.copy()
+        idx1, idx2 = random.sample(range(1, len(order) - 1), 2)
+        new_order[idx1], new_order[idx2] = new_order[idx2], new_order[idx1]
+
+        new_distance = total_distance(new_order)
+        delta = new_distance - current_distance
+
+        # Accept the new order if it improves or with a probability to escape local minima
+        if delta < 0 or np.exp(-delta / temp) > random.random():
+            order = new_order.copy()
+            current_distance = new_distance
+            if current_distance < best_distance:
+                best_order = order.copy()
+                best_distance = current_distance
+
+        temp *= cooling_rate
+        if temp < 1e-6:
+            break
+    return best_order
 
 
 def choose_optimal_num_bands(centroids, min_bands=2, max_bands=15, random_seed=None):
@@ -576,7 +612,6 @@ def init_height_map(target, max_layers, h, eps=1e-6, random_seed=None):
     num_bands = choose_optimal_num_bands(
         centroids, min_bands=5, max_bands=max_layers // 2, random_seed=random_seed
     )
-    print(num_bands)
     band_kmeans = KMeans(n_clusters=num_bands, random_state=random_seed).fit(centroids)
     band_labels = band_kmeans.labels_
 
@@ -608,7 +643,7 @@ def init_height_map(target, max_layers, h, eps=1e-6, random_seed=None):
     L_values = [lab[0] for lab in band_reps]
     start_band = np.argmin(L_values)  # darkest band index
     end_band = np.argmax(L_values)  # brightest band index
-    best_order = tsp_nearest_neighbor(band_reps, start_band, end_band)
+    best_order = tsp_simulated_annealing(band_reps, start_band, end_band)
 
     new_order = []
     for band_idx in best_order:
