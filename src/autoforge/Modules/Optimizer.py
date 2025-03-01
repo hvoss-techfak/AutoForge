@@ -370,7 +370,7 @@ class FilamentOptimizer:
         and update the best solution if it improves.
         """
 
-        for i in range(3):
+        for i in range(1):
             # draw random integer seed
             seed = np.random.randint(0, 1000000)
 

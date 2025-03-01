@@ -251,7 +251,7 @@ def main():
     tbar = tqdm(range(args.iterations))
     for i in tbar:
         loss_val = optimizer.step(
-            record_best=i > args.best_loss_iterations * args.iterations and i % 5 == 0
+            record_best=i > args.best_loss_iterations * args.iterations and i % 10 == 0
         )
         optimizer.visualize(interval=25)
         if (i + 1) % 100 == 0:
