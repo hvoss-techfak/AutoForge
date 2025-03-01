@@ -142,7 +142,6 @@ Although I would love to be it fully color compatible with hueforge, I don't thi
 AutoForge © 2025 by Hendric Voss is licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
 The software is provided as-is and comes with no warranty or guarantee of support.
 
-The 
 
 ## Acknowledgements
 

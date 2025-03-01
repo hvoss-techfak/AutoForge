@@ -247,7 +247,9 @@ def main():
         loss_val = optimizer.step(record_best=i % 3 == 0)
         optimizer.visualize(interval=25)
         if (i + 1) % 100 == 0:
-            tbar.set_description(f"Iteration {i + 1}, Loss = {loss_val:.4f}")
+            tbar.set_description(
+                f"Iteration {i + 1}, Loss = {loss_val:.4f}, best validation Loss = {optimizer.best_discrete_loss:.4f}"
+            )
 
     # After we finish, we can get the final discrete solution at solver resolution
     disc_global, disc_height_image = optimizer.get_discretized_solution(best=True)
