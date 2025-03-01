@@ -8,7 +8,7 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 ## Important Information
 
 We recently switched from JAX to PyTorch, to allow for a more streamlined development process. \
-This can have some unforeseen consequences, so please report any bugs you find. \
+This can have some unforeseen consequences, so please report any bugs you find. 
 
 ## Example
 All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge.
