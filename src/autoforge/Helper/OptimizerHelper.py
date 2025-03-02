@@ -112,6 +112,7 @@ def composite_image(
     comp = torch.zeros(H, W, 3, dtype=torch.float32, device=pixel_height.device)
     remaining = torch.ones(H, W, dtype=torch.float32, device=pixel_height.device)
 
+
     A = 0.1215
     k = 61.6970
     b = 0.4773
