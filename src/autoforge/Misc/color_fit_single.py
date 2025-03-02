@@ -382,5 +382,7 @@ def main():
     plt.show()
 
 
+# Final best result for Model 22: Weighted Average: Loss = 16.79 with params {'manual offset R': -0.0013059073472419455, 'manual offset G': 0.0034477782952231466, 'manual offset B': 0.006004541121046466, 'p0': 0.045165677488333285, 'p1': 0.9636863983643901}
+
 if __name__ == "__main__":
     main()
