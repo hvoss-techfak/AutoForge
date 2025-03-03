@@ -60,7 +60,7 @@ def compute_initial_height_map(input_image, max_layers, layer_height):
     The height map is normalized to 0-255 for display.
     """
     # Convert the input image to a jax array (assumed to be RGB)
-    target = jnp.array(input_image, dtype=jnp.float64)
+    target = jnp.array(input_image, dtype=jnp.float32)
     height_map = init_height_map(target, max_layers, layer_height)
     height_map_np = np.array(height_map)
     # Normalize for display purposes.
