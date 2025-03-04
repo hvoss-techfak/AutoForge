@@ -101,12 +101,6 @@ class FilamentOptimizer:
 
         # If you want a figure for real-time visualization:
         if self.visualize_flag:
-            print(
-                "Please dont panic if the best discretize composite is blank for a while."
-            )
-            print(
-                "We only record the best discrete function after some time to allow for the penalty loss to function correctly."
-            )
             plt.ion()
             self.fig, self.ax = plt.subplots(1, 4, figsize=(14, 6))
             self.target_im_ax = self.ax[0].imshow(
