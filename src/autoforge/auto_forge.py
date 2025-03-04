@@ -156,10 +156,21 @@ def main():
         default=0.1,
         help="Slider (0 to 1) blending original luminance ordering (0) and depth-informed ordering (1).",
     )
+    parser.add_argument(
+        "--mps",
+        action="store_true",
+        help="Use the Metal Performance Shaders (MPS) backend, if available.",
+    )
 
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif args.mps and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print("Using device:", device)
 
     os.makedirs(args.output_folder, exist_ok=True)

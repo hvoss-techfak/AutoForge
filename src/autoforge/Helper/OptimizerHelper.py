@@ -690,7 +690,7 @@ def init_height_map(target, max_layers, h, eps=1e-6, random_seed=None):
 
     new_labels = new_labels.astype(np.float32) / new_labels.max()
 
-    normalized_lum = np.array(new_labels, dtype=np.float64)
+    normalized_lum = np.array(new_labels, dtype=np.float32)
     # convert out to inverse sigmoid logit function
     pixel_height_logits = np.log((normalized_lum + eps) / (1 - normalized_lum + eps))
 
