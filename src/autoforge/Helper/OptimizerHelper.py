@@ -112,10 +112,10 @@ def composite_image(
     comp = torch.zeros(H, W, 3, dtype=torch.float32, device=pixel_height.device)
     remaining = torch.ones(H, W, dtype=torch.float32, device=pixel_height.device)
 
-    o = -1.23154875e-02
-    A = 9.80910122e-01
-    k = 3.35844955e01
-    b = -4.29737329e00
+    o = -1.1021105e-02
+    A = 1.0786635e00
+    k = 3.0878708e01
+    b = -5.0812101e00
 
     for i in range(max_layers):
         layer_idx = max_layers - 1 - i
@@ -149,8 +149,11 @@ def composite_image(
         color_i = torch.matmul(p_i, material_colors)
         TD_i = torch.matmul(p_i, material_TDs) * 0.1
         TD_i = torch.clamp(TD_i, 1e-8, 1e8)
+
         opac = o + (A * torch.log1p(k * (eff_thick / TD_i)) + b * (eff_thick / TD_i))
         opac = torch.clamp(opac, 0.0, 1.0)
+        # Setting opac to 1.0 for the layers where the thickness is less than 2*h to avoid single layer artifacts
+        opac = torch.where(TD_i <= h * 2, torch.tensor(1.0), opac)
 
         comp = comp + ((remaining * opac).unsqueeze(-1) * color_i)
         remaining = remaining * (1 - opac)
