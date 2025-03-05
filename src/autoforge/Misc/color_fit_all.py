@@ -959,11 +959,11 @@ def model_composite(
 #############################################
 
 extra_models = {
-    # "Model 1: Linear": {
-    #     "func": model_linear,
-    #     "ranges": [(0.0, 1.0)],
-    #     "param_names": ["p0"],
-    # },
+    "Model 1: Linear": {
+        "func": model_linear,
+        "ranges": [(0.0, 1.0)],
+        "param_names": ["p0"],
+    },
     "Model 13: New Model 4: Log-Linear": {
         "func": new_model4,
         "ranges": [(0.0, 1.0), (0.0, 100.0), (0.0, 1.0)],
@@ -1516,7 +1516,6 @@ class VectorizedLossModule(torch.jit.ScriptModule):
             color_i = foregrounds
             opac = offset + self.model_func(model_params, t_tensor, TD_i)
             opac = torch.clamp(opac, 0.0, 1.0)
-            # opac = torch.where(TD_i <= 0.4, torch.tensor(1.0), opac)
             comp = comp + ((remaining * opac).unsqueeze(-1) * color_i)
             remaining = remaining * (1 - opac)
 
@@ -1639,8 +1638,11 @@ def optimize_model(
             if no_improvement_count >= 10000:
                 break
             # break if loss decrease is less than 1e-6 in last 100 steps
-            # if len(losses) > 1000 and np.mean(losses[-1000:-100]) - np.min(losses[-100:]) < 1e-6:
-            #    break
+            if (
+                len(losses) > 1000
+                and np.mean(losses[-1000:-100]) - np.min(losses[-100:]) < 1e-3
+            ):
+                break
             it += 1
             tbar.update(1)
         except Exception:
@@ -1821,6 +1823,18 @@ def main():
     #         "param_names": ["A", "k", "B"],
     #     },
     # }
+    extra_models = {
+        # "Model 28: Poly Degree 2": {
+        #     "func": model_poly2,
+        #     "ranges": [(0.0, 1.0)],
+        #     "param_names": ["p0"],
+        # },
+        "Model 29: Poly Degree 3": {
+            "func": model_poly3,
+            "ranges": [(0.0, 1.0), (0.0, 1.0)],
+            "param_names": ["p0", "p1"],
+        },
+    }
 
     results = []
     # Loop over each candidate model in the dictionary.
@@ -1871,7 +1885,7 @@ def main():
     # Now plot measured vs predicted for 10 random CSV rows using Plotly,
     # but only for the top 3 best models.
     best_three = results[:3]
-    plot_measured_vs_predicted(best_three, df, 16, layer_thickness, sample_size=20)
+    plot_measured_vs_predicted(best_three, df, 16, layer_thickness, sample_size=50)
 
 
 if __name__ == "__main__":

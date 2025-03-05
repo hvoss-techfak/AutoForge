@@ -147,11 +147,11 @@ def composite_image(
             p_i = F.gumbel_softmax(global_logits[layer_idx], tau_global, hard=True)
 
         color_i = torch.matmul(p_i, material_colors)
-        TD_i = torch.matmul(p_i, material_TDs) * 0.1
+        TD_i = torch.matmul(p_i, material_TDs)
         TD_i = torch.clamp(TD_i, 1e-8, 1e8)
 
         opac = o + (A * torch.log1p(k * (eff_thick / TD_i)) + b * (eff_thick / TD_i))
-        # opac = torch.where(TD_i <= h, torch.tensor(1.0), opac)
+        # opac = torch.where(TD_i / 10 <= h, torch.tensor(1.0), opac)
         opac = torch.clamp(opac, 0.0, 1.0)
 
         comp = comp + ((remaining * opac).unsqueeze(-1) * color_i)
