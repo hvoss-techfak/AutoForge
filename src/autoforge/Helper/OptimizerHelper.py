@@ -112,10 +112,10 @@ def composite_image(
     comp = torch.zeros(H, W, 3, dtype=torch.float32, device=pixel_height.device)
     remaining = torch.ones(H, W, dtype=torch.float32, device=pixel_height.device)
 
-    o = -1.54401995e-02
-    A = 5.86489856e-01
-    k = 5.00311089e+01
-    b = 6.02976382e-01
+    o = -1.23154875e-02
+    A = 9.80910122e-01
+    k = 3.35844955e01
+    b = -4.29737329e00
 
     for i in range(max_layers):
         layer_idx = max_layers - 1 - i
