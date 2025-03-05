@@ -959,11 +959,11 @@ def model_composite(
 #############################################
 
 extra_models = {
-    "Model 1: Linear": {
-        "func": model_linear,
-        "ranges": [(0.0, 1.0)],
-        "param_names": ["p0"],
-    },
+    # "Model 1: Linear": {
+    #     "func": model_linear,
+    #     "ranges": [(0.0, 1.0)],
+    #     "param_names": ["p0"],
+    # },
     "Model 13: New Model 4: Log-Linear": {
         "func": new_model4,
         "ranges": [(0.0, 1.0), (0.0, 100.0), (0.0, 1.0)],
@@ -1516,6 +1516,7 @@ class VectorizedLossModule(torch.jit.ScriptModule):
             color_i = foregrounds
             opac = offset + self.model_func(model_params, t_tensor, TD_i)
             opac = torch.clamp(opac, 0.0, 1.0)
+            # opac = torch.where(TD_i <= 0.4, torch.tensor(1.0), opac)
             comp = comp + ((remaining * opac).unsqueeze(-1) * color_i)
             remaining = remaining * (1 - opac)
 
@@ -1808,18 +1809,18 @@ def main():
     layer_thickness = 0.04  # mm per layer
     transmissions, backgrounds, foregrounds, measured = preprocess_data(df, num_layers)
 
-    extra_models = {
-        # "Model 43: Gamma CDF": {
-        #     "func": model_gamma,
-        #     "ranges": [(0.0, 1.0), (0.1, 5.0), (0.1, 5.0)],
-        #     "param_names": ["p0", "p1", "p2"],
-        # },
-        "Model 13: New Model 4: Log-Linear": {
-            "func": new_model4,
-            "ranges": [(0.0, 1.0), (0.0, 200.0), (0.0, 1.0)],
-            "param_names": ["A", "k", "B"],
-        },
-    }
+    # extra_models = {
+    #     # "Model 43: Gamma CDF": {
+    #     #     "func": model_gamma,
+    #     #     "ranges": [(0.0, 1.0), (0.1, 5.0), (0.1, 5.0)],
+    #     #     "param_names": ["p0", "p1", "p2"],
+    #     # },
+    #     "Model 13: New Model 4: Log-Linear": {
+    #         "func": new_model4,
+    #         "ranges": [(0.0, 1.0), (0.0, 200.0), (0.0, 1.0)],
+    #         "param_names": ["A", "k", "B"],
+    #     },
+    # }
 
     results = []
     # Loop over each candidate model in the dictionary.
