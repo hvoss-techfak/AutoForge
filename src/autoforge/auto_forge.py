@@ -164,7 +164,6 @@ def main():
 
     args = parser.parse_args()
 
-
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif args.mps and torch.backends.mps.is_available():
