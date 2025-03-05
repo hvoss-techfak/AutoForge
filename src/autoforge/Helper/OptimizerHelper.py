@@ -152,8 +152,6 @@ def composite_image(
 
         opac = o + (A * torch.log1p(k * (eff_thick / TD_i)) + b * (eff_thick / TD_i))
         opac = torch.clamp(opac, 0.0, 1.0)
-        # Setting opac to 1.0 for the layers where the thickness is less than 2*h to avoid single layer artifacts
-        opac = torch.where(TD_i <= h * 2, torch.tensor(1.0), opac)
 
         comp = comp + ((remaining * opac).unsqueeze(-1) * color_i)
         remaining = remaining * (1 - opac)
