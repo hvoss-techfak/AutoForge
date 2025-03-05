@@ -1,3 +1,4 @@
+import random
 import traceback
 from typing import Any, Tuple
 
@@ -1205,7 +1206,7 @@ def optimize_model(model_name: str,
     init_params = [0.0]
     for rng in model_data["ranges"]:
         low, high = rng
-        init_params.append((low + high) / 2.0)
+        init_params.append(random.randrange(round(low * 10000), round(high * 10000)) / 10000)
     params = torch.tensor(init_params, dtype=torch.float32, requires_grad=True)
     optimizer = optim.Adam([params], lr=lr)
     loss_module = VectorizedLossModule(model_data["func"])
@@ -1214,6 +1215,7 @@ def optimize_model(model_name: str,
     losses = []
     no_improvement_count = 0
     it = 0
+    tbar = tqdm()
     while True:
         try:
             optimizer.zero_grad()
@@ -1225,16 +1227,21 @@ def optimize_model(model_name: str,
                 best_loss = loss.item()
                 best_params = params.detach().clone()
                 no_improvement_count = 0
-                #print(f"Iteration {it}: Loss = {best_loss:.4f}, Params = {best_params.numpy()}")
+                tbar.set_description(f"Loss: {best_loss:.4f}")
             else:
                 no_improvement_count += 1
-            if no_improvement_count >= 1000:
+            if no_improvement_count >= 10000:
                 break
+            #break if loss decrease is less than 1e-6 in last 100 steps
+            # if len(losses) > 1000 and np.mean(losses[-1000:-100]) - np.min(losses[-100:]) < 1e-6:
+            #    break
             it += 1
+            tbar.update(1)
         except Exception:
             traceback.print_exc()
             print(f"Error in iteration {it}")
             break
+    tbar.close()
     if best_params is not None:
         print(f"Final loss for {model_name}: {best_loss:.4f}, Params: {best_params.numpy()}")
     return best_loss, best_params, losses, param_names
@@ -1261,9 +1268,12 @@ def predict_colors(model_func, best_params, T, bg, fg, layer_thickness, num_laye
     t_val = torch.tensor(0.04, dtype=torch.float32)
     T_tensor = torch.tensor(T, dtype=torch.float32)
 
+    offset = best_params[0]
+    best_params = best_params[1:]
+
     for i in range(num_layers):
         # Get candidate model output and interpret as opacity for this layer.
-        opac_tensor = model_func(best_params, t_val, T_tensor)
+        opac_tensor = offset + model_func(best_params, t_val, T_tensor)
         opac = np.clip(opac_tensor.detach().cpu().numpy(), 0.0, 1.0)
         # Update composite: add contribution from this layer.
         composite = composite + (remaining * opac) * fg
@@ -1374,11 +1384,11 @@ def main():
 
     results = []
     # Loop over each candidate model in the dictionary.
-    for model_name, model_data in tqdm(extra_models.items(), desc="Optimizing models"):
+    for model_name, model_data in extra_models.items():
         print(f"\n--- Optimizing {model_name} ---")
         best_loss, best_params, losses, param_names = optimize_model(
             model_name, model_data, transmissions, backgrounds, foregrounds, measured,
-            layer_thickness, num_layers, num_iterations=10000, lr=0.01
+            layer_thickness, num_layers, num_iterations=100000, lr=0.01
         )
         results.append({
             "model": model_name,
@@ -1393,22 +1403,23 @@ def main():
     results.sort(key=lambda x: x["best_loss"])
     print("\n=== Best Models ===")
     for res in results:
-        print(f"{res['model']}: Loss = {res['best_loss']:.4f}, Params = {res['best_params'].numpy()}")
+        if res['best_params'] is not None:
+            print(f"{res['model']}: Loss = {res['best_loss']:.4f}, Params = {res['best_params'].numpy()}")
 
-        # Plot loss curves for each model (using matplotlib)
-        plt.figure(figsize=(10, 6))
-        for res in results:
-            plt.plot(res["losses"], label=res["model"])
-        plt.xlabel("Iteration")
-        plt.ylabel("Loss")
-        plt.title("Loss Curves for Candidate Models")
-        plt.legend()
-        plt.show()
+        # # Plot loss curves for each model (using matplotlib)
+        # plt.figure(figsize=(10, 6))
+        # for res in results:
+        #     plt.plot(res["losses"], label=res["model"])
+        # plt.xlabel("Iteration")
+        # plt.ylabel("Loss")
+        # plt.title("Loss Curves for Candidate Models")
+        # plt.legend()
+        # plt.show()
 
-        # Now plot measured vs predicted for 10 random CSV rows using Plotly,
-        # but only for the top 3 best models.
-        best_three = results[:3]
-        plot_measured_vs_predicted(best_three, df, num_layers, layer_thickness, sample_size=10)
+    # Now plot measured vs predicted for 10 random CSV rows using Plotly,
+    # but only for the top 3 best models.
+    best_three = results[:3]
+    plot_measured_vs_predicted(best_three, df, 16, layer_thickness, sample_size=20)
 
 if __name__ == "__main__":
     main()
