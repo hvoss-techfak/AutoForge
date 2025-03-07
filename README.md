@@ -91,8 +91,11 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--output_size`: Maximum dimension for target image (default: 1024).
 - `--solver_size`: Maximum dimension for solver (fast) image (default: 128). \
   **Note:** We solve on a smaller size as this is many times faster, but also a bit less accurate. Increase if you need more accuracy.
-- `--decay`: Final tau value for the Gumbel-Softmax formulation (default: 0.01).
+- `--init_tau`: Initial tau value for Gumbel-Softmax (default: 1.0).
+- `--final_tau`: Final tau value for the Gumbel-Softmax formulation (default: 0.01).
 - `--visualize`: Flag to enable live visualization of the composite image during optimization.
+- `--tensorboard`: Enable TensorBoard logging
+- `--run-name`: Name of the run used for TensorBoard logging (optional).
 - `--perform_pruning`: Perform pruning after optimization (default: True). \
   **Note:** This is highly recommended even if you don't have a color/color swap limit, as it actually increases the quality of the output.
 - `--pruning_max_colors`: Max number of colors allowed after pruning (default: 100).
