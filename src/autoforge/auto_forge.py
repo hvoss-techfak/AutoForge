@@ -86,7 +86,10 @@ def main():
         help="Maximum dimension for solver (fast) image",
     )
     parser.add_argument(
-        "--decay", type=float, default=0.01, help="Final tau value for Gumbel-Softmax"
+        "--init_tau", type=float, default=0.2, help="Initial tau value for Gumbel-Softmax"
+    )
+    parser.add_argument(
+        "--final_tau", type=float, default=1.0, help="Final tau value for Gumbel-Softmax"
     )
 
     parser.add_argument(
@@ -166,6 +169,16 @@ def main():
         "--mps",
         action="store_true",
         help="Use the Metal Performance Shaders (MPS) backend, if available.",
+    )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        help="Name of the run used for TensorBoard logging"
+    )
+    parser.add_argument(
+        "--tensorboard",
+        action="store_true",
+        help="Enable TensorBoard logging"
     )
 
     args = parser.parse_args()
@@ -261,11 +274,16 @@ def main():
     tbar = tqdm(range(args.iterations))
     for i in tbar:
         loss_val = optimizer.step(record_best=i % 3 == 0)
+
         optimizer.visualize(interval=25)
+        optimizer.log_to_tensorboard(interval=100)
+
         if (i + 1) % 100 == 0:
             tbar.set_description(
                 f"Iteration {i + 1}, Loss = {loss_val:.4f}, best validation Loss = {optimizer.best_discrete_loss:.4f}"
             )
+
+    post_opt_step = 0
 
     # After we finish, we can get the final discrete solution at solver resolution
     disc_global, disc_height_image = optimizer.get_discretized_solution(best=True)
@@ -274,10 +292,13 @@ def main():
     new_rng_seed, new_loss = optimizer.rng_seed_search(
         optimizer.best_discrete_loss, 1000
     )
+
     if new_loss < optimizer.best_discrete_loss:
         optimizer.best_seed = new_rng_seed
         optimizer.best_discrete_loss = new_loss
         print(f"New best seed found: {new_rng_seed} with loss: {new_loss}")
+
+    optimizer.log_to_tensorboard(interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1))
 
     # Optionally prune
     if args.perform_pruning:
@@ -289,10 +310,15 @@ def main():
             tau_g=optimizer.best_tau,
         )
 
+        optimizer.log_to_tensorboard(interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1))
+
         # Do a quick search for a better rng seed
         new_rng_seed, new_loss = optimizer.rng_seed_search(
             optimizer.best_discrete_loss, 1000
         )
+
+        optimizer.log_to_tensorboard(interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1))
+
         if new_loss < optimizer.best_discrete_loss:
             optimizer.best_seed = new_rng_seed
             optimizer.best_discrete_loss = new_loss
@@ -312,7 +338,7 @@ def main():
         print("Removing redundant layers from the discrete solution...")
         params, pruned_loss, max_layers = prune_redundant_layers(
             params,
-            final_tau=args.decay,
+            final_tau=args.final_tau,
             h=args.layer_height,
             target=output_target,  # or whichever target image you use for final compositing
             material_colors=material_colors,
@@ -326,7 +352,7 @@ def main():
         args.max_layers = max_layers
 
     disc_global, disc_height_image = discretize_solution(
-        params, args.decay, args.layer_height, args.max_layers
+        params, args.final_tau, args.layer_height, args.max_layers
     )
 
     print("Done. Saving outputs...")
@@ -334,8 +360,8 @@ def main():
     comp_disc = composite_image(
         params["pixel_height_logits"],
         params["global_logits"],
-        args.decay,
-        args.decay,
+        args.final_tau,
+        args.final_tau,
         args.layer_height,
         args.max_layers,
         material_colors,
@@ -344,6 +370,10 @@ def main():
         mode="discrete",  # or "discrete" if you prefer fully discrete
         rng_seed=optimizer.best_seed,
     )
+
+    optimizer.log_to_tensorboard(interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1))
+
+
     comp_disc_np = comp_disc.cpu().numpy().astype(np.uint8)
     comp_disc_np = cv2.cvtColor(comp_disc_np, cv2.COLOR_RGB2BGR)
     cv2.imwrite(os.path.join(args.output_folder, "final_model.png"), comp_disc_np)

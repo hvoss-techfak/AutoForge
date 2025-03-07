@@ -8,3 +8,5 @@ tqdm>=4.50.0
 pandas>=1.1.0
 scikit-image
 scikit-learn
+tensorboard
+standard-imghdr

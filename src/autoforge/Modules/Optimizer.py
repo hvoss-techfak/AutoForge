@@ -7,9 +7,10 @@ import numpy as np
 import torch
 import torch.optim as optim
 from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
 
 from autoforge.Helper.OptimizerHelper import composite_image, discretize_solution
-from autoforge.Helper.PruningHelper import prune_colors_and_swaps
+from autoforge.Helper.PruningHelper import prune_colors_and_swaps, find_color_bands
 from autoforge.Loss.LossFunctions import loss_fn, compute_loss
 
 
@@ -53,11 +54,21 @@ class FilamentOptimizer:
         self.max_layers = args.max_layers
         self.h = args.layer_height
         self.learning_rate = args.learning_rate
-        self.final_tau = args.decay
+        self.final_tau = args.final_tau
+        self.init_tau = args.init_tau
         self.device = device
-
+        self.best_swaps = 0
         self.perception_loss_module = perception_loss_module
         self.visualize_flag = args.visualize
+
+        # Initialize TensorBoard writer
+        if args.tensorboard:
+            if args.run_name:
+                self.writer = SummaryWriter(log_dir=f'runs/{args.run_name}')
+            else:
+                self.writer = SummaryWriter()
+        else:
+            self.writer = None
 
         # We have an initial guess for 'global_logits'
         num_materials = material_colors.shape[0]
@@ -131,7 +142,7 @@ class FilamentOptimizer:
             Tuple[float, float]: Tau values for height and global.
         """
         i = self.num_steps_done
-        tau_init = 1.0
+        tau_init = self.init_tau
         if i < self.warmup_steps:
             return tau_init, tau_init
         else:
@@ -181,6 +192,52 @@ class FilamentOptimizer:
         self.loss = loss
 
         return loss
+
+    def log_to_tensorboard(self, interval: int = 100, namespace: str = "", step: int = None):
+        """
+        Log metrics and images to TensorBoard.
+
+        Args:
+            interval (int, optional): Interval for logging images. Defaults to 100.
+            namespace (str, optional): Namespace prefix for logs. If provided, logs will be prefixed with this value. Defaults to "".
+            step (int, optional): Optional override for the step number to log. Defaults to None.
+        """
+        if not self.log_to_tensorboard or self.writer is None:
+            return
+
+        # Prepare namespace prefix
+        prefix = f"{namespace}/" if namespace else ""
+
+        steps = step if step is not None else self.num_steps_done
+
+        # Log metrics
+        self.writer.add_scalar(f'Loss/{prefix}best_discrete', self.best_discrete_loss, steps)
+        self.writer.add_scalar(f'Loss/{prefix}best_swaps', self.best_swaps, steps)
+
+        tau_height, tau_global = self._get_tau()
+
+        # Metrics that are only relevant for the main optimization loop
+        if not prefix:
+            self.writer.add_scalar('Params/tau_height', tau_height, steps)
+            self.writer.add_scalar('Params/tau_global', tau_global, steps)
+            self.writer.add_scalar('Params/lr', self.optimizer.param_groups[0]['lr'], steps)
+            self.writer.add_scalar('Loss/train', self.loss, steps)
+
+        # Log images periodically
+        if (steps + 1) % interval == 0:
+            with torch.no_grad():
+                comp_img = composite_image(
+                    self.params["pixel_height_logits"],
+                    self.params["global_logits"],
+                    tau_height,
+                    tau_global,
+                    self.h,
+                    self.max_layers,
+                    self.material_colors,
+                    self.material_TDs,
+                    self.background
+                )
+                self.writer.add_images(f'Current Output/{prefix}composite', comp_img.permute(2, 0, 1).unsqueeze(0) / 255.0, steps)
 
     def visualize(self, interval: int = 25):
         """
@@ -410,6 +467,7 @@ class FilamentOptimizer:
                 self.best_params = self.get_current_parameters()
                 self.best_tau = tau_g
                 self.best_seed = seed
+                self.best_swaps = len(find_color_bands(disc_global)) - 1
 
     def rng_seed_search(self, start_loss: float, num_seeds: int):
         """
@@ -455,3 +513,10 @@ class FilamentOptimizer:
                 best_loss = current_disc_loss
                 best_seed = seed
         return best_seed, best_loss
+
+    def __del__(self):
+        """
+        Clean up resources when the optimizer is destroyed.
+        """
+        if self.writer is not None:
+            self.writer.close()
