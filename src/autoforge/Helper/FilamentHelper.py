@@ -1,3 +1,5 @@
+import uuid
+
 import numpy as np
 import pandas as pd
 import torch
@@ -104,8 +106,9 @@ def swatch_data_to_table(swatch_data):
             {
                 "Brand": brand,
                 "Name": name,
-                "Transmission Distance": td,
-                "Hex Color": f"#{hex_color}",
+                "TD": td,
+                "HexColor": f"#{hex_color}",
+                "Uuid": str(uuid.uuid4()),
             }
         )
     return table

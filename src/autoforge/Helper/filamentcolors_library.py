@@ -8,8 +8,9 @@ API_VERSION_URL = "https://filamentcolors.xyz/api/version/"
 SWATCH_API_URL = "https://filamentcolors.xyz/api/swatch/?m=manufacturer"
 
 # Local file names
-DATA_FILE = "swatches.json"
-VERSION_FILE = "swatches_version.json"
+DATA_FILE = "../swatches.json"
+VERSION_FILE = "../swatches_version.json"
+
 
 def get_api_version():
     """
@@ -27,6 +28,7 @@ def get_api_version():
     response.raise_for_status()
     return response.json()
 
+
 def load_local_version():
     """
     Loads the locally saved version info if it exists.
@@ -39,9 +41,11 @@ def load_local_version():
                       otherwise None.
     """
     if os.path.exists(VERSION_FILE):
-        with open(VERSION_FILE, 'r') as f:
+        with open(VERSION_FILE, "r") as f:
             return json.load(f)
     return None
+
+
 def save_local_version(version_info):
     """
     Saves the version info locally.
@@ -49,8 +53,9 @@ def save_local_version(version_info):
     Args:
         version_info (dict): A dictionary containing the version information to be saved.
     """
-    with open(VERSION_FILE, 'w') as f:
+    with open(VERSION_FILE, "w") as f:
         json.dump(version_info, f)
+
 
 def download_all_pages(url):
     """
@@ -70,7 +75,7 @@ def download_all_pages(url):
         requests.RequestException: If any of the requests to the URL fail.
     """
     all_results = []
-    tbar = tqdm(desc="Downloading", unit="swatches page")
+    tbar = tqdm(desc="Downloading", unit=" swatches page")
     while url:
         response = requests.get(url)
         response.raise_for_status()
@@ -79,6 +84,7 @@ def download_all_pages(url):
         url = data.get("next")
         tbar.update(1)
     return all_results
+
 
 def download_filament_info():
     """
@@ -101,10 +107,15 @@ def download_filament_info():
         return
 
     local_version = load_local_version()
-    if local_version and local_version.get("db_last_modified") == api_version.get("db_last_modified"):
-        print("Data is up-to-date. No download needed.")
+    if local_version and local_version.get("db_last_modified") == api_version.get(
+        "db_last_modified"
+    ):
+        print(
+            "Data is up-to-date. No download needed. File last modified:",
+            api_version.get("db_last_modified"),
+        )
+        print("Swatch File location:", DATA_FILE)
         return
-
 
     print("Downloading new filament color data...")
     try:
@@ -113,11 +124,12 @@ def download_filament_info():
         print("Error downloading swatch data:", e)
         return
 
-
-    with open(DATA_FILE, 'w') as f:
+    with open(DATA_FILE, "w") as f:
         json.dump(results, f)
 
     save_local_version(api_version)
     print("Download complete, data saved to", DATA_FILE)
+
+
 if __name__ == "__main__":
     download_filament_info()

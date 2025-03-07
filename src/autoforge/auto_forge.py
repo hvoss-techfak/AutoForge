@@ -58,6 +58,12 @@ def main():
         "--max_layers", type=int, default=75, help="Maximum number of layers"
     )
     parser.add_argument(
+        "--min_layers",
+        type=int,
+        default=0,
+        help="Minimum number of layers. Used for pruning.",
+    )
+    parser.add_argument(
         "--background_height",
         type=float,
         default=0.4,
@@ -315,6 +321,7 @@ def main():
             rng_seed=optimizer.best_seed,  # using the best seed from your optimizer
             perception_loss_module=perception_loss_module,
             tolerance=1e-3,  # adjust as needed
+            min_layers=args.min_layers,
         )
         args.max_layers = max_layers
 
