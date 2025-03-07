@@ -89,7 +89,7 @@ def main():
         "--init_tau", type=float, default=1.0, help="Initial tau value for Gumbel-Softmax"
     )
     parser.add_argument(
-        "--final_tau", type=float, default=0.2, help="Final tau value for Gumbel-Softmax"
+        "--final_tau", type=float, default=0.01, help="Final tau value for Gumbel-Softmax"
     )
 
     parser.add_argument(
