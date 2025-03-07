@@ -1,5 +1,8 @@
 import os
 import json
+import time
+import traceback
+
 import requests
 from tqdm import tqdm
 
@@ -10,7 +13,7 @@ SWATCH_API_URL = "https://filamentcolors.xyz/api/swatch/?m=manufacturer"
 # Local file names
 DATA_FILE = "../swatches.json"
 VERSION_FILE = "../swatches_version.json"
-
+LAST_CHECKED_FILE = "../last_checked.json"
 
 def get_api_version():
     """
@@ -100,6 +103,25 @@ def download_filament_info():
     Raises:
         requests.RequestException: If any of the requests to the API fail.
     """
+    #load or create last checked file
+    last_modified_checked = None
+    try:
+        if os.path.exists(LAST_CHECKED_FILE):
+            with open(LAST_CHECKED_FILE, "r") as f:
+                last_modified_checked = json.load(f).get("db_last_modified")
+        else:
+            with open(LAST_CHECKED_FILE, "w") as f:
+                last_modified_checked = 0
+                json.dump({"db_last_modified": time.time()}, f)
+    except Exception as e:
+        print("Failed to load last checked file:", e)
+        traceback.print_exc()
+    update_minimum_time = 60 * 60 * 24  # 24 hours
+
+    if last_modified_checked and time.time() - last_modified_checked < update_minimum_time:
+        print("Data was checked recently. Skipping download.")
+        return
+
     try:
         api_version = get_api_version()
     except requests.RequestException as e:

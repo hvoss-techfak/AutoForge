@@ -272,7 +272,7 @@ def main():
 
     # Do a quick search for a better rng seed
     new_rng_seed, new_loss = optimizer.rng_seed_search(
-        optimizer.best_discrete_loss, 1000
+        optimizer.best_discrete_loss, 100
     )
     if new_loss < optimizer.best_discrete_loss:
         optimizer.best_seed = new_rng_seed
@@ -291,7 +291,7 @@ def main():
 
         # Do a quick search for a better rng seed
         new_rng_seed, new_loss = optimizer.rng_seed_search(
-            optimizer.best_discrete_loss, 1000
+            optimizer.best_discrete_loss, 500
         )
         if new_loss < optimizer.best_discrete_loss:
             optimizer.best_seed = new_rng_seed

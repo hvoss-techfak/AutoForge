@@ -7,14 +7,8 @@ import os
 
 os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
 
-import uvicorn
 
 from autoforge.Helper.filamentcolors_library import download_filament_info
-
-
-def run_backend():
-    # Start the FastAPI backend on port 8000
-    uvicorn.run("backend:app", host="127.0.0.1", port=8000, log_level="info")
 
 
 def run_streamlit():

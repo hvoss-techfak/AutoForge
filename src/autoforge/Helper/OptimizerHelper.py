@@ -615,7 +615,7 @@ def init_height_map(target, max_layers, h, eps=1e-6, random_seed=None):
 
     # --- Step 2: Second clustering of centroids into bands ---
     num_bands = choose_optimal_num_bands(
-        centroids, min_bands=4, max_bands=10, random_seed=random_seed
+        centroids, min_bands=8, max_bands=10, random_seed=random_seed
     )
     band_kmeans = KMeans(n_clusters=num_bands, random_state=random_seed).fit(centroids)
     band_labels = band_kmeans.labels_
