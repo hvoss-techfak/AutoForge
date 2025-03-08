@@ -186,32 +186,43 @@ def generate_project_file(
         json.dump(project_data, f, indent=4)
 
 
-def generate_stl(height_map, filename, background_height, scale=1.0):
+def generate_stl(height_map, filename, background_height, maximum_x_y_size):
     """
     Generate a binary STL file from a height map with shared boundary vertices
-    to fix non-manifold edge warnings.
+    to fix non-manifold edge warnings, scaling the x and y dimensions to a maximum
+    size specified in millimeters.
 
     Args:
         height_map (np.ndarray): 2D array representing the height map.
         filename (str): The name of the output STL file.
         background_height (float): The height of the background in the STL model.
-        scale (float, optional): Scale factor for the x dimension (and optionally y). Defaults to 1.0.
+        maximum_x_y_size (float): Maximum size (in millimeters) for the x and y dimensions.
     """
     H, W = height_map.shape
 
     # Create the top vertices grid.
-    # Note: y is computed as H-1-i. (Apply scale to y if desired.)
+    # Note: y is computed as H-1-i.
     top_vertices = np.zeros((H, W, 3), dtype=np.float32)
     for i in range(H):
         for j in range(W):
-            top_vertices[i, j, 0] = j * scale
-            top_vertices[i, j, 1] = H - 1 - i  # or (H - 1 - i) * scale if you want uniform scaling
+            top_vertices[i, j, 0] = j
+            top_vertices[i, j, 1] = H - 1 - i  # y coordinate: top row has highest value
             top_vertices[i, j, 2] = height_map[i, j] + background_height
 
-    # Create the bottom vertices for the boundary by copying the x and y coordinates,
-    # but setting z to 0. Using these ensures that adjacent triangles share the same vertices.
+    # Create the bottom vertices for the boundary by copying x and y coordinates,
+    # but setting z to 0.
     bottom_vertices = top_vertices.copy()
     bottom_vertices[:, :, 2] = 0
+
+    # --- Scale vertices so that the maximum x or y dimension equals maximum_x_y_size ---
+    # The current extents in x and y are 0 to (W - 1) and 0 to (H - 1), respectively.
+    # We use the maximum of these as our original size.
+    original_max = max(W - 1, H - 1)
+    scale = maximum_x_y_size / original_max
+    top_vertices[:, :, 0] *= scale
+    top_vertices[:, :, 1] *= scale
+    bottom_vertices[:, :, 0] *= scale
+    bottom_vertices[:, :, 1] *= scale
 
     triangles = []
 
@@ -226,7 +237,7 @@ def generate_stl(height_map, filename, background_height, scale=1.0):
             v1 = top_vertices[i, j + 1]
             v2 = top_vertices[i + 1, j + 1]
             v3 = top_vertices[i + 1, j]
-            # Using reversed order so that normals face upward.
+            # Use reversed order so that normals face upward.
             add_triangle(v2, v1, v0)
             add_triangle(v3, v2, v0)
 

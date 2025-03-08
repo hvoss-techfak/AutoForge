@@ -93,6 +93,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
   **Note:** We solve on a smaller size as this is many times faster, but also a bit less accurate. Increase if you need more accuracy.
 - `--init_tau`: Initial tau value for Gumbel-Softmax (default: 1.0).
 - `--final_tau`: Final tau value for the Gumbel-Softmax formulation (default: 0.01).
+- `--stl_output_size`: Size of the output stl file in mm (default: 200) (20cm).
 - `--visualize`: Flag to enable live visualization of the composite image during optimization.
 - `--tensorboard`: Enable TensorBoard logging
 - `--run-name`: Name of the run used for TensorBoard logging (optional).

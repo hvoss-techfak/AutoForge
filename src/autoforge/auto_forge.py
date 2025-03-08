@@ -99,6 +99,13 @@ def main():
     )
 
     parser.add_argument(
+        "--stl_output_size",
+        type=int,
+        default=200,
+        help="Size of the longest dimension of the output STL file",
+    )
+
+    parser.add_argument(
         "--perform_pruning",
         type=bool,
         default=True,
@@ -382,7 +389,7 @@ def main():
     height_map_mm = (
         disc_height_image.cpu().numpy().astype(np.float32)
     ) * args.layer_height
-    generate_stl(height_map_mm, stl_filename, args.background_height, scale=1.0)
+    generate_stl(height_map_mm, stl_filename, args.background_height, maximum_x_y_size=args.stl_output_size)
 
     # Swap instructions
     background_layers = int(args.background_height // args.layer_height)
