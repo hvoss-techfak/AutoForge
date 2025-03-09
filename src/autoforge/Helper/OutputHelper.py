@@ -186,37 +186,50 @@ def generate_project_file(
         json.dump(project_data, f, indent=4)
 
 
-def generate_stl(height_map, filename, background_height, maximum_x_y_size):
+import numpy as np
+import struct
+
+
+def generate_stl(height_map, filename, background_height, maximum_x_y_size, alpha_mask=None):
     """
-    Generate a binary STL file from a height map with shared boundary vertices
-    to fix non-manifold edge warnings, scaling the x and y dimensions to a maximum
-    size specified in millimeters.
+    Generate a binary STL file from a height map with an optional alpha mask.
+    If alpha_mask is provided, vertices where alpha < 128 are omitted.
+    This function builds a manifold mesh consisting of:
+      - a top surface (only quads whose four vertices are valid),
+      - side walls along the boundary edges of the top surface, and
+      - a bottom face covering the valid region.
 
     Args:
         height_map (np.ndarray): 2D array representing the height map.
         filename (str): The name of the output STL file.
         background_height (float): The height of the background in the STL model.
         maximum_x_y_size (float): Maximum size (in millimeters) for the x and y dimensions.
+        alpha_mask (np.ndarray): Optional alpha mask (same shape as height_map).
+            A pixel is “valid” only if its alpha is ≥ 128.
     """
     H, W = height_map.shape
 
-    # Create the top vertices grid.
-    # Note: y is computed as H-1-i.
+    # Compute valid mask: True if no alpha mask or alpha >= 128.
+    if alpha_mask is None:
+        valid_mask = np.ones((H, W), dtype=bool)
+    else:
+        valid_mask = (alpha_mask >= 128)
+
+    # --- Create vertices for the top surface ---
+    # We compute a grid of vertices (even for masked-out regions) but later only use those that are valid.
     top_vertices = np.zeros((H, W, 3), dtype=np.float32)
     for i in range(H):
         for j in range(W):
             top_vertices[i, j, 0] = j
-            top_vertices[i, j, 1] = H - 1 - i  # y coordinate: top row has highest value
+            # Note: y coordinate is set so that row 0 is at the top.
+            top_vertices[i, j, 1] = H - 1 - i
             top_vertices[i, j, 2] = height_map[i, j] + background_height
 
-    # Create the bottom vertices for the boundary by copying x and y coordinates,
-    # but setting z to 0.
+    # Create corresponding bottom vertices (same x,y but z = 0)
     bottom_vertices = top_vertices.copy()
     bottom_vertices[:, :, 2] = 0
 
     # --- Scale vertices so that the maximum x or y dimension equals maximum_x_y_size ---
-    # The current extents in x and y are 0 to (W - 1) and 0 to (H - 1), respectively.
-    # We use the maximum of these as our original size.
     original_max = max(W - 1, H - 1)
     scale = maximum_x_y_size / original_max
     top_vertices[:, :, 0] *= scale
@@ -224,81 +237,96 @@ def generate_stl(height_map, filename, background_height, maximum_x_y_size):
     bottom_vertices[:, :, 0] *= scale
     bottom_vertices[:, :, 1] *= scale
 
-    triangles = []
+    triangles = []  # List to collect all triangles (each as a tuple of three vertices)
 
     def add_triangle(v1, v2, v3):
-        """Add a triangle defined by vertices v1, v2, and v3."""
+        """Append a triangle (defined by 3 vertices) to the triangle list."""
         triangles.append((v1, v2, v3))
 
     # --- Top Surface ---
+    # For the top surface, we iterate over each cell (quad) in the grid.
+    # Only if all 4 corners of the quad are valid do we add two triangles.
+    # We also store the grid indices (i,j) of the vertices used so we can later extract the boundary edges.
+    top_triangles_indices = []  # Each element is a tuple of 3 (i,j) indices.
     for i in range(H - 1):
         for j in range(W - 1):
-            v0 = top_vertices[i, j]
-            v1 = top_vertices[i, j + 1]
-            v2 = top_vertices[i + 1, j + 1]
-            v3 = top_vertices[i + 1, j]
-            # Use reversed order so that normals face upward.
-            add_triangle(v2, v1, v0)
-            add_triangle(v3, v2, v0)
+            if valid_mask[i, j] and valid_mask[i, j + 1] and valid_mask[i + 1, j + 1] and valid_mask[i + 1, j]:
+                # Define the four corners of the quad.
+                v0 = top_vertices[i, j]
+                v1 = top_vertices[i, j + 1]
+                v2 = top_vertices[i + 1, j + 1]
+                v3 = top_vertices[i + 1, j]
+                # For the top surface, use a reversed order so that the computed normal (via cross product) faces upward.
+                add_triangle(v2, v1, v0)
+                add_triangle(v3, v2, v0)
+                # Save the corresponding grid indices (for later boundary detection)
+                top_triangles_indices.append(((i, j), (i, j + 1), (i + 1, j + 1)))
+                top_triangles_indices.append(((i + 1, j), (i + 1, j + 1), (i, j)))
 
     # --- Side Walls ---
-    # Top edge (i = 0)
-    for j in range(W - 1):
-        vt0 = top_vertices[0, j]
-        vt1 = top_vertices[0, j + 1]
-        vb0 = bottom_vertices[0, j]
-        vb1 = bottom_vertices[0, j + 1]
-        add_triangle(vt0, vt1, vb1)
-        add_triangle(vt0, vb1, vb0)
+    # Instead of simply using the rectangular border, we compute the boundary of the top surface.
+    # We count each undirected edge from the top surface triangles and select those that appear only once.
+    edge_count = {}
 
-    # Bottom edge (i = H - 1)
-    for j in range(W - 1):
-        vt0 = top_vertices[H - 1, j]
-        vt1 = top_vertices[H - 1, j + 1]
-        vb0 = bottom_vertices[H - 1, j]
-        vb1 = bottom_vertices[H - 1, j + 1]
-        add_triangle(vt1, vt0, vb0)
-        add_triangle(vt1, vb0, vb1)
+    def add_edge(idx1, idx2):
+        # Store an undirected edge as a sorted tuple of the grid indices.
+        key = tuple(sorted((idx1, idx2)))
+        edge_count[key] = edge_count.get(key, 0) + 1
 
-    # Left edge (j = 0)
-    for i in range(H - 1):
-        vt0 = top_vertices[i, 0]
-        vt1 = top_vertices[i + 1, 0]
-        vb0 = bottom_vertices[i, 0]
-        vb1 = bottom_vertices[i + 1, 0]
-        add_triangle(vt1, vt0, vb0)
-        add_triangle(vt1, vb0, vb1)
+    for tri in top_triangles_indices:
+        add_edge(tri[0], tri[1])
+        add_edge(tri[1], tri[2])
+        add_edge(tri[2], tri[0])
 
-    # Right edge (j = W - 1)
-    for i in range(H - 1):
-        vt0 = top_vertices[i, W - 1]
-        vt1 = top_vertices[i + 1, W - 1]
-        vb0 = bottom_vertices[i, W - 1]
-        vb1 = bottom_vertices[i + 1, W - 1]
-        add_triangle(vt0, vt1, vb1)
-        add_triangle(vt0, vb1, vb0)
+    # A boundary edge appears only once.
+    boundary_edges = [edge for edge, count in edge_count.items() if count == 1]
+
+    # Helper functions to get the coordinate for a given grid index.
+    def get_top_vertex(idx):
+        i, j = idx
+        return top_vertices[i, j]
+
+    def get_bottom_vertex(idx):
+        i, j = idx
+        return bottom_vertices[i, j]
+
+    # For each boundary edge, create a vertical wall.
+    for edge in boundary_edges:
+        idx1, idx2 = edge
+        v_top1 = get_top_vertex(idx1)
+        v_top2 = get_top_vertex(idx2)
+        v_bottom1 = get_bottom_vertex(idx1)
+        v_bottom2 = get_bottom_vertex(idx2)
+        # Create a quad (two triangles) connecting the top edge to the bottom.
+        add_triangle(v_top1, v_top2, v_bottom2)
+        add_triangle(v_top1, v_bottom2, v_bottom1)
 
     # --- Bottom Face ---
-    # Use the four corner vertices from the bottom_vertices grid.
-    b_top_left = bottom_vertices[0, 0]
-    b_top_right = bottom_vertices[0, W - 1]
-    b_bottom_right = bottom_vertices[H - 1, W - 1]
-    b_bottom_left = bottom_vertices[H - 1, 0]
-    # Triangulate the bottom face (ensure the normal faces downward).
-    add_triangle(b_bottom_right, b_top_right, b_top_left)
-    add_triangle(b_bottom_left, b_bottom_right, b_top_left)
+    # For the bottom face, we mimic the top-surface logic but using the bottom vertices.
+    # The ordering is reversed (relative to the top face) so that the normals face downward.
+    for i in range(H - 1):
+        for j in range(W - 1):
+            if valid_mask[i, j] and valid_mask[i, j + 1] and valid_mask[i + 1, j + 1] and valid_mask[i + 1, j]:
+                v0 = bottom_vertices[i, j]
+                v1 = bottom_vertices[i, j + 1]
+                v2 = bottom_vertices[i + 1, j + 1]
+                v3 = bottom_vertices[i + 1, j]
+                # Order so that the normal will point downward.
+                add_triangle(v0, v1, v2)
+                add_triangle(v0, v2, v3)
 
     num_triangles = len(triangles)
 
-    # --- Write Binary STL ---
+    # --- Write Binary STL File ---
     with open(filename, "wb") as f:
-        header_str = "Binary STL generated from heightmap"
+        header_str = "Binary STL generated from heightmap with alpha mask"
         header = header_str.encode("utf-8")
         header = header.ljust(80, b" ")
         f.write(header)
         f.write(struct.pack("<I", num_triangles))
         for tri in triangles:
             v1, v2, v3 = tri
+            # Compute the normal as the normalized cross product of (v2-v1) and (v3-v1).
             normal = np.cross(v2 - v1, v3 - v1)
             norm = np.linalg.norm(normal)
             if norm == 0:

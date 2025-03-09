@@ -7,7 +7,7 @@ import numpy as np
 from tqdm import tqdm
 
 from autoforge.Helper.FilamentHelper import hex_to_rgb, load_materials
-from autoforge.Helper.ImageHelper import resize_image
+from autoforge.Helper.ImageHelper import resize_image, resize_image_exact
 from autoforge.Helper.OptimizerHelper import (
     init_height_map,
     composite_image,
@@ -86,10 +86,16 @@ def main():
         help="Maximum dimension for solver (fast) image",
     )
     parser.add_argument(
-        "--init_tau", type=float, default=1.0, help="Initial tau value for Gumbel-Softmax"
+        "--init_tau",
+        type=float,
+        default=1.0,
+        help="Initial tau value for Gumbel-Softmax",
     )
     parser.add_argument(
-        "--final_tau", type=float, default=0.01, help="Final tau value for Gumbel-Softmax"
+        "--final_tau",
+        type=float,
+        default=0.01,
+        help="Final tau value for Gumbel-Softmax",
     )
 
     parser.add_argument(
@@ -178,14 +184,10 @@ def main():
         help="Use the Metal Performance Shaders (MPS) backend, if available.",
     )
     parser.add_argument(
-        "--run-name",
-        type=str,
-        help="Name of the run used for TensorBoard logging"
+        "--run-name", type=str, help="Name of the run used for TensorBoard logging"
     )
     parser.add_argument(
-        "--tensorboard",
-        action="store_true",
-        help="Enable TensorBoard logging"
+        "--tensorboard", action="store_true", help="Enable TensorBoard logging"
     )
 
     args = parser.parse_args()
@@ -225,7 +227,18 @@ def main():
     material_TDs = torch.tensor(material_TDs_np, dtype=torch.float32, device=device)
 
     # Read input image
-    img = cv2.imread(args.input_image)
+    img = cv2.imread(args.input_image, cv2.IMREAD_UNCHANGED)
+
+    alpha = None
+    # check for alpha mask
+    if img.shape[2] == 4:
+        # Extract the alpha channel
+        alpha = img[:, :, 3]
+        alpha = alpha[..., None]
+        alpha = resize_image(alpha, args.output_size)
+        # Convert the image from BGRA to BGR
+        img = img[:, :, :3]
+
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
     # This smaller 'target' is the solver resolution
@@ -254,11 +267,15 @@ def main():
             output_img_np, args.max_layers, args.layer_height, random_seed=random_seed
         )
 
+    # if we have an alpha mask we set the height for thos pixels to -13.815512 (the lowest init sigmoid value)
+    if alpha is not None:
+        pixel_height_logits_init[alpha < 128] = -13.815512
+
     # But we will solve at the smaller resolution => resize that init to solver size
     # Add a dummy channel so that cv2.resize can handle it
     tmp_3d = pixel_height_logits_init[..., None]  # shape (H, W, 1)
-    phl_solver_np = resize_image(
-        tmp_3d, args.solver_size
+    phl_solver_np = resize_image_exact(
+        tmp_3d, target_solver.shape[1], target_solver.shape[0]
     )  # shape (H', W') cause of weird opencv quirk
 
     # VGG Perceptual Loss
@@ -305,7 +322,9 @@ def main():
         optimizer.best_discrete_loss = new_loss
         print(f"New best seed found: {new_rng_seed} with loss: {new_loss}")
 
-    optimizer.log_to_tensorboard(interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1))
+    optimizer.log_to_tensorboard(
+        interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
+    )
 
     # Optionally prune
     if args.perform_pruning:
@@ -317,14 +336,18 @@ def main():
             tau_g=optimizer.best_tau,
         )
 
-        optimizer.log_to_tensorboard(interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1))
+        optimizer.log_to_tensorboard(
+            interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
+        )
 
         # Do a quick search for a better rng seed
         new_rng_seed, new_loss = optimizer.rng_seed_search(
             optimizer.best_discrete_loss, 500
         )
 
-        optimizer.log_to_tensorboard(interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1))
+        optimizer.log_to_tensorboard(
+            interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
+        )
 
         if new_loss < optimizer.best_discrete_loss:
             optimizer.best_seed = new_rng_seed
@@ -378,8 +401,9 @@ def main():
         rng_seed=optimizer.best_seed,
     )
 
-    optimizer.log_to_tensorboard(interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1))
-
+    optimizer.log_to_tensorboard(
+        interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
+    )
 
     comp_disc_np = comp_disc.cpu().numpy().astype(np.uint8)
     comp_disc_np = cv2.cvtColor(comp_disc_np, cv2.COLOR_RGB2BGR)
@@ -389,7 +413,13 @@ def main():
     height_map_mm = (
         disc_height_image.cpu().numpy().astype(np.float32)
     ) * args.layer_height
-    generate_stl(height_map_mm, stl_filename, args.background_height, maximum_x_y_size=args.stl_output_size)
+    generate_stl(
+        height_map_mm,
+        stl_filename,
+        args.background_height,
+        maximum_x_y_size=args.stl_output_size,
+        alpha_mask=alpha,
+    )
 
     # Swap instructions
     background_layers = int(args.background_height // args.layer_height)

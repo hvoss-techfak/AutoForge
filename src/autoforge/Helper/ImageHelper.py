@@ -23,6 +23,14 @@ def resize_image(img, max_size):
     return img_out
 
 
+def resize_image_exact(img, new_w, new_h):
+    img_out = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+    # INTER_CUBIC is actually not a good choice for shrinking images. Except in our case.
+    # As we shrink the image, we lose information and the image becomes blurry with INTER_AREA. This is detrimental for the solver. If you want to try it out be my guest.
+    # INTER_AREA actually destroys a lot of the colors of our solver.
+    return img_out
+
+
 def srgb_to_lab(srgb, eps=1e-6):
     """
     Converts an sRGB image (values in [0, 255]) to the CIELAB color space.
