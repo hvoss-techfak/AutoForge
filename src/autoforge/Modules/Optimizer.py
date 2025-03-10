@@ -5,13 +5,15 @@ import random
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.optim as optim
-from torch.optim import AdamW
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
 from autoforge.Helper.CAdamW import CAdamW
-from autoforge.Helper.OptimizerHelper import composite_image, discretize_solution
+from autoforge.Helper.OptimizerHelper import (
+    discretize_solution,
+    composite_image_cont,
+    composite_image_disc,
+)
 from autoforge.Helper.PruningHelper import prune_colors_and_swaps, find_color_bands
 from autoforge.Loss.LossFunctions import loss_fn, compute_loss
 
@@ -66,7 +68,7 @@ class FilamentOptimizer:
         # Initialize TensorBoard writer
         if args.tensorboard:
             if args.run_name:
-                self.writer = SummaryWriter(log_dir=f'runs/{args.run_name}')
+                self.writer = SummaryWriter(log_dir=f"runs/{args.run_name}")
             else:
                 self.writer = SummaryWriter()
         else:
@@ -103,7 +105,8 @@ class FilamentOptimizer:
         # Initialize optimizer
         self.optimizer = CAdamW(
             [self.params["pixel_height_logits"], self.params["global_logits"]],
-            lr=self.learning_rate,weight_decay=1e-2
+            lr=self.learning_rate,
+            weight_decay=1e-2,
         )
 
         # Setup best discrete solution tracking
@@ -195,7 +198,9 @@ class FilamentOptimizer:
 
         return loss
 
-    def log_to_tensorboard(self, interval: int = 100, namespace: str = "", step: int = None):
+    def log_to_tensorboard(
+        self, interval: int = 100, namespace: str = "", step: int = None
+    ):
         """
         Log metrics and images to TensorBoard.
 
@@ -213,22 +218,26 @@ class FilamentOptimizer:
         steps = step if step is not None else self.num_steps_done
 
         # Log metrics
-        self.writer.add_scalar(f'Loss/{prefix}best_discrete', self.best_discrete_loss, steps)
-        self.writer.add_scalar(f'Loss/{prefix}best_swaps', self.best_swaps, steps)
+        self.writer.add_scalar(
+            f"Loss/{prefix}best_discrete", self.best_discrete_loss, steps
+        )
+        self.writer.add_scalar(f"Loss/{prefix}best_swaps", self.best_swaps, steps)
 
         tau_height, tau_global = self._get_tau()
 
         # Metrics that are only relevant for the main optimization loop
         if not prefix:
-            self.writer.add_scalar('Params/tau_height', tau_height, steps)
-            self.writer.add_scalar('Params/tau_global', tau_global, steps)
-            self.writer.add_scalar('Params/lr', self.optimizer.param_groups[0]['lr'], steps)
-            self.writer.add_scalar('Loss/train', self.loss, steps)
+            self.writer.add_scalar("Params/tau_height", tau_height, steps)
+            self.writer.add_scalar("Params/tau_global", tau_global, steps)
+            self.writer.add_scalar(
+                "Params/lr", self.optimizer.param_groups[0]["lr"], steps
+            )
+            self.writer.add_scalar("Loss/train", self.loss, steps)
 
         # Log images periodically
         if (steps + 1) % interval == 0:
             with torch.no_grad():
-                comp_img = composite_image(
+                comp_img = composite_image_cont(
                     self.params["pixel_height_logits"],
                     self.params["global_logits"],
                     tau_height,
@@ -237,9 +246,13 @@ class FilamentOptimizer:
                     self.max_layers,
                     self.material_colors,
                     self.material_TDs,
-                    self.background
+                    self.background,
                 )
-                self.writer.add_images(f'Current Output/{prefix}composite', comp_img.permute(2, 0, 1).unsqueeze(0) / 255.0, steps)
+                self.writer.add_images(
+                    f"Current Output/{prefix}composite",
+                    comp_img.permute(2, 0, 1).unsqueeze(0) / 255.0,
+                    steps,
+                )
 
     def visualize(self, interval: int = 25):
         """
@@ -257,7 +270,7 @@ class FilamentOptimizer:
 
         with torch.no_grad():
             tau_h, tau_g = self._get_tau()
-            comp = composite_image(
+            comp = composite_image_cont(
                 self.params["pixel_height_logits"],
                 self.params["global_logits"],
                 tau_h,
@@ -267,14 +280,13 @@ class FilamentOptimizer:
                 self.material_colors,
                 self.material_TDs,
                 self.background,
-                mode="continuous",
             )
         comp_np = np.clip(comp.cpu().detach().numpy(), 0, 255).astype(np.uint8)
         self.current_comp_ax.set_data(comp_np)
 
         if self.best_params is not None:
             with torch.no_grad():
-                best_comp = composite_image(
+                best_comp = composite_image_disc(
                     self.best_params["pixel_height_logits"],
                     self.best_params["global_logits"],
                     self.final_tau,
@@ -284,7 +296,6 @@ class FilamentOptimizer:
                     self.material_colors,
                     self.material_TDs,
                     self.background,
-                    mode="discrete",
                     rng_seed=self.best_seed,
                 )
             best_comp_np = np.clip(best_comp.cpu().detach().numpy(), 0, 255).astype(
@@ -436,7 +447,7 @@ class FilamentOptimizer:
 
             # 2) Compute discrete-mode composite
             with torch.no_grad():
-                comp_disc = composite_image(
+                comp_disc = composite_image_disc(
                     self.params["pixel_height_logits"],
                     self.params["global_logits"],
                     self.final_tau,
@@ -446,7 +457,6 @@ class FilamentOptimizer:
                     self.material_colors,
                     self.material_TDs,
                     self.background,
-                    mode="discrete",  # or "discrete" if you prefer fully discrete
                     rng_seed=seed,
                 )
 
@@ -489,7 +499,7 @@ class FilamentOptimizer:
             disc_global, disc_height_image = discretize_solution(
                 self.best_params, self.final_tau, self.h, self.max_layers, rng_seed=seed
             )
-            comp_disc = composite_image(
+            comp_disc = composite_image_disc(
                 self.best_params["pixel_height_logits"],
                 self.best_params["global_logits"],
                 self.final_tau,
@@ -499,7 +509,6 @@ class FilamentOptimizer:
                 self.material_colors,
                 self.material_TDs,
                 self.background,
-                mode="discrete",
                 rng_seed=seed,
             )
             current_disc_loss = compute_loss(

@@ -33,7 +33,7 @@ def extract_filament_swaps(disc_global, disc_height_image, background_layers):
         current = int(disc_global[i])
         # If this is the first layer or the material changes from the previous layer…
         if current != prev:
-            slider = (i + background_layers) - 1
+            slider = i + background_layers
             slider_values.append(slider)
             filament_indices.append(prev)
         prev = current
@@ -118,7 +118,7 @@ def generate_project_file(
         },
     )
     # add black to slider value
-    slider_values.insert(0, (args.background_height // args.layer_height) - 1)
+    slider_values.insert(0, (args.background_height // args.layer_height))
 
     # reverse order of filament set
     filament_set = filament_set[::-1]
@@ -186,11 +186,9 @@ def generate_project_file(
         json.dump(project_data, f, indent=4)
 
 
-import numpy as np
-import struct
-
-
-def generate_stl(height_map, filename, background_height, maximum_x_y_size, alpha_mask=None):
+def generate_stl(
+    height_map, filename, background_height, maximum_x_y_size, alpha_mask=None
+):
     """
     Generate a binary STL file from a height map with an optional alpha mask.
     If alpha_mask is provided, vertices where alpha < 128 are omitted.
@@ -213,7 +211,7 @@ def generate_stl(height_map, filename, background_height, maximum_x_y_size, alph
     if alpha_mask is None:
         valid_mask = np.ones((H, W), dtype=bool)
     else:
-        valid_mask = (alpha_mask >= 128)
+        valid_mask = alpha_mask >= 128
 
     # --- Create vertices for the top surface ---
     # We compute a grid of vertices (even for masked-out regions) but later only use those that are valid.
@@ -250,7 +248,12 @@ def generate_stl(height_map, filename, background_height, maximum_x_y_size, alph
     top_triangles_indices = []  # Each element is a tuple of 3 (i,j) indices.
     for i in range(H - 1):
         for j in range(W - 1):
-            if valid_mask[i, j] and valid_mask[i, j + 1] and valid_mask[i + 1, j + 1] and valid_mask[i + 1, j]:
+            if (
+                valid_mask[i, j]
+                and valid_mask[i, j + 1]
+                and valid_mask[i + 1, j + 1]
+                and valid_mask[i + 1, j]
+            ):
                 # Define the four corners of the quad.
                 v0 = top_vertices[i, j]
                 v1 = top_vertices[i, j + 1]
@@ -306,7 +309,12 @@ def generate_stl(height_map, filename, background_height, maximum_x_y_size, alph
     # The ordering is reversed (relative to the top face) so that the normals face downward.
     for i in range(H - 1):
         for j in range(W - 1):
-            if valid_mask[i, j] and valid_mask[i, j + 1] and valid_mask[i + 1, j + 1] and valid_mask[i + 1, j]:
+            if (
+                valid_mask[i, j]
+                and valid_mask[i, j + 1]
+                and valid_mask[i + 1, j + 1]
+                and valid_mask[i + 1, j]
+            ):
                 v0 = bottom_vertices[i, j]
                 v1 = bottom_vertices[i, j + 1]
                 v2 = bottom_vertices[i + 1, j + 1]
@@ -383,7 +391,7 @@ def generate_swap_instructions(
     instructions.append("Start with your background color")
     for i in range(0, L):
         if i == 0 or int(discrete_global[i]) != int(discrete_global[i - 1]):
-            ie = i
+            ie = i + 1
             instructions.append(
                 f"At layer #{ie + background_layers} ({(ie * h) + background_height:.2f}mm) swap to {material_names[int(discrete_global[i])]}"
             )
