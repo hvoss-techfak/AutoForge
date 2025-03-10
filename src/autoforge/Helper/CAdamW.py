@@ -39,15 +39,7 @@ class CAdamW(Optimizer):
             eps: float = 1e-6,
             weight_decay: float = 0.0,
             correct_bias: bool = True,
-            no_deprecation_warning: bool = False,
     ):
-        if not no_deprecation_warning:
-            warnings.warn(
-                "This implementation of AdamW is deprecated and will be removed in a future version. Use the PyTorch"
-                " implementation torch.optim.AdamW instead, or set `no_deprecation_warning=True` to disable this"
-                " warning",
-                FutureWarning,
-            )
 
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr} - should be >= 0.0")

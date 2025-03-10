@@ -77,51 +77,56 @@ def deterministic_gumbel_softmax(
 
 @torch.jit.script
 def composite_image(
-        pixel_height_logits: torch.Tensor,
-        global_logits: torch.Tensor,
-        tau_height: float,
-        tau_global: float,
-        h: float,
-        max_layers: int,
-        material_colors: torch.Tensor,
-        material_TDs: torch.Tensor,
-        background: torch.Tensor,
-        mode: str = "continuous",
-        rng_seed: int = -1,
+    pixel_height_logits: torch.Tensor,
+    global_logits: torch.Tensor,
+    tau_height: float,
+    tau_global: float,
+    h: float,
+    max_layers: int,
+    material_colors: torch.Tensor,
+    material_TDs: torch.Tensor,
+    background: torch.Tensor,
+    mode: str = "continuous",
+    rng_seed: int = -1,  # <--- new optional argument
 ) -> torch.Tensor:
-    # Compute per-pixel height and number of printed layers.
+    """
+    Vectorized compositing over all pixels (H x W).
+    ...
+    If rng_seed >= 0 and mode=="discrete", we will fix the random seed
+    for each layer so that we get the same random Gumbel noise for reproducibility.
+    """
     pixel_height = (max_layers * h) * torch.sigmoid(pixel_height_logits)
     continuous_layers = pixel_height / h
-    adaptive_layers = adaptive_round(continuous_layers, tau_height, high_tau=0.1, low_tau=0.01, temp=0.1)
+
+    # same as before
+    adaptive_layers = adaptive_round(
+        continuous_layers, tau_height, high_tau=0.1, low_tau=0.01, temp=0.1
+    )
     discrete_layers_temp = torch.round(continuous_layers)
-    discrete_layers = (discrete_layers_temp + (adaptive_layers - discrete_layers_temp).detach()).to(torch.int32)
+    discrete_layers = (
+        discrete_layers_temp + (adaptive_layers - discrete_layers_temp).detach()
+    )
+    discrete_layers = discrete_layers.to(torch.int32)
 
     H, W = pixel_height.shape
     comp = torch.zeros(H, W, 3, dtype=torch.float32, device=pixel_height.device)
     remaining = torch.ones(H, W, dtype=torch.float32, device=pixel_height.device)
 
-    # Constants for the opacity function.
-    o = 0.10308429
-    A = 0.29132512
-    k = 85.56655
-    b = 2.3740766
+    o = -1.2416557e-02
+    A = 9.6407950e-01
+    k = 3.4103447e01
+    b = -4.1554203e00
 
-    # These tensors track the current “group” (consecutive layers with the same best color) per pixel.
-    group_color = torch.full((H, W), -1, dtype=torch.int64, device=pixel_height.device)
-    group_thickness = torch.zeros((H, W), dtype=torch.float32, device=pixel_height.device)
-
-    # Loop over layers (from top to bottom)
     for i in range(max_layers):
-        # Note: we flip the layer order so that layer_idx runs from max_layers-1 down to 0.
         layer_idx = max_layers - 1 - i
+        p_print = (discrete_layers > layer_idx).float()
+        eff_thick = p_print * h
 
-        # Determine which pixels have this layer printed.
-        # printed_mask: True for pixels where the number of printed layers > layer_idx.
-        printed_mask = (discrete_layers > layer_idx)
-
-        # Compute the soft distribution for the current layer.
+        # This is the key difference for "discrete":
+        # we now optionally fix the random seed if rng_seed >= 0
         if mode == "discrete":
             if rng_seed >= 0:
+                # Use a context manager so we don’t pollute the global seed
                 p_i = deterministic_gumbel_softmax(
                     global_logits[layer_idx],
                     tau_global,
@@ -129,78 +134,29 @@ def composite_image(
                     rng_seed=rng_seed + layer_idx,
                 )
             else:
-                p_i = torch.nn.functional.gumbel_softmax(global_logits[layer_idx], tau_global, hard=True)
+                # same as before, but will be random every call
+                p_i = F.gumbel_softmax(global_logits[layer_idx], tau_global, hard=True)
+
         elif mode == "continuous":
             if tau_global < 1e-3:
-                p_i = torch.nn.functional.gumbel_softmax(global_logits[layer_idx], tau_global, hard=True)
+                p_i = F.gumbel_softmax(global_logits[layer_idx], tau_global, hard=True)
             else:
-                
-                p_i = torch.nn.functional.gumbel_softmax(global_logits[layer_idx], tau_global, hard=False)
+                p_i = F.gumbel_softmax(global_logits[layer_idx], tau_global, hard=False)
         else:
-            p_i = torch.nn.functional.gumbel_softmax(global_logits[layer_idx], tau_global, hard=True)
+            # e.g. "pruning" or any other fallback
+            p_i = F.gumbel_softmax(global_logits[layer_idx], tau_global, hard=True)
 
-        # Expand p_i to each pixel if necessary.
-        if p_i.dim() == 1:
-            p_i = p_i.view(1, 1, -1).expand(H, W, -1)
+        color_i = torch.matmul(p_i, material_colors)
+        TD_i = torch.matmul(p_i, material_TDs)
+        TD_i = torch.clamp(TD_i, 1e-8, 1e8)
 
-        # Determine the best (argmax) color for this layer.
-        current_best = torch.argmax(p_i, dim=-1)
+        opac = o + (A * torch.log1p(k * (eff_thick / TD_i)) + b * (eff_thick / TD_i))
+        # opac = torch.where(TD_i / 10 <= h, torch.tensor(1.0), opac)
+        opac = torch.clamp(opac, 0.0, 1.0)
 
-        # --- Grouping logic (all done with vectorized masked updates) ---
-        # Case 1: Start a new group where no group is active.
-        start_mask = printed_mask & (group_color == -1)
-        group_color = torch.where(start_mask, current_best, group_color)
-        group_thickness = torch.where(start_mask, torch.full_like(group_thickness, h), group_thickness)
+        comp = comp + ((remaining * opac).unsqueeze(-1) * color_i)
+        remaining = remaining * (1 - opac)
 
-        # Case 2: Continue the current group if the best color stays the same.
-        cont_mask = printed_mask & (group_color == current_best)
-        # Only add h where cont_mask is True.
-        group_thickness = group_thickness + h * cont_mask.to(torch.float32)
-
-        # Case 3: The best color changes, so finish the current group.
-        finish_mask = printed_mask & ((group_color != current_best) & (group_color != -1))
-        if finish_mask.any():
-            # Retrieve parameters for the finished group.
-            best_idx = group_color[finish_mask]
-            best_colors = material_colors.index_select(0, best_idx)
-            best_TDs = material_TDs.index_select(0, best_idx)
-            thickness = group_thickness[finish_mask]
-            opac_group = o + (A * torch.log1p(k * (thickness / best_TDs)) + b * (thickness / best_TDs))
-            opac_group = torch.clamp(opac_group, 0.0, 1.0)
-            comp[finish_mask] = comp[finish_mask] + (remaining[finish_mask].unsqueeze(-1) * opac_group.unsqueeze(-1) * best_colors)
-            remaining[finish_mask] = remaining[finish_mask] * (1 - opac_group)
-            # Start a new group with the current best for these pixels.
-            group_color = torch.where(finish_mask, current_best, group_color)
-            group_thickness = torch.where(finish_mask, torch.full_like(group_thickness, h), group_thickness)
-
-        # --- Process the non-best (soft) contributions (only in continuous mode) ---
-        if mode == "continuous":
-            # Remove the best color from the distribution.
-            one_hot = torch.nn.functional.one_hot(current_best, num_classes=p_i.shape[-1]).to(p_i.dtype)
-            p_i_non_best = torch.clamp(p_i - p_i * one_hot, 0.0, 1.0)
-            # Compute the weighted color and threshold distance from the non-best contributions.
-            color_non_best = torch.matmul(p_i_non_best, material_colors)
-            TD_non_best = torch.matmul(p_i_non_best, material_TDs)
-            opac_non_best = o + (A * torch.log1p(k * (h / TD_non_best)) + b * (h / TD_non_best))
-            opac_non_best = torch.clamp(opac_non_best, 0.0, 1.0)
-            # Update composite and remaining only for pixels where the layer is printed.
-            # (Multiplying by printed_mask.to(torch.float32) keeps the computation fully vectorized.)
-            comp = comp + (remaining.unsqueeze(-1) * opac_non_best.unsqueeze(-1) * color_non_best) * printed_mask.to(torch.float32).unsqueeze(-1)
-            remaining = remaining * ((1 - opac_non_best) * printed_mask.to(torch.float32) + (~printed_mask).to(torch.float32))
-
-    # --- Finalize any remaining active group ---
-    final_mask = (group_color != -1)
-    if final_mask.any():
-        best_idx = group_color[final_mask]
-        best_colors = material_colors.index_select(0, best_idx)
-        best_TDs = material_TDs.index_select(0, best_idx)
-        thickness = group_thickness[final_mask]
-        opac_group = o + (A * torch.log1p(k * (thickness / best_TDs)) + b * (thickness / best_TDs))
-        opac_group = torch.clamp(opac_group, 0.0, 1.0)
-        comp[final_mask] = comp[final_mask] + (remaining[final_mask].unsqueeze(-1) * opac_group.unsqueeze(-1) * best_colors)
-        remaining[final_mask] = remaining[final_mask] * (1 - opac_group)
-
-    # Composite the background using the remaining transparency.
     comp = comp + remaining.unsqueeze(-1) * background
     return comp * 255.0
 

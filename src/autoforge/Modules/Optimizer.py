@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.optim as optim
+from torch.optim import AdamW
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
@@ -102,7 +103,7 @@ class FilamentOptimizer:
         # Initialize optimizer
         self.optimizer = CAdamW(
             [self.params["pixel_height_logits"], self.params["global_logits"]],
-            lr=self.learning_rate,weight_decay=1e-3
+            lr=self.learning_rate,weight_decay=1e-2
         )
 
         # Setup best discrete solution tracking
