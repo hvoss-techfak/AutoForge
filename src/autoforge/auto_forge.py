@@ -10,9 +10,9 @@ from autoforge.Helper.FilamentHelper import hex_to_rgb, load_materials
 from autoforge.Helper.ImageHelper import resize_image, resize_image_exact
 from autoforge.Helper.OptimizerHelper import (
     init_height_map,
-    composite_image,
     discretize_solution,
     init_height_map_depth_color_adjusted,
+    composite_image_disc,
 )
 from autoforge.Helper.OutputHelper import (
     generate_stl,
@@ -207,6 +207,9 @@ def main():
         "Background must be multiple of layer_height"
     )
 
+    assert os.path.exists(args.input_image), "Input image not found"
+    assert os.path.exists(args.csv_file), "CSV file not found"
+
     random_seed = args.random_seed
     if random_seed == 0:
         random_seed = int(time.time())
@@ -387,7 +390,7 @@ def main():
 
     print("Done. Saving outputs...")
     # Save Image
-    comp_disc = composite_image(
+    comp_disc = composite_image_disc(
         params["pixel_height_logits"],
         params["global_logits"],
         args.final_tau,
@@ -397,7 +400,6 @@ def main():
         material_colors,
         material_TDs,
         background,
-        mode="discrete",  # or "discrete" if you prefer fully discrete
         rng_seed=optimizer.best_seed,
     )
 

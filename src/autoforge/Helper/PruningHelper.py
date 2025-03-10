@@ -1,7 +1,7 @@
 import torch
 from tqdm import tqdm
 
-from autoforge.Helper.OptimizerHelper import composite_image, discretize_solution
+from autoforge.Helper.OptimizerHelper import discretize_solution, composite_image_disc
 from autoforge.Loss.LossFunctions import compute_loss
 
 
@@ -55,7 +55,7 @@ def prune_num_colors(
         )
 
         with torch.no_grad():
-            out_im = composite_image(
+            out_im = composite_image_disc(
                 pixel_height_logits,
                 logits_for_disc,
                 tau_for_comp,
@@ -65,7 +65,6 @@ def prune_num_colors(
                 material_colors,
                 material_TDs,
                 background,
-                mode="discrete",
                 rng_seed=rng_seed,
             )
 
@@ -148,7 +147,7 @@ def prune_num_swaps(
         )
 
         with torch.no_grad():
-            out_im = composite_image(
+            out_im = composite_image_disc(
                 pixel_height_logits,
                 logits_for_disc,
                 tau_for_comp,
@@ -158,7 +157,6 @@ def prune_num_swaps(
                 material_colors,
                 material_TDs,
                 background,
-                mode="discrete",
                 rng_seed=rng_seed,
             )
         return compute_loss(
@@ -413,7 +411,7 @@ def prune_redundant_layers(
     current_max_layers = current_params["global_logits"].shape[0]
 
     # Compute baseline composite and loss.
-    comp = composite_image(
+    comp = composite_image_disc(
         current_params["pixel_height_logits"],
         current_params["global_logits"],
         final_tau,
@@ -423,7 +421,6 @@ def prune_redundant_layers(
         material_colors,
         material_TDs,
         background,
-        mode="discrete",
         rng_seed=rng_seed,
     )
     disc_global, _ = discretize_solution(
@@ -458,7 +455,7 @@ def prune_redundant_layers(
             candidate_params, candidate_max_layers = remove_layer_from_solution(
                 current_params, layer, final_tau, h, current_max_layers, rng_seed
             )
-            candidate_comp = composite_image(
+            candidate_comp = composite_image_disc(
                 candidate_params["pixel_height_logits"],
                 candidate_params["global_logits"],
                 final_tau,
@@ -468,7 +465,6 @@ def prune_redundant_layers(
                 material_colors,
                 material_TDs,
                 background,
-                mode="discrete",
                 rng_seed=rng_seed,
             )
             candidate_disc_global, _ = discretize_solution(

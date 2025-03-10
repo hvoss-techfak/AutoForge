@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from autoforge.Helper.ImageHelper import srgb_to_lab, increase_saturation
-from autoforge.Helper.OptimizerHelper import composite_image
+from autoforge.Helper.OptimizerHelper import composite_image_cont
 
 
 def loss_fn(
@@ -22,7 +22,7 @@ def loss_fn(
     Full forward pass for continuous assignment:
     composite, then compute unified loss on (global_logits).
     """
-    comp = composite_image(
+    comp = composite_image_cont(
         params["pixel_height_logits"],
         params["global_logits"],
         tau_height,
@@ -32,7 +32,6 @@ def loss_fn(
         material_colors,
         material_TDs,
         background,
-        mode="continuous",
     )
     return compute_loss(
         material_assignment=params["global_logits"],
