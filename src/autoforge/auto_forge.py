@@ -207,6 +207,9 @@ def main():
         "Background must be multiple of layer_height"
     )
 
+    assert os.path.exists(args.input_image), "Input image not found"
+    assert os.path.exists(args.csv_file), "CSV file not found"
+
     random_seed = args.random_seed
     if random_seed == 0:
         random_seed = int(time.time())

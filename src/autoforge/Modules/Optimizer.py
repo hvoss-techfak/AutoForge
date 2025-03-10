@@ -9,6 +9,7 @@ import torch.optim as optim
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
+from autoforge.Helper.CAdamW import CAdamW
 from autoforge.Helper.OptimizerHelper import composite_image, discretize_solution
 from autoforge.Helper.PruningHelper import prune_colors_and_swaps, find_color_bands
 from autoforge.Loss.LossFunctions import loss_fn, compute_loss
@@ -99,9 +100,9 @@ class FilamentOptimizer:
         )
 
         # Initialize optimizer
-        self.optimizer = optim.Adam(
+        self.optimizer = CAdamW(
             [self.params["pixel_height_logits"], self.params["global_logits"]],
-            lr=self.learning_rate,
+            lr=self.learning_rate,weight_decay=1e-3
         )
 
         # Setup best discrete solution tracking
