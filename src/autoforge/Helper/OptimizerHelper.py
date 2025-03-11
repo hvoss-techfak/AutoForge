@@ -139,138 +139,157 @@ def composite_image_cont(
 
 @torch.jit.script
 def composite_image_disc(
-    pixel_height_logits: torch.Tensor,
-    global_logits: torch.Tensor,
+    pixel_height_logits: torch.Tensor,  # [H,W]
+    global_logits: torch.Tensor,  # [max_layers, n_materials]
     tau_height: float,
     tau_global: float,
     h: float,
     max_layers: int,
-    material_colors: torch.Tensor,
-    material_TDs: torch.Tensor,
-    background: torch.Tensor,
+    material_colors: torch.Tensor,  # [n_materials, 3]
+    material_TDs: torch.Tensor,  # [n_materials]
+    background: torch.Tensor,  # [3]
     rng_seed: int = -1,
 ) -> torch.Tensor:
     """
-    Discrete compositing over all pixels.
-    For each layer (traversed from top to bottom), we compute a one-hot material selection.
-    For pixels where the layer is printed (as determined by discrete_layers),
-    contiguous layers with the same material are merged (i.e. their effective thickness is accumulated)
-    and then composited using the opacity function. The accumulated segment is applied when
-    the material changes or if the layer is not printed.
+    An optimized rewrite of the original compositing code.
+
+    The main changes:
+      - We combine the old (mask_diff) and (mask_not_printed) logic
+        into a single step that composites any pixel which is 'done'
+        with its current material (either because it's not printing
+        this layer or because the layer material is different).
+      - Then we update (or start) new segments for any pixel that
+        actually prints this layer and whose material matches or
+        doesn't match.
+      - Fewer conditionals, fewer index_select calls, and no repeated
+        if mask.any(): checks.
     """
-    # Compute pixel height and determine discrete layers.
+
+    # Determine how many discrete layers each pixel prints
     pixel_height = (max_layers * h) * torch.sigmoid(pixel_height_logits)
     continuous_layers = pixel_height / h
 
+    # Example "adaptive rounding" approach
     adaptive_layers = adaptive_round(
         continuous_layers, tau_height, high_tau=0.1, low_tau=0.01, temp=0.1
     )
     discrete_layers_temp = torch.round(continuous_layers)
     discrete_layers = (
         discrete_layers_temp + (adaptive_layers - discrete_layers_temp).detach()
-    ).to(torch.int32)
+    ).to(torch.int32)  # [H,W]
+
+    # Precompute the chosen material for each layer
+    # (One material per layer for the entire image.)
+    if rng_seed >= 0:
+        # Deterministic sampling for each layer
+        new_mats_list = []
+        for layer_idx in range(max_layers):
+            p_i = deterministic_gumbel_softmax(
+                global_logits[layer_idx],
+                tau_global,
+                hard=True,
+                rng_seed=(rng_seed + layer_idx),
+            )
+            mat_i = torch.argmax(p_i, dim=0).to(torch.int32)
+            new_mats_list.append(mat_i)
+        new_mats = torch.stack(new_mats_list, dim=0)  # [max_layers]
+    else:
+        # Standard (random) Gumbel softmax
+        p_all = F.gumbel_softmax(global_logits, tau_global, hard=True, dim=1)  # [L, M]
+        new_mats = torch.argmax(p_all, dim=1).to(torch.int32)  # [max_layers]
+
 
     H, W = pixel_height.shape
-    comp = torch.zeros(H, W, 3, dtype=torch.float32, device=pixel_height.device)
-    remaining = torch.ones(H, W, dtype=torch.float32, device=pixel_height.device)
+    device = pixel_height.device
 
-    # Current material and accumulated thickness per pixel.
-    # cur_mat is initialized to -1 meaning "no material".
-    cur_mat = -torch.ones((H, W), dtype=torch.int32, device=pixel_height.device)
-    acc_thick = torch.zeros((H, W), dtype=torch.float32, device=pixel_height.device)
+    comp = torch.zeros(H, W, 3, dtype=torch.float32, device=device)
+    remaining = torch.ones(H, W, dtype=torch.float32, device=device)
 
-    # Opacity function parameters.
-    o = -1.2416557e-02
-    A = 9.6407950e-01
-    k = 3.4103447e01
-    b = -4.1554203e00
+    # Tracks the material currently being accumulated (or -1 for none)
+    cur_mat = -torch.ones((H, W), dtype=torch.int32, device=device)
+    # Tracks the accumulated thickness for the current segment
+    acc_thick = torch.zeros((H, W), dtype=torch.float32, device=device)
 
-    for i in range(max_layers):
-        layer_idx = max_layers - 1 - i
-        p_print = discrete_layers > layer_idx  # Boolean mask [H,W]
-        eff_thick = (
-            p_print.to(torch.float32) * h
-        )  # effective thickness for printed pixels
+    # Opacity function parameters
+    o = 0.10868816
+    A = 0.3077416
+    k = 76.928215
+    b = 2.2291653
 
-        # Determine material for this layer using discrete (one-hot) gumbel softmax.
-        if rng_seed >= 0:
-            p_i = deterministic_gumbel_softmax(
-                global_logits[layer_idx], tau_global, True, rng_seed + layer_idx
-            )
-        else:
-            p_i = F.gumbel_softmax(global_logits[layer_idx], tau_global, hard=True)
-        # Cast new_mat to int32 so it matches cur_mat.
-        new_mat = torch.argmax(p_i, 0).to(torch.int32)
+    # Main compositing loop: top to bottom
+    for layer_idx in range(max_layers - 1, -1, -1):
+        # Material chosen for this layer
+        layer_mat = new_mats[layer_idx]  # a single int
+        # Which pixels actually print this layer?
+        p_print = discrete_layers > layer_idx  # [H,W] bool
 
-        # 1. For pixels where no current material is set, start a new segment.
+        # --------------------------------------------------
+        # (A) Composite any "finished" segment, i.e. the pixel
+        #     is *done* with its old segment if:
+        #        (1) we already had a segment (cur_mat != -1), AND
+        #        (2) either the pixel is not printing this layer,
+        #            or the pixel's new layer material != cur_mat
+        # --------------------------------------------------
+        mask_done = (cur_mat != -1) & (~p_print | (cur_mat != layer_mat))
+        if mask_done.any():
+            old_inds = cur_mat[mask_done].to(torch.int64)
+            td_vals = material_TDs[old_inds]  # gather thickness densities
+            col_vals = material_colors[old_inds]  # gather old material colors
+
+            thick_ratio = acc_thick[mask_done] / td_vals
+            opac_vals = o + (A * torch.log1p(k * thick_ratio) + b * thick_ratio)
+            opac_vals = torch.clamp(opac_vals, 0.0, 1.0)
+
+            # composite old segment
+            comp[mask_done] += (remaining[mask_done] * opac_vals).unsqueeze(
+                -1
+            ) * col_vals
+            remaining[mask_done] *= 1.0 - opac_vals
+
+            # Reset old segment
+            cur_mat[mask_done] = -1
+            acc_thick[mask_done] = 0.0
+
+        # --------------------------------------------------
+        # (B) For pixels that do print this layer:
+        #       - start a new segment if cur_mat == -1
+        #       - accumulate thickness if cur_mat == layer_mat
+        # --------------------------------------------------
+        eff_thick = p_print.to(torch.float32) * h
+
+        # Start new segment
         mask_new = p_print & (cur_mat == -1)
         if mask_new.any():
-            cur_mat[mask_new] = new_mat
+            cur_mat[mask_new] = layer_mat
             acc_thick[mask_new] = eff_thick[mask_new]
 
-        # 2. For pixels where the current segment has the same material, accumulate thickness.
-        mask_same = p_print & (cur_mat == new_mat)
+        # Accumulate thickness
+        mask_same = p_print & (cur_mat == layer_mat)
         if mask_same.any():
-            acc_thick[mask_same] = acc_thick[mask_same] + eff_thick[mask_same]
+            acc_thick[mask_same] += eff_thick[mask_same]
 
-        # 3. For pixels where the current segment has a different material,
-        # composite the accumulated segment and start a new one.
-        mask_diff = p_print & (cur_mat != -1) & (cur_mat != new_mat)
-        if mask_diff.any():
-            # Convert indices to int64 for index_select.
-            indices_diff = cur_mat[mask_diff].to(torch.int64)
-            td_vals = material_TDs.index_select(0, indices_diff)
-            col_vals = material_colors.index_select(0, indices_diff)
-            opac_vals = o + (
-                A * torch.log1p(k * (acc_thick[mask_diff] / td_vals))
-                + b * (acc_thick[mask_diff] / td_vals)
-            )
-            opac_vals = torch.clamp(opac_vals, 0.0, 1.0)
-            comp[mask_diff] = comp[mask_diff] + (
-                (remaining[mask_diff] * opac_vals).unsqueeze(-1) * col_vals
-            )
-            remaining[mask_diff] = remaining[mask_diff] * (1 - opac_vals)
-            cur_mat[mask_diff] = new_mat
-            acc_thick[mask_diff] = eff_thick[mask_diff]
 
-        # 4. For pixels where this layer is not printed but we have a pending segment,
-        # composite that segment and reset.
-        mask_not_printed = (~p_print) & (cur_mat != -1)
-        if mask_not_printed.any():
-            indices_np = cur_mat[mask_not_printed].to(torch.int64)
-            td_vals = material_TDs.index_select(0, indices_np)
-            col_vals = material_colors.index_select(0, indices_np)
-            opac_vals = o + (
-                A * torch.log1p(k * (acc_thick[mask_not_printed] / td_vals))
-                + b * (acc_thick[mask_not_printed] / td_vals)
-            )
-            opac_vals = torch.clamp(opac_vals, 0.0, 1.0)
-            comp[mask_not_printed] = comp[mask_not_printed] + (
-                (remaining[mask_not_printed] * opac_vals).unsqueeze(-1) * col_vals
-            )
-            remaining[mask_not_printed] = remaining[mask_not_printed] * (1 - opac_vals)
-            cur_mat[mask_not_printed] = -1
-            acc_thick[mask_not_printed] = 0.0
 
-    # After the loop, composite any remaining accumulated segment.
+    # After the loop, composite any still-pending segments
     mask_remain = cur_mat != -1
     if mask_remain.any():
-        indices_rem = cur_mat[mask_remain].to(torch.int64)
-        td_vals = material_TDs.index_select(0, indices_rem)
-        col_vals = material_colors.index_select(0, indices_rem)
-        opac_vals = o + (
-            A * torch.log1p(k * (acc_thick[mask_remain] / td_vals))
-            + b * (acc_thick[mask_remain] / td_vals)
-        )
-        opac_vals = torch.clamp(opac_vals, 0.0, 1.0)
-        comp[mask_remain] = comp[mask_remain] + (
-            (remaining[mask_remain] * opac_vals).unsqueeze(-1) * col_vals
-        )
-        remaining[mask_remain] = remaining[mask_remain] * (1 - opac_vals)
-        cur_mat[mask_remain] = -1
-        acc_thick[mask_remain] = 0.0
+        old_inds = cur_mat[mask_remain].to(torch.int64)
+        td_vals = material_TDs[old_inds]
+        col_vals = material_colors[old_inds]
 
-    comp = comp + remaining.unsqueeze(-1) * background
+        thick_ratio = acc_thick[mask_remain] / td_vals
+        opac_vals = o + (A * torch.log1p(k * thick_ratio) + b * thick_ratio)
+        opac_vals = torch.clamp(opac_vals, 0.0, 1.0)
+
+        comp[mask_remain] += (remaining[mask_remain] * opac_vals).unsqueeze(
+            -1
+        ) * col_vals
+        remaining[mask_remain] *= 1.0 - opac_vals
+
+    # -------------------------------------------------------------------------
+    # Composite background
+    # -------------------------------------------------------------------------
+    comp += remaining.unsqueeze(-1) * background
     return comp * 255.0
 
 

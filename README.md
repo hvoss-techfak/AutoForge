@@ -25,9 +25,9 @@ All examples use only the 13 BambuLab Basic filaments, currently available in Hu
   </div>
   <div style="text-align: center;">
     <h3>Autoforge Output (75 color layers (3.0mm) + 10 gray background layers (0.4mm)) </h3>
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_discretized.jpg" width="200" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_discretized.png" width="200" />
     <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_discretized.jpg" width="200" />
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/cat_discretized.jpg" width="200" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/cat_discretized.png" width="200" />
   </div>
   <div style="text-align: center;">
     <h3>Imported Hueforge View</h3>

@@ -106,7 +106,6 @@ class FilamentOptimizer:
         self.optimizer = CAdamW(
             [self.params["pixel_height_logits"], self.params["global_logits"]],
             lr=self.learning_rate,
-            weight_decay=1e-2,
         )
 
         # Setup best discrete solution tracking
