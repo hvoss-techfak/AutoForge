@@ -20,7 +20,6 @@ from autoforge.Helper.OutputHelper import (
     generate_project_file,
 )
 from autoforge.Helper.PruningHelper import prune_redundant_layers
-from autoforge.Loss.PerceptionLoss import MultiLayerVGGPerceptualLoss
 from autoforge.Modules.Optimizer import FilamentOptimizer
 
 
@@ -282,7 +281,8 @@ def main():
     )  # shape (H', W') cause of weird opencv quirk
 
     # VGG Perceptual Loss
-    perception_loss_module = MultiLayerVGGPerceptualLoss().to(device).eval()
+    # We currently disable this as it is not used in the optimization.
+    perception_loss_module = None  # MultiLayerVGGPerceptualLoss().to(device).eval()
 
     # Create an optimizer instance
     optimizer = FilamentOptimizer(
@@ -300,7 +300,7 @@ def main():
     print("Starting optimization...")
     tbar = tqdm(range(args.iterations))
     for i in tbar:
-        loss_val = optimizer.step(record_best=i % 3 == 0)
+        loss_val = optimizer.step(record_best=i % 10 == 0)
 
         optimizer.visualize(interval=25)
         optimizer.log_to_tensorboard(interval=100)
