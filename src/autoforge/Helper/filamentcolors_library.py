@@ -15,6 +15,8 @@ DATA_FILE = "../swatches.json"
 VERSION_FILE = "../swatches_version.json"
 LAST_CHECKED_FILE = "../last_checked.json"
 
+TIMEOUT = 30
+
 def get_api_version():
     """
     Fetches the current version information from the API.
@@ -27,7 +29,7 @@ def get_api_version():
     Raises:
         requests.RequestException: If the request to the API fails.
     """
-    response = requests.get(API_VERSION_URL)
+    response = requests.get(API_VERSION_URL, timeout=TIMEOUT)
     response.raise_for_status()
     return response.json()
 
@@ -80,7 +82,7 @@ def download_all_pages(url):
     all_results = []
     tbar = tqdm(desc="Downloading", unit=" swatches page")
     while url:
-        response = requests.get(url)
+        response = requests.get(url, timeout=TIMEOUT)
         response.raise_for_status()
         data = response.json()
         all_results.extend(data.get("results", []))
