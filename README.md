@@ -4,16 +4,6 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 
 **TLDR:** It uses a picture to generate a 3D layer image that you can print with a 3d printer. Similar to [Hueforge](https://shop.thehueforge.com/), but without the manual work (and without the artistic control).
 
-
-## Important Information
-
-We recently switched from JAX to PyTorch, to allow for a more streamlined development process. \
-This can have some unforeseen consequences, so please report any bugs you find. 
-
-This release should give better gpu support for more users, especially on windows. \
-If you have problems running the code on your gpu, please refer to the [Pytorch Homepage](https://pytorch.org/) for help. \
-Both CUDA and ROCm are supported, but you need to install the correct version of pytorch for your system.
-
 ## Example
 All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge.
 <div style="display: flex; justify-content: center; gap: 20px;">
@@ -58,6 +48,9 @@ To install AutoForge, simply install the current version from PyPI:
 ```bash
    pip install autoforge
 ```
+
+If you have problems running the code on your gpu, please refer to the [Pytorch Homepage](https://pytorch.org/) for help. \
+Both CUDA and ROCm are supported, but you need to install the correct version of pytorch for your system.
 
 ## Usage
 
@@ -104,7 +97,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--random_seed`: Random seed for reproducibility (default: 0 (disabled) ).
 
 ### Experimental Deph Anything V2 parameters
-I got a request to add a initializing function that takes the original deph of the image into account when initializing. \
+I got a request to add an initializing function that takes the original depth of the image into account when initializing. \
 In theory this should give you a nice background/foreground separation, but in practice it can degrade the quality of the output. \
 In addition you need the VRAM to run the depth model. \
 I currently don't recommend it as the output is not as good as without it, but I will leave it in for now. \
@@ -151,7 +144,7 @@ The software is provided as-is and comes with no warranty or guarantee of suppor
 ## Acknowledgements
 
 First and foremost:
-- [Hueforge](https://shop.thehueforge.com/) for providing the filament data and inspiration for this project.
+- [Hueforge](https://shop.thehueforge.com/) for providing the inspiration for this project.
 Without it, this project would not have been possible.
 
 AutoForge makes use of several open source libraries:
