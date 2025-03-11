@@ -183,7 +183,7 @@ def main():
         help="Use the Metal Performance Shaders (MPS) backend, if available.",
     )
     parser.add_argument(
-        "--run-name", type=str, help="Name of the run used for TensorBoard logging"
+        "--run_name", type=str, help="Name of the run used for TensorBoard logging"
     )
     parser.add_argument(
         "--tensorboard", action="store_true", help="Enable TensorBoard logging"
