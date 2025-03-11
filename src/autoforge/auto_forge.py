@@ -383,6 +383,7 @@ def main():
             min_layers=args.min_layers,
         )
         args.max_layers = max_layers
+        optimizer.best_discrete_loss = pruned_loss
 
     disc_global, disc_height_image = discretize_solution(
         params, args.final_tau, args.layer_height, args.max_layers
