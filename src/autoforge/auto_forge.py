@@ -183,7 +183,7 @@ def main():
         help="Use the Metal Performance Shaders (MPS) backend, if available.",
     )
     parser.add_argument(
-        "--run-name", type=str, help="Name of the run used for TensorBoard logging"
+        "--run_name", type=str, help="Name of the run used for TensorBoard logging"
     )
     parser.add_argument(
         "--tensorboard", action="store_true", help="Enable TensorBoard logging"
@@ -383,6 +383,7 @@ def main():
             min_layers=args.min_layers,
         )
         args.max_layers = max_layers
+        optimizer.best_discrete_loss = pruned_loss
 
     disc_global, disc_height_image = discretize_solution(
         params, args.final_tau, args.layer_height, args.max_layers
