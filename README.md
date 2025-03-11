@@ -90,7 +90,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--stl_output_size`: Size of the output stl file in mm (default: 200) (20cm).
 - `--visualize`: Flag to enable live visualization of the composite image during optimization.
 - `--tensorboard`: Enable TensorBoard logging
-- `--run-name`: Name of the run used for TensorBoard logging (optional).
+- `--run_name`: Name of the run used for TensorBoard logging (optional).
 - `--perform_pruning`: Perform pruning after optimization (default: True). \
   **Note:** This is highly recommended even if you don't have a color/color swap limit, as it actually increases the quality of the output.
 - `--pruning_max_colors`: Max number of colors allowed after pruning (default: 100).

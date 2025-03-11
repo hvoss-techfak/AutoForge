@@ -1,3 +1,4 @@
+import sys
 import os
 import time
 import configargparse
@@ -183,7 +184,7 @@ def main():
         help="Use the Metal Performance Shaders (MPS) backend, if available.",
     )
     parser.add_argument(
-        "--run-name", type=str, help="Name of the run used for TensorBoard logging"
+        "--run_name", type=str, help="Name of the run used for TensorBoard logging"
     )
     parser.add_argument(
         "--tensorboard", action="store_true", help="Enable TensorBoard logging"
@@ -202,12 +203,17 @@ def main():
     os.makedirs(args.output_folder, exist_ok=True)
 
     # Basic checks
-    assert (args.background_height / args.layer_height).is_integer(), (
-        "Background must be multiple of layer_height"
-    )
+    if not (args.background_height / args.layer_height).is_integer():
+        print("Error: Background height must be a multiple of layer height.", file=sys.stderr)
+        sys.exit(1)
 
-    assert os.path.exists(args.input_image), "Input image not found"
-    assert os.path.exists(args.csv_file), "CSV file not found"
+    if not os.path.exists(args.input_image):
+        print(f"Error: Input image '{args.input_image}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.exists(args.csv_file):
+        print(f"Error: CSV file '{args.csv_file}' not found.", file=sys.stderr)
+        sys.exit(1)
 
     random_seed = args.random_seed
     if random_seed == 0:
@@ -383,6 +389,7 @@ def main():
             min_layers=args.min_layers,
         )
         args.max_layers = max_layers
+        optimizer.best_discrete_loss = pruned_loss
 
     disc_global, disc_height_image = discretize_solution(
         params, args.final_tau, args.layer_height, args.max_layers
