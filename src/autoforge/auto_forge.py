@@ -1,3 +1,4 @@
+import sys
 import os
 import time
 import configargparse
@@ -202,12 +203,17 @@ def main():
     os.makedirs(args.output_folder, exist_ok=True)
 
     # Basic checks
-    assert (args.background_height / args.layer_height).is_integer(), (
-        "Background must be multiple of layer_height"
-    )
+    if not (args.background_height / args.layer_height).is_integer():
+        print("Error: Background height must be a multiple of layer height.", file=sys.stderr)
+        sys.exit(1)
 
-    assert os.path.exists(args.input_image), "Input image not found"
-    assert os.path.exists(args.csv_file), "CSV file not found"
+    if not os.path.exists(args.input_image):
+        print(f"Error: Input image '{args.input_image}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.exists(args.csv_file):
+        print(f"Error: CSV file '{args.csv_file}' not found.", file=sys.stderr)
+        sys.exit(1)
 
     random_seed = args.random_seed
     if random_seed == 0:
