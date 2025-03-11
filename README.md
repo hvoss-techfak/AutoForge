@@ -5,7 +5,8 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 **TLDR:** It uses a picture to generate a 3D layer image that you can print with a 3d printer. Similar to [Hueforge](https://shop.thehueforge.com/), but without the manual work (and without the artistic control).
 
 ## Example
-All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge.
+All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge, the background color is set to black.
+The pruning is set to a maximum of 8 color and 20 swaps, so each image uses at most 8 different colors and swaps the filament at most 20 times. 
 <div style="display: flex; justify-content: center; gap: 20px;">
   <div style="text-align: center;">
     <h3>Input Image</h3>
@@ -16,7 +17,7 @@ All examples use only the 13 BambuLab Basic filaments, currently available in Hu
   <div style="text-align: center;">
     <h3>Autoforge Output (75 color layers (3.0mm) + 10 gray background layers (0.4mm)) </h3>
     <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_discretized.png" width="200" />
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_discretized.jpg" width="200" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_discretized.png" width="200" />
     <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/cat_discretized.png" width="200" />
   </div>
   <div style="text-align: center;">

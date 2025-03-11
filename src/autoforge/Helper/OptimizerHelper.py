@@ -258,7 +258,7 @@ def composite_image_disc(
 
     # -------------------------------------------------------------------------
     # 2) Pick a single global material per layer, either deterministically
-    #    or via gumbel softmax, as in original code.
+    #    or via gumbel softmax
     # -------------------------------------------------------------------------
     if rng_seed >= 0:
         # Deterministic sampling for each layer

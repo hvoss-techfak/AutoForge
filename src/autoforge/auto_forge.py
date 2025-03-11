@@ -211,7 +211,7 @@ def main():
 
     random_seed = args.random_seed
     if random_seed == 0:
-        random_seed = int(time.time())
+        random_seed = int(time.time() * 1000) % 1000000
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
 
@@ -269,7 +269,7 @@ def main():
             output_img_np, args.max_layers, args.layer_height, random_seed=random_seed
         )
 
-    # if we have an alpha mask we set the height for thos pixels to -13.815512 (the lowest init sigmoid value)
+    # if we have an alpha mask we set the height for those pixels to -13.815512 (the lowest init sigmoid value)
     if alpha is not None:
         pixel_height_logits_init[alpha < 128] = -13.815512
 
