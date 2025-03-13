@@ -389,7 +389,11 @@ def prune_redundant_layers(
     pruning_max_layers=1e6,
 ):
     """
-    Iteratively check each layer and remove it if the removal does not worsen the loss by more than `tolerance`.
+    Iteratively search for the best layer to remove.
+    At each iteration, evaluate removal of each layer, and choose the candidate that gives
+    the highest loss decrease (or, if no removal improves loss and the current number of layers
+    exceeds pruning_max_layers, the removal with the minimal loss increase within tolerance).
+    After a removal is accepted, the search restarts from the beginning.
 
     Args:
         params (dict): Dictionary with keys "global_logits" and "pixel_height_logits".
@@ -402,6 +406,8 @@ def prune_redundant_layers(
         rng_seed (int): Random seed for discretization.
         perception_loss_module (torch.nn.Module): Perceptual loss module.
         tolerance (float): Acceptable increase in loss.
+        min_layers (int): Minimum number of layers to keep.
+        pruning_max_layers (int): Maximum number of layers allowed after pruning.
 
     Returns:
         current_params (dict): Updated parameters with redundant layers removed.
@@ -437,8 +443,6 @@ def prune_redundant_layers(
         add_penalty_loss=False,
     ).item()
 
-    improvement = True
-    # Optional: use a progress bar to indicate the number of layers removed.
     from tqdm import tqdm
 
     tbar = tqdm(
@@ -447,13 +451,18 @@ def prune_redundant_layers(
     )
     removed_layers = 0
 
-    # Continue until no layer can be removed.
-    while current_max_layers > pruning_max_layers or (
-        improvement and current_max_layers > 1 and current_max_layers > min_layers
+    improvement = True
+    # Continue iterating while we can still remove a layer.
+    # We stop if no candidate qualifies and we are not forced to prune by pruning_max_layers.
+    while current_max_layers > min_layers and (
+        improvement or current_max_layers > pruning_max_layers
     ):
         tbar.update(1)
         improvement = False
-        # Try each layer as a candidate for removal.
+        best_candidate = None
+        best_candidate_loss = 1e10
+        best_layer = None
+        # For each layer candidate, compute the loss if that layer were removed.
         for layer in range(current_max_layers):
             candidate_params, candidate_max_layers = remove_layer_from_solution(
                 current_params, layer, final_tau, h, current_max_layers, rng_seed
@@ -483,20 +492,31 @@ def prune_redundant_layers(
                 add_penalty_loss=False,
             ).item()
 
-            # Accept the removal if loss increase is within tolerance, or we are still over our max layer limit.
+            if candidate_loss < best_candidate_loss:
+                best_candidate = candidate_params
+                best_candidate_loss = candidate_loss
+                best_layer = layer
+
+        # If we found a candidate, remove it and restart the search.
+        if best_candidate is not None:
             if (
-                candidate_loss <= best_loss + tolerance
+                best_candidate_loss < best_loss
                 or current_max_layers > pruning_max_layers
             ):
                 removed_layers += 1
+                # Update the progress bar description.
                 tbar.set_description(
-                    f"Pruning redundant layers: Loss {candidate_loss:.4f}, Removed {removed_layers}, new max layers {candidate_max_layers}"
+                    f"Pruning redundant layers: Loss {best_candidate_loss:.4f}, Removed {removed_layers}, new max layers {current_max_layers - 1}"
                 )
-                current_params = candidate_params
-                current_max_layers = candidate_max_layers
-                best_loss = candidate_loss
+                current_params = best_candidate
+                current_max_layers = current_params["global_logits"].shape[0]
+                best_loss = best_candidate_loss
                 improvement = True
-                break  # Restart search after a successful removal.
-        # End for each candidate.
+            else:
+                break
+        else:
+            # No candidate met the criteria.
+            break
+
     tbar.close()
     return current_params, best_loss, current_max_layers

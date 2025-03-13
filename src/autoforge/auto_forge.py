@@ -60,7 +60,7 @@ def main():
         "--layer_height", type=float, default=0.04, help="Layer thickness in mm"
     )
     parser.add_argument(
-        "--max_layers", type=int, default=100, help="Maximum number of layers"
+        "--max_layers", type=int, default=75, help="Maximum number of layers"
     )
     parser.add_argument(
         "--min_layers",

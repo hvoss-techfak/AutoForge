@@ -75,7 +75,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--iterations`: Number of optimization iterations (default: 5000).
 - `--learning_rate`: Learning rate for the optimizer (default: 1e-2).
 - `--layer_height`: Layer thickness in millimeters (default: 0.04).
-- `--max_layers`: Maximum number of layers (default: 100). \
+- `--max_layers`: Maximum number of layers (default: 75). \
   **Note:** This is about 3mm + the background height
 - `--min_layers`: Minimum number of layers (default: 0). Used to limit height of pruning 
 - `--background_height`: Height of the background in millimeters (default: 0.4).  \
