@@ -1,9 +1,11 @@
 import concurrent.futures
+import os
 import random
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from PIL import Image
+from PIL.Image import Quantize
 from scipy.spatial.distance import cdist
 from skimage.color import rgb2lab
 from tqdm import tqdm
@@ -348,7 +350,7 @@ def init_height_map(
     # Convert target (assumed in [0,255]) to a PIL Image.
     pil_im = Image.fromarray(target.astype(np.uint8))
     # Quantize image into max_layers colors.
-    quantized_im = pil_im.quantize(colors=max_layers)
+    quantized_im = pil_im.quantize(colors=max_layers, method=Quantize.MAXCOVERAGE)
     # Retrieve per-pixel labels (indices into the palette).
     labels = np.array(quantized_im)
 
@@ -399,7 +401,6 @@ def init_height_map(
     new_values = create_mapping(final_ordering, labs, unique_clusters)
     new_labels = np.vectorize(lambda x: new_values[x])(labels).astype(np.float32)
     pixel_height_logits = np.log((new_labels + eps) / (1 - new_labels + eps))
-
     ordering_metric = compute_ordering_metric(final_ordering, labs)
     return pixel_height_logits, ordering_metric
 
@@ -426,7 +427,7 @@ def run_init_threads(
     """
     if random_seed is None:
         random_seed = np.random.randint(1e6)
-    exec = ThreadPoolExecutor(max_workers=num_threads)
+    exec = ThreadPoolExecutor(max_workers=os.cpu_count())
     futures = []
     for i in range(num_threads):
         futures.append(

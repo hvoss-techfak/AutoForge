@@ -13,18 +13,14 @@ The pruning is set to a maximum of 8 color and 20 swaps, so each image uses at m
     <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi.jpg" width="200" />
     <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature.jpg" width="200" />
     <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/cat.jpg" width="200" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/chameleon.jpg" width="200" />
   </div>
   <div style="text-align: center;">
-    <h3>Autoforge Output (75 color layers (3.0mm) + 10 gray background layers (0.4mm)) </h3>
+    <h3>Autoforge Output</h3>
     <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_discretized.png" width="200" />
     <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_discretized.png" width="200" />
     <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/cat_discretized.png" width="200" />
-  </div>
-  <div style="text-align: center;">
-    <h3>Imported Hueforge View</h3>
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/lofi_hueforge.png" width="200" />
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/nature_hueforge.png" width="200" />
-    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/cat_hueforge.png" width="200" />
+    <img src="https://github.com/hvoss-techfak/AutoForge/blob/main/images/chameleon_discretized.png" width="200" />
   </div>
 </div>
 
@@ -159,9 +155,9 @@ AutoForge makes use of several open source libraries:
 - [TQDM](https://github.com/tqdm/tqdm)
 - [ConfigArgParse](https://github.com/bw2/ConfigArgParse)
 
-Example Images:  
-<a href="https://www.vecteezy.com/free-photos/anime-girl">Anime Girl Stock photos by Vecteezy</a>  
-<a href="https://www.vecteezy.com/free-photos/nature">Nature Stock photos by Vecteezy</a>
-<a href="https://www.vecteezy.com/free-photos/ai-generated">Ai Generated Stock photos by Vecteezy</a>
+Example Images: \
+<a href="https://www.vecteezy.com/free-photos/nature">Nature Stock photos by Vecteezy</a> \
+<a href="https://www.vecteezy.com/free-photos/ai-generated">Ai Generated Stock photos by Vecteezy</a> \
+<a href="https://www.vecteezy.com/free-photos/animal">Animal Stock photos by Vecteezy</a>
 
 Happy printing!
