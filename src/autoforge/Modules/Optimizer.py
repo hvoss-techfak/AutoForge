@@ -104,7 +104,7 @@ class FilamentOptimizer:
 
         # Initialize optimizer
         self.optimizer = CAdamW(
-            [self.params["pixel_height_logits"], self.params["global_logits"]],
+            [self.params["global_logits"]],
             lr=self.learning_rate,
         )
 

@@ -8,7 +8,9 @@ import numpy as np
 from tqdm import tqdm
 
 from autoforge.Helper.FilamentHelper import hex_to_rgb, load_materials
-from autoforge.Helper.Heightmaps.ChristofidesHeightMap import run_init_threads
+from autoforge.Helper.Heightmaps.ChristofidesHeightMap import (
+    run_init_threads,
+)
 from autoforge.Helper.Heightmaps.DepthEstimateHeightMap import (
     init_height_map_depth_color_adjusted,
 )
@@ -85,7 +87,7 @@ def main():
     parser.add_argument(
         "--solver_size",
         type=int,
-        default=128,
+        default=256,
         help="Maximum dimension for solver (fast) image",
     )
     parser.add_argument(
@@ -352,13 +354,15 @@ def main():
         interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
     )
 
+    print("Applying solved solution to full resolution...")
+
     # Optionally prune
     if args.perform_pruning:
         disc_global = optimizer.prune(
             max_colors_allowed=args.pruning_max_colors,
             max_swaps_allowed=args.pruning_max_swaps,
             disc_global=disc_global,
-            disc_height_image=disc_height_image,
+            disc_height_image=torch.from_numpy(pixel_height_logits_init).to(device),
             tau_g=optimizer.best_tau,
         )
 
@@ -383,8 +387,8 @@ def main():
         print(
             f"No better seed found. Best seed loss: {optimizer.best_discrete_loss}. Best searched loss: {new_loss}"
         )
+
     # Now, we want to apply that discrete solution to the full resolution:
-    print("Applying solved solution to full resolution...")
     params = {
         "global_logits": disc_global,
         "pixel_height_logits": torch.from_numpy(pixel_height_logits_init).to(device),

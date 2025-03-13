@@ -83,7 +83,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--background_color`: Background color in hexadecimal format (default: `#000000` aka Black). \
   **Note:** The solver currently assumes that you have a solid color in the background, which means a color with a TD value of 4 or less (if you have a background height of 0.4)
 - `--output_size`: Maximum dimension for target image (default: 1024).
-- `--solver_size`: Maximum dimension for solver (fast) image (default: 128). \
+- `--solver_size`: Maximum dimension for solver (fast) image (default: 256). \
   **Note:** We solve on a smaller size as this is many times faster, but also a bit less accurate. Increase if you need more accuracy.
 - `--init_tau`: Initial tau value for Gumbel-Softmax (default: 1.0).
 - `--final_tau`: Final tau value for the Gumbel-Softmax formulation (default: 0.01).

@@ -3,9 +3,9 @@ import random
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+from PIL import Image
 from scipy.spatial.distance import cdist
 from skimage.color import rgb2lab
-from sklearn.cluster import MiniBatchKMeans
 from tqdm import tqdm
 
 
@@ -244,7 +244,6 @@ def tsp_order_christofides_path(nodes, labs, bg, fg):
     Returns an ordering (list of cluster indices) that contains all nodes,
     starts with bg and ends with fg.
     """
-    # Use an artificial node to force a Hamiltonian path.
     artificial = -1
     augmented_nodes = nodes + [artificial]
     LARGE = 1e6
@@ -255,9 +254,8 @@ def tsp_order_christofides_path(nodes, labs, bg, fg):
 
     # Build an augmented matrix of size (n+1)x(n+1).
     aug_mat = np.zeros((n + 1, n + 1))
-    # Fill the top-left block with D.
     aug_mat[:n, :n] = D
-    # For the artificial node (last row/col), set costs.
+    # For the artificial node, set cost = 0 for bg/fg, LARGE otherwise.
     for i, u in enumerate(nodes):
         if u in {bg, fg}:
             aug_mat[i, n] = 0.0
@@ -265,7 +263,6 @@ def tsp_order_christofides_path(nodes, labs, bg, fg):
         else:
             aug_mat[i, n] = LARGE
             aug_mat[n, i] = LARGE
-    # Set artificial-to-artificial cost to 0.
     aug_mat[n, n] = 0.0
 
     # Convert the augmented matrix into a graph dictionary.
@@ -290,6 +287,15 @@ def tsp_order_christofides_path(nodes, labs, bg, fg):
     if cycle[-1] != fg:
         cycle.remove(fg)
         cycle.append(fg)
+
+    # --- NEW: Check if reversing the internal order yields a lower ordering metric ---
+    if len(cycle) > 2:
+        # Reverse the ordering of the nodes between bg and fg.
+        reversed_cycle = [cycle[0]] + cycle[1:-1][::-1] + [cycle[-1]]
+        if compute_ordering_metric(reversed_cycle, labs) < compute_ordering_metric(
+            cycle, labs
+        ):
+            cycle = reversed_cycle
 
     return cycle
 
@@ -338,55 +344,55 @@ def init_height_map(
         random.seed(random_seed)
 
     H, W, _ = target.shape
-    target_np = np.asarray(target).reshape(H, W, 3).astype(np.float32) / 255.0
 
-    # Convert the image to Lab space and apply weights.
-    target_lab = rgb2lab(target_np)
-    # Apply weights: scale L channel by lab_weights[0], a by lab_weights[1], b by lab_weights[2]
-    target_lab[..., 0] *= lab_weights[0]
-    target_lab[..., 1] *= lab_weights[1]
-    target_lab[..., 2] *= lab_weights[2]
+    # Convert target (assumed in [0,255]) to a PIL Image.
+    pil_im = Image.fromarray(target.astype(np.uint8))
+    # Quantize image into max_layers colors.
+    quantized_im = pil_im.quantize(colors=max_layers)
+    # Retrieve per-pixel labels (indices into the palette).
+    labels = np.array(quantized_im)
 
-    # Reshape for clustering.
-    target_lab_reshaped = target_lab.reshape(-1, 3)
+    # Get the full palette and reshape it into (-1, 3)
+    full_palette = quantized_im.getpalette()
+    palette_arr = np.array(full_palette, dtype=np.uint8).reshape(-1, 3)
 
-    # Cluster pixels using MiniBatchKMeans in the weighted Lab space.
-    kmeans = MiniBatchKMeans(
-        n_clusters=max_layers * 2, random_state=random_seed, max_iter=300
-    )
-    kmeans.fit(target_lab_reshaped)
-    centers = kmeans.cluster_centers_
-    labels = kmeans.predict(target_lab_reshaped).reshape(H, W)
+    # Get only the palette indices actually used in the quantized image.
+    unique_palette_indices = sorted(np.unique(labels))
+    # Create the labs array from the used palette colors.
+    labs_rgb = palette_arr[unique_palette_indices].astype(np.float32)
 
-    # For subsequent ordering, we use the weighted Lab centers.
-    labs = centers  # labs now holds weighted Lab values
+    # Convert RGB values (0-255) to Lab space.
+    labs = rgb2lab(labs_rgb / 255.0)
+    # Apply the weighting to each Lab channel.
+    labs[:, 0] *= lab_weights[0]
+    labs[:, 1] *= lab_weights[1]
+    labs[:, 2] *= lab_weights[2]
 
-    # Convert the background color to Lab and apply the same weighting.
+    # Remap the labels in the image to a compact index range.
+    palette_map = {old: new for new, old in enumerate(unique_palette_indices)}
+    labels = np.vectorize(lambda x: palette_map[x])(labels)
+
+    # Convert the background color to Lab (with same weighting).
     bg_rgb = np.array(background_tuple).astype(np.float32) / 255.0
     bg_lab = rgb2lab(np.array([[bg_rgb]]))[0, 0, :]
     bg_lab[0] *= lab_weights[0]
     bg_lab[1] *= lab_weights[1]
     bg_lab[2] *= lab_weights[2]
 
-    # Identify the cluster closest to the background and the farthest.
+    # Identify the best background and foreground clusters.
     distances = np.linalg.norm(labs - bg_lab, axis=1)
     bg_cluster = int(np.argmin(distances))
     fg_cluster = int(np.argmax(distances))
 
-    # Get the unique clusters (should be 0...max_layers-1 ideally).
-    unique_clusters = sorted(np.unique(labels))
+    # Use all the new compact cluster indices.
+    unique_clusters = list(range(len(unique_palette_indices)))
     nodes = unique_clusters
 
-    # Get the ordering from the TSP ordering function.
+    # Get the ordering via TSP ordering function.
     final_ordering = tsp_order_christofides_path(nodes, labs, bg_cluster, fg_cluster)
-    # Optionally, prune out outlier clusters.
+    # Optionally prune out outliers.
     final_ordering = prune_ordering(
-        final_ordering,
-        labs,
-        bg_cluster,
-        fg_cluster,
-        min_length=3,
-        improvement_factor=3,
+        final_ordering, labs, bg_cluster, fg_cluster, min_length=3, improvement_factor=3
     )
 
     # Create a mapping that covers all clusters.
@@ -395,11 +401,6 @@ def init_height_map(
     pixel_height_logits = np.log((new_labels + eps) / (1 - new_labels + eps))
 
     ordering_metric = compute_ordering_metric(final_ordering, labs)
-    # print(
-    #     "Ordering metric (total weighted Lab-space distance):",
-    #     ordering_metric / max_layers,
-    # )
-
     return pixel_height_logits, ordering_metric
 
 
@@ -410,7 +411,7 @@ def run_init_threads(
     background_tuple,
     eps=1e-6,
     random_seed=None,
-    num_threads=16,
+    num_threads=64,
 ):
     """
     Initializes pixel height logits using multiple threads.
@@ -447,6 +448,7 @@ def run_init_threads(
             total=num_threads,
         )
     ]
+    # print(f"metric values: {[r[1] for r in results]}")
     # get lowest ordering metric
     best_result = min(results, key=lambda x: x[1])
 
