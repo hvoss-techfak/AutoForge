@@ -75,7 +75,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--iterations`: Number of optimization iterations (default: 5000).
 - `--learning_rate`: Learning rate for the optimizer (default: 1e-2).
 - `--layer_height`: Layer thickness in millimeters (default: 0.04).
-- `--max_layers`: Maximum number of layers (default: 75). \
+- `--max_layers`: Maximum number of layers (default: 100). \
   **Note:** This is about 3mm + the background height
 - `--min_layers`: Minimum number of layers (default: 0). Used to limit height of pruning 
 - `--background_height`: Height of the background in millimeters (default: 0.4).  \
@@ -95,6 +95,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
   **Note:** This is highly recommended even if you don't have a color/color swap limit, as it actually increases the quality of the output.
 - `--pruning_max_colors`: Max number of colors allowed after pruning (default: 100).
 - `--pruning_max_swaps`: Max number of swaps allowed after pruning (default: 100).
+- `--pruning_max_layers`: Max number of layers allowed after pruning (default: 75).
 - `--random_seed`: Random seed for reproducibility (default: 0 (disabled) ).
 
 ### Experimental Deph Anything V2 parameters

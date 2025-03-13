@@ -4,14 +4,14 @@ from itertools import permutations
 import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
 from skimage.color import rgb2lab
 from sklearn.cluster import KMeans
 from sklearn.exceptions import ConvergenceWarning
+from sklearn.metrics import silhouette_score
 from sklearn.utils._testing import ignore_warnings
 from tqdm import tqdm
 from transformers import pipeline
-from PIL import Image
-from sklearn.metrics import silhouette_score
 
 
 @torch.jit.script

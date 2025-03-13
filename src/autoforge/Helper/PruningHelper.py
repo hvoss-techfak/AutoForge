@@ -386,6 +386,7 @@ def prune_redundant_layers(
     perception_loss_module,
     tolerance=1e-3,
     min_layers=0,
+    pruning_max_layers=1e6,
 ):
     """
     Iteratively check each layer and remove it if the removal does not worsen the loss by more than `tolerance`.
@@ -447,7 +448,9 @@ def prune_redundant_layers(
     removed_layers = 0
 
     # Continue until no layer can be removed.
-    while improvement and current_max_layers > 1 and current_max_layers > min_layers:
+    while current_max_layers > pruning_max_layers or (
+        improvement and current_max_layers > 1 and current_max_layers > min_layers
+    ):
         tbar.update(1)
         improvement = False
         # Try each layer as a candidate for removal.
@@ -480,8 +483,11 @@ def prune_redundant_layers(
                 add_penalty_loss=False,
             ).item()
 
-            # Accept the removal if loss increase is within tolerance.
-            if candidate_loss <= best_loss + tolerance:
+            # Accept the removal if loss increase is within tolerance, or we are still over our max layer limit.
+            if (
+                candidate_loss <= best_loss + tolerance
+                or current_max_layers > pruning_max_layers
+            ):
                 removed_layers += 1
                 tbar.set_description(
                     f"Pruning redundant layers: Loss {candidate_loss:.4f}, Removed {removed_layers}, new max layers {candidate_max_layers}"

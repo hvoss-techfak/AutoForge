@@ -1,5 +1,5 @@
-import os
 import json
+import os
 import time
 import traceback
 
@@ -16,6 +16,7 @@ VERSION_FILE = "../swatches_version.json"
 LAST_CHECKED_FILE = "../last_checked.json"
 
 TIMEOUT = 30
+
 
 def get_api_version():
     """
@@ -105,7 +106,7 @@ def download_filament_info():
     Raises:
         requests.RequestException: If any of the requests to the API fail.
     """
-    #load or create last checked file
+    # load or create last checked file
     last_modified_checked = None
     try:
         if os.path.exists(LAST_CHECKED_FILE):
@@ -120,7 +121,10 @@ def download_filament_info():
         traceback.print_exc()
     update_minimum_time = 60 * 60 * 24  # 24 hours
 
-    if last_modified_checked and time.time() - last_modified_checked < update_minimum_time:
+    if (
+        last_modified_checked
+        and time.time() - last_modified_checked < update_minimum_time
+    ):
         print("Data was checked recently. Skipping download.")
         return
 

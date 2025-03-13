@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-from autoforge.Helper.ImageHelper import srgb_to_lab, increase_saturation
+from autoforge.Helper.ImageHelper import srgb_to_lab
 from autoforge.Helper.OptimizerHelper import composite_image_cont
 
 
@@ -59,7 +59,7 @@ def compute_loss(
     # MSE
     comp_mse = srgb_to_lab(comp)
     # we slightly increase saturation of our target image to make the color matching more robust
-    target = increase_saturation(target, 0.1)
+    # target = increase_saturation(target, 0.1)
     target_mse = srgb_to_lab(target)
     mse_loss = F.huber_loss(comp_mse, target_mse)
     # Perceptual Loss

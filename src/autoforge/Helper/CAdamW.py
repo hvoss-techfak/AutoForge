@@ -1,7 +1,6 @@
 # Taken from https://github.com/kyleliang919/C-Optim/blob/main/c_adamw.py
 # copy dependencies from transformers/optimization.py
 import math
-import warnings
 from typing import Callable, Iterable, Tuple
 
 import torch
@@ -32,24 +31,33 @@ class CAdamW(Optimizer):
     """
 
     def __init__(
-            self,
-            params: Iterable[nn.parameter.Parameter],
-            lr: float = 1e-3,
-            betas: Tuple[float, float] = (0.9, 0.999),
-            eps: float = 1e-6,
-            weight_decay: float = 0.0,
-            correct_bias: bool = True,
+        self,
+        params: Iterable[nn.parameter.Parameter],
+        lr: float = 1e-3,
+        betas: Tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-6,
+        weight_decay: float = 0.0,
+        correct_bias: bool = True,
     ):
-
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr} - should be >= 0.0")
         if not 0.0 <= betas[0] < 1.0:
-            raise ValueError(f"Invalid beta parameter: {betas[0]} - should be in [0.0, 1.0)")
+            raise ValueError(
+                f"Invalid beta parameter: {betas[0]} - should be in [0.0, 1.0)"
+            )
         if not 0.0 <= betas[1] < 1.0:
-            raise ValueError(f"Invalid beta parameter: {betas[1]} - should be in [0.0, 1.0)")
+            raise ValueError(
+                f"Invalid beta parameter: {betas[1]} - should be in [0.0, 1.0)"
+            )
         if not 0.0 <= eps:
             raise ValueError(f"Invalid epsilon value: {eps} - should be >= 0.0")
-        defaults = {"lr": lr, "betas": betas, "eps": eps, "weight_decay": weight_decay, "correct_bias": correct_bias}
+        defaults = {
+            "lr": lr,
+            "betas": betas,
+            "eps": eps,
+            "weight_decay": weight_decay,
+            "correct_bias": correct_bias,
+        }
         super().__init__(params, defaults)
         self.init_lr = lr
 
@@ -102,12 +110,16 @@ class CAdamW(Optimizer):
                 if group["correct_bias"]:  # No bias correction for Bert
                     bias_correction1 = 1.0 - beta1 ** state["step"]
                     bias_correction2 = 1.0 - beta2 ** state["step"]
-                    step_size = step_size * math.sqrt(bias_correction2) / bias_correction1
+                    step_size = (
+                        step_size * math.sqrt(bias_correction2) / bias_correction1
+                    )
 
                 # compute norm gradient
                 mask = (exp_avg * grad > 0).to(grad.dtype)
                 # mask = mask * (mask.numel() / (mask.sum() + 1)) ## original implementation, leaving it here for record
-                mask.div_(mask.mean().clamp_(min=1e-3))  # https://huggingface.co/rwightman/timm-optim-caution found this implementation is more favoarable in many cases
+                mask.div_(
+                    mask.mean().clamp_(min=1e-3)
+                )  # https://huggingface.co/rwightman/timm-optim-caution found this implementation is more favoarable in many cases
                 norm_grad = (exp_avg * mask) / denom
                 p.add_(norm_grad, alpha=-step_size)
         return loss

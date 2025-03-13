@@ -8,11 +8,14 @@ import numpy as np
 from tqdm import tqdm
 
 from autoforge.Helper.FilamentHelper import hex_to_rgb, load_materials
+from autoforge.Helper.Heightmaps.ChristofidesHeightMap import run_init_threads
+from autoforge.Helper.Heightmaps.DepthEstimateHeightMap import (
+    init_height_map_depth_color_adjusted,
+)
+
 from autoforge.Helper.ImageHelper import resize_image, resize_image_exact
 from autoforge.Helper.OptimizerHelper import (
-    init_height_map,
     discretize_solution,
-    init_height_map_depth_color_adjusted,
     composite_image_disc,
 )
 from autoforge.Helper.OutputHelper import (
@@ -55,7 +58,7 @@ def main():
         "--layer_height", type=float, default=0.04, help="Layer thickness in mm"
     )
     parser.add_argument(
-        "--max_layers", type=int, default=75, help="Maximum number of layers"
+        "--max_layers", type=int, default=100, help="Maximum number of layers"
     )
     parser.add_argument(
         "--min_layers",
@@ -128,6 +131,12 @@ def main():
         type=int,
         default=100,
         help="Max number of swaps allowed after pruning",
+    )
+    parser.add_argument(
+        "--pruning_max_layer",
+        type=int,
+        default=75,
+        help="Max number of layers allowed after pruning",
     )
 
     parser.add_argument(
@@ -204,7 +213,10 @@ def main():
 
     # Basic checks
     if not (args.background_height / args.layer_height).is_integer():
-        print("Error: Background height must be a multiple of layer height.", file=sys.stderr)
+        print(
+            "Error: Background height must be a multiple of layer height.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if not os.path.exists(args.input_image):
@@ -270,9 +282,14 @@ def main():
             order_blend=args.order_blend,
         )
     else:
-        # Default initialization using your existing method
-        pixel_height_logits_init = init_height_map(
-            output_img_np, args.max_layers, args.layer_height, random_seed=random_seed
+        print("Initalizing height map. This can take a moment...")
+        # Default initialization
+        pixel_height_logits_init = run_init_threads(
+            output_img_np,
+            args.max_layers,
+            args.layer_height,
+            bgr_tuple,
+            random_seed=random_seed,
         )
 
     # if we have an alpha mask we set the height for those pixels to -13.815512 (the lowest init sigmoid value)
@@ -387,6 +404,7 @@ def main():
             perception_loss_module=perception_loss_module,
             tolerance=1e-3,  # adjust as needed
             min_layers=args.min_layers,
+            pruning_max_layers=args.pruning_max_layer,
         )
         args.max_layers = max_layers
         optimizer.best_discrete_loss = pruned_loss
