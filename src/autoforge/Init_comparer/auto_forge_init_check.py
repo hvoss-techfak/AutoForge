@@ -286,13 +286,14 @@ if __name__ == "__main__":
     shuffle(do_list)
 
     for i, (method, cluster, lab) in enumerate(do_list):
+        out_dict_str = f"{method}_{cluster}_{lab}"
         print(
             f"Running {method} with {cluster} clusters and lab={lab}, {i + 1}/{len(do_list)}"
         )
         exec = ProcessPoolExecutor(max_workers=parallel_limit)
         tlist = []
         for img in images:
-            for i in range(10):
+            for i in range(1):
                 tlist.append(
                     exec.submit(
                         main_suppressed,
@@ -303,10 +304,11 @@ if __name__ == "__main__":
                         lab,
                     )
                 )
+            break
         for t in tqdm(concurrent.futures.as_completed(tlist), total=len(tlist)):
-            result_list = out_dict.get((method, cluster, lab), [])
+            result_list = out_dict.get(out_dict_str, [])
             result_list.append(t.result())
-            out_dict[(method, cluster, lab)] = result_list
+            out_dict[out_dict_str] = result_list
         # save out_dict as json
         import json
 
