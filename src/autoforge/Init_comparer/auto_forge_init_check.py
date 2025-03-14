@@ -2,6 +2,7 @@ import sys
 import os
 import time
 from concurrent.futures.process import ProcessPoolExecutor
+from contextlib import redirect_stdout, redirect_stderr
 from random import shuffle
 
 import cv2
@@ -248,6 +249,13 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
     return mse_loss.item()
 
 
+def main_suppressed(input_image, csv_file, init_method, cluster_layers, lab_space):
+    with open(os.devnull, "w") as fnull:
+        with redirect_stdout(fnull), redirect_stderr(fnull):
+            result = main(input_image, csv_file, init_method, cluster_layers, lab_space)
+    return result
+
+
 if __name__ == "__main__":
     folder = "../../../images/test_images/"
     images = [folder + "/" + img for img in os.listdir(folder) if img.endswith(".jpg")]
@@ -282,7 +290,12 @@ if __name__ == "__main__":
             for i in range(10):
                 tlist.append(
                     exec.submit(
-                        main, img, "../../../bambulab.csv", method, cluster, lab
+                        main_suppressed,
+                        img,
+                        "../../../bambulab.csv",
+                        method,
+                        cluster,
+                        lab,
                     )
                 )
         for t in tlist:
