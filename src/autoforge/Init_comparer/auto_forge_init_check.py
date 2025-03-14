@@ -258,6 +258,7 @@ def main_suppressed(input_image, csv_file, init_method, cluster_layers, lab_spac
 
 if __name__ == "__main__":
     folder = "../../../images/test_images/"
+    csv_file = "../../../bambulab.csv"
     images = [folder + "/" + img for img in os.listdir(folder) if img.endswith(".jpg")]
     parallel_limit = 10
     methods = [
@@ -292,7 +293,7 @@ if __name__ == "__main__":
                     exec.submit(
                         main_suppressed,
                         img,
-                        "../../../bambulab.csv",
+                        csv_file,
                         method,
                         cluster,
                         lab,
