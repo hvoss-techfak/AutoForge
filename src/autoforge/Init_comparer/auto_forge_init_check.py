@@ -1,0 +1,296 @@
+import sys
+import os
+import time
+from concurrent.futures.process import ProcessPoolExecutor
+from random import shuffle
+
+import cv2
+import torch
+import numpy as np
+from tqdm import tqdm
+
+from autoforge.Helper.FilamentHelper import hex_to_rgb, load_materials
+from autoforge.Helper.Heightmaps.ChristofidesHeightMap import run_init_threads
+from autoforge.Helper.ImageHelper import resize_image, resize_image_exact
+from autoforge.Helper.OptimizerHelper import composite_image_disc
+from autoforge.Helper.PruningHelper import prune_redundant_layers
+from autoforge.Modules.Optimizer import FilamentOptimizer
+
+
+class Config:
+    # Update these file paths as needed!
+    input_image = "default_input.png"  # Path to input image
+    csv_file = "default_materials.csv"  # Path to CSV file with material data
+    output_folder = "output"
+    iterations = 2500
+    learning_rate = 1e-2
+    layer_height = 0.04
+    max_layers = 75
+    min_layers = 0
+    background_height = 0.4
+    background_color = "#000000"
+    output_size = 1024
+    solver_size = 256
+    init_tau = 1.0
+    final_tau = 0.01
+    visualize = False
+    stl_output_size = 200
+    perform_pruning = True
+    pruning_max_colors = 100
+    pruning_max_swaps = 100
+    pruning_max_layer = 75
+    random_seed = 0
+    use_depth_anything_height_initialization = False
+    depth_strength = 0.25
+    depth_threshold = 0.05
+    min_cluster_value = 0.1
+    w_depth = 0.5
+    w_lum = 1.0
+    order_blend = 0.1
+    mps = False
+    run_name = None
+    tensorboard = False
+
+
+def main(input_image, csv_file, init_method, cluster_layers, lab_space):
+    # Create config object using default values
+    args = Config()
+    args.input_image = input_image
+    args.csv_file = csv_file
+
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif args.mps and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    print("Using device:", device)
+
+    os.makedirs(args.output_folder, exist_ok=True)
+
+    # Basic checks
+    if not (args.background_height / args.layer_height).is_integer():
+        print(
+            "Error: Background height must be a multiple of layer height.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not os.path.exists(args.input_image):
+        print(f"Error: Input image '{args.input_image}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.exists(args.csv_file):
+        print(f"Error: CSV file '{args.csv_file}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    random_seed = args.random_seed
+    if random_seed == 0:
+        random_seed = int(time.time() * 1000) % 1000000
+    np.random.seed(random_seed)
+    torch.manual_seed(random_seed)
+
+    # Prepare background color
+    bgr_tuple = hex_to_rgb(args.background_color)
+    background = torch.tensor(bgr_tuple, dtype=torch.float32, device=device)
+
+    # Load materials
+    material_colors_np, material_TDs_np, material_names, _ = load_materials(
+        args.csv_file
+    )
+    material_colors = torch.tensor(
+        material_colors_np, dtype=torch.float32, device=device
+    )
+    material_TDs = torch.tensor(material_TDs_np, dtype=torch.float32, device=device)
+
+    # Read input image
+    img = cv2.imread(args.input_image, cv2.IMREAD_UNCHANGED)
+
+    alpha = None
+    # Check for alpha mask
+    if img.shape[2] == 4:
+        # Extract the alpha channel
+        alpha = img[:, :, 3]
+        alpha = alpha[..., None]
+        alpha = resize_image(alpha, args.output_size)
+        # Convert the image from BGRA to BGR
+        img = img[:, :, :3]
+
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    # Create solver resolution target image
+    solver_img_np = resize_image(img, args.solver_size)
+    target_solver = torch.tensor(solver_img_np, dtype=torch.float32, device=device)
+
+    # Create final resolution target image
+    output_img_np = resize_image(img, args.output_size)
+    output_target = torch.tensor(output_img_np, dtype=torch.float32, device=device)
+
+    pixel_height_logits_init = run_init_threads(
+        output_img_np,
+        args.max_layers,
+        args.layer_height,
+        bgr_tuple,
+        random_seed=random_seed,
+        init_method=init_method,
+        cluster_layers=cluster_layers,
+        lab_space=lab_space,
+    )
+
+    # Set initial height for transparent areas if an alpha mask exists
+    if alpha is not None:
+        pixel_height_logits_init[alpha < 128] = -13.815512
+
+    # Resize initial height logits to the solver resolution
+    tmp_3d = pixel_height_logits_init[..., None]  # shape (H, W, 1)
+    phl_solver_np = resize_image_exact(
+        tmp_3d, target_solver.shape[1], target_solver.shape[0]
+    )
+
+    # VGG Perceptual Loss (disabled in this example)
+    perception_loss_module = None
+
+    # Create the optimizer instance
+    optimizer = FilamentOptimizer(
+        args=args,
+        target=target_solver,
+        pixel_height_logits_init=phl_solver_np,
+        material_colors=material_colors,
+        material_TDs=material_TDs,
+        background=background,
+        device=device,
+        perception_loss_module=perception_loss_module,
+    )
+
+    # Main optimization loop
+    print("Starting optimization...")
+    tbar = tqdm(range(args.iterations))
+    for i in tbar:
+        loss_val = optimizer.step(record_best=(i % 10 == 0))
+        optimizer.visualize(interval=25)
+        optimizer.log_to_tensorboard(interval=100)
+
+        if (i + 1) % 100 == 0:
+            tbar.set_description(
+                f"Iteration {i + 1}, Loss = {loss_val:.4f}, best validation Loss = {optimizer.best_discrete_loss:.4f}"
+            )
+
+    # Get the final discrete solution at solver resolution
+    disc_global, disc_height_image = optimizer.get_discretized_solution(best=True)
+
+    # Optional RNG seed search for improvement
+    new_rng_seed, new_loss = optimizer.rng_seed_search(
+        optimizer.best_discrete_loss, 100
+    )
+    if new_loss < optimizer.best_discrete_loss:
+        optimizer.best_seed = new_rng_seed
+        optimizer.best_discrete_loss = new_loss
+        print(f"New best seed found: {new_rng_seed} with loss: {new_loss}")
+
+    print("Applying solved solution to full resolution...")
+    disc_global = optimizer.prune(
+        max_colors_allowed=args.pruning_max_colors,
+        max_swaps_allowed=args.pruning_max_swaps,
+        disc_global=disc_global,
+        disc_height_image=torch.from_numpy(pixel_height_logits_init).to(device),
+        tau_g=optimizer.best_tau,
+    )
+
+    # Another quick RNG seed search after pruning
+    new_rng_seed, new_loss = optimizer.rng_seed_search(
+        optimizer.best_discrete_loss, 100
+    )
+    if new_loss < optimizer.best_discrete_loss:
+        optimizer.best_seed = new_rng_seed
+        optimizer.best_discrete_loss = new_loss
+
+    # Apply the discrete solution to full resolution
+    params = {
+        "global_logits": disc_global,
+        "pixel_height_logits": torch.from_numpy(pixel_height_logits_init).to(device),
+    }
+
+    print("Removing redundant layers from the discrete solution...")
+    params, pruned_loss, max_layers = prune_redundant_layers(
+        params,
+        final_tau=args.final_tau,
+        h=args.layer_height,
+        target=output_target,  # Final compositing target image
+        material_colors=material_colors,
+        material_TDs=material_TDs,
+        background=background,
+        rng_seed=optimizer.best_seed,
+        perception_loss_module=perception_loss_module,
+        tolerance=1e-3,
+        min_layers=args.min_layers,
+        pruning_max_layers=args.pruning_max_layer,
+    )
+    args.max_layers = max_layers
+    optimizer.best_discrete_loss = pruned_loss
+
+    print("Done. Saving outputs...")
+    # Composite the final discrete solution image
+    comp_disc = composite_image_disc(
+        params["pixel_height_logits"],
+        params["global_logits"],
+        args.final_tau,
+        args.final_tau,
+        args.layer_height,
+        args.max_layers,
+        material_colors,
+        material_TDs,
+        background,
+        rng_seed=optimizer.best_seed,
+    )
+
+    # Compute and print the MSE loss between the target and final output
+    mse_loss = torch.nn.functional.mse_loss(output_target, comp_disc)
+    return mse_loss.item()
+
+
+if __name__ == "__main__":
+    folder = "../../../images/test_images/"
+    images = [folder + "/" + img for img in os.listdir(folder) if img.endswith(".jpg")]
+    parallel_limit = 10
+    methods = [
+        "kmeans",
+        "quantize_median",
+        "quantize_maxcoverage",
+        "quantize_fastoctree",
+    ]
+    max_layers = 75
+    cluster_layers = [
+        max_layers // 4,
+        max_layers // 2,
+        max_layers,
+        max_layers * 2,
+        max_layers * 4,
+    ]
+    use_lab_space = [True, False]
+
+    # test every permutation using itertools
+    from itertools import product
+
+    out_dict = {}
+    do_list = list(product(methods, cluster_layers, use_lab_space))
+    shuffle(do_list)
+
+    for method, cluster, lab in tqdm(do_list):
+        exec = ProcessPoolExecutor(max_workers=parallel_limit)
+        tlist = []
+        for img in images:
+            for i in range(10):
+                tlist.append(
+                    exec.submit(
+                        main, img, "../../../bambulab.csv", method, cluster, lab
+                    )
+                )
+        for t in tlist:
+            result_list = out_dict.get((method, cluster, lab), [])
+            result_list.append(t.result())
+            out_dict[(method, cluster, lab)] = result_list
+        # save out_dict as json
+        import json
+
+        with open("out_dict.json", "w") as f:
+            json.dump(out_dict, f)

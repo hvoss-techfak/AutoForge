@@ -8,6 +8,7 @@ from PIL import Image
 from PIL.Image import Quantize
 from scipy.spatial.distance import cdist
 from skimage.color import rgb2lab
+from sklearn.cluster import MiniBatchKMeans
 from tqdm import tqdm
 
 
@@ -328,8 +329,13 @@ def init_height_map(
     eps=1e-6,
     random_seed=None,
     lab_weights=(2.0, 1.0, 1.0),
+    init_method="quantize_maxcoverage",
+    cluster_layers=None,
+    lab_space=True,
 ):
     """
+    init_method should be one of quantize_median,quantize_maxcoverage,quantize_fastoctree,kmeans
+
     Initializes pixel height logits by:
       1. Clustering the image into max_layers clusters (via KMeans).
       2. Converting cluster centers to Lab space.
@@ -341,45 +347,84 @@ def init_height_map(
     """
     import random
 
+    if cluster_layers is None:
+        cluster_layers = max_layers
+
     if random_seed is not None:
         np.random.seed(random_seed)
         random.seed(random_seed)
 
     H, W, _ = target.shape
 
-    # Convert target (assumed in [0,255]) to a PIL Image.
-    pil_im = Image.fromarray(target.astype(np.uint8))
-    # Quantize image into max_layers colors.
-    quantized_im = pil_im.quantize(colors=max_layers, method=Quantize.MAXCOVERAGE)
-    # Retrieve per-pixel labels (indices into the palette).
-    labels = np.array(quantized_im)
+    if init_method.startswith("quantize"):
+        method = (
+            Quantize.MAXCOVERAGE
+            if init_method == "quantize_maxcoverage"
+            else Quantize.MEDIANCUT
+            if init_method == "quantize_median"
+            else Quantize.FASTOCTREE
+        )
+        # Convert target (assumed in [0,255]) to a PIL Image.
+        pil_im = Image.fromarray(target.astype(np.uint8))
+        # Quantize image into max_layers colors.
+        quantized_im = pil_im.quantize(colors=cluster_layers, method=method)
+        # Retrieve per-pixel labels (indices into the palette).
+        labels = np.array(quantized_im)
+        # Get the full palette and reshape it into (-1, 3)
+        full_palette = quantized_im.getpalette()
+        palette_arr = np.array(full_palette, dtype=np.uint8).reshape(-1, 3)
+        # Get only the palette indices actually used in the quantized image.
+        unique_palette_indices = sorted(np.unique(labels))
+        # Create the labs array from the used palette colors.
+        labs_rgb = palette_arr[unique_palette_indices].astype(np.float32)
+        if lab_space:
+            # Convert RGB values (0-255) to Lab space.
+            labs = rgb2lab(labs_rgb / 255.0)
+            # Apply the weighting to each Lab channel.
+            labs[:, 0] *= lab_weights[0]
+            labs[:, 1] *= lab_weights[1]
+            labs[:, 2] *= lab_weights[2]
 
-    # Get the full palette and reshape it into (-1, 3)
-    full_palette = quantized_im.getpalette()
-    palette_arr = np.array(full_palette, dtype=np.uint8).reshape(-1, 3)
+        # Remap the labels in the image to a compact index range.
+        palette_map = {old: new for new, old in enumerate(unique_palette_indices)}
+        labels = np.vectorize(lambda x: palette_map[x])(labels)
+    else:
+        # kmeans init
+        target_np = np.asarray(target).reshape(H, W, 3).astype(np.float32) / 255.0
 
-    # Get only the palette indices actually used in the quantized image.
-    unique_palette_indices = sorted(np.unique(labels))
-    # Create the labs array from the used palette colors.
-    labs_rgb = palette_arr[unique_palette_indices].astype(np.float32)
+        if lab_space:
+            # Convert the image to Lab space and apply weights.
+            target_lab = rgb2lab(target_np)
+            # Apply weights: scale L channel by lab_weights[0], a by lab_weights[1], b by lab_weights[2]
+            target_lab[..., 0] *= lab_weights[0]
+            target_lab[..., 1] *= lab_weights[1]
+            target_lab[..., 2] *= lab_weights[2]
+        else:
+            target_lab = target_np
 
-    # Convert RGB values (0-255) to Lab space.
-    labs = rgb2lab(labs_rgb / 255.0)
-    # Apply the weighting to each Lab channel.
-    labs[:, 0] *= lab_weights[0]
-    labs[:, 1] *= lab_weights[1]
-    labs[:, 2] *= lab_weights[2]
+        # Reshape for clustering.
+        target_lab_reshaped = target_lab.reshape(-1, 3)
 
-    # Remap the labels in the image to a compact index range.
-    palette_map = {old: new for new, old in enumerate(unique_palette_indices)}
-    labels = np.vectorize(lambda x: palette_map[x])(labels)
+        # Cluster pixels using MiniBatchKMeans in the weighted Lab space.
+        kmeans = MiniBatchKMeans(
+            n_clusters=max_layers, random_state=random_seed, max_iter=300
+        )
+        kmeans.fit(target_lab_reshaped)
+        centers = kmeans.cluster_centers_
+        labels = kmeans.predict(target_lab_reshaped).reshape(H, W)
+        # For subsequent ordering, we use the weighted Lab centers.
+        labs = centers  # labs now holds weighted Lab values
 
     # Convert the background color to Lab (with same weighting).
     bg_rgb = np.array(background_tuple).astype(np.float32) / 255.0
-    bg_lab = rgb2lab(np.array([[bg_rgb]]))[0, 0, :]
-    bg_lab[0] *= lab_weights[0]
-    bg_lab[1] *= lab_weights[1]
-    bg_lab[2] *= lab_weights[2]
+
+    if lab_space:
+        bg_lab = rgb2lab(np.array([[bg_rgb]]))[0, 0, :]
+        bg_lab[0] *= lab_weights[0]
+        bg_lab[1] *= lab_weights[1]
+        bg_lab[2] *= lab_weights[2]
+    else:
+        bg_lab = bg_rgb
 
     # Identify the best background and foreground clusters.
     distances = np.linalg.norm(labs - bg_lab, axis=1)
@@ -413,6 +458,9 @@ def run_init_threads(
     eps=1e-6,
     random_seed=None,
     num_threads=64,
+    init_method="quantize_maxcoverage",
+    cluster_layers=None,
+    lab_space=True,
 ):
     """
     Initializes pixel height logits using multiple threads.
@@ -439,6 +487,9 @@ def run_init_threads(
                 background_tuple,
                 eps,
                 random_seed + i,
+                init_method="quantize_maxcoverage",
+                cluster_layers=None,
+                lab_space=True,
             )
         )
     results = [
