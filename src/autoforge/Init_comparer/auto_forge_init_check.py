@@ -293,7 +293,7 @@ if __name__ == "__main__":
         exec = ProcessPoolExecutor(max_workers=parallel_limit)
         tlist = []
         for img in images:
-            for i in range(1):
+            for i in range(5):
                 tlist.append(
                     exec.submit(
                         main_suppressed,
@@ -304,7 +304,6 @@ if __name__ == "__main__":
                         lab,
                     )
                 )
-            break
         for t in tqdm(concurrent.futures.as_completed(tlist), total=len(tlist)):
             result_list = out_dict.get(out_dict_str, [])
             result_list.append(t.result())
