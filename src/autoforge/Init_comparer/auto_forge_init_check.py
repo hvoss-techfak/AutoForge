@@ -293,7 +293,7 @@ if __name__ == "__main__":
         exec = ProcessPoolExecutor(max_workers=parallel_limit)
         tlist = []
         for img in images:
-            for i in range(5):
+            for i in range(1):
                 tlist.append(
                     exec.submit(
                         main_suppressed,
