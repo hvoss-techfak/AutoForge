@@ -1,3 +1,4 @@
+import concurrent
 import sys
 import os
 import time
@@ -260,7 +261,7 @@ if __name__ == "__main__":
     folder = "../../../images/test_images/"
     csv_file = "../../../bambulab.csv"
     images = [folder + "/" + img for img in os.listdir(folder) if img.endswith(".jpg")]
-    parallel_limit = 10
+    parallel_limit = 32
     methods = [
         "kmeans",
         "quantize_median",
@@ -284,7 +285,10 @@ if __name__ == "__main__":
     do_list = list(product(methods, cluster_layers, use_lab_space))
     shuffle(do_list)
 
-    for method, cluster, lab in tqdm(do_list):
+    for i, (method, cluster, lab) in enumerate(do_list):
+        print(
+            f"Running {method} with {cluster} clusters and lab={lab}, {i + 1}/{len(do_list)}"
+        )
         exec = ProcessPoolExecutor(max_workers=parallel_limit)
         tlist = []
         for img in images:
@@ -299,7 +303,7 @@ if __name__ == "__main__":
                         lab,
                     )
                 )
-        for t in tlist:
+        for t in tqdm(concurrent.futures.as_completed(tlist), total=len(tlist)):
             result_list = out_dict.get((method, cluster, lab), [])
             result_list.append(t.result())
             out_dict[(method, cluster, lab)] = result_list
