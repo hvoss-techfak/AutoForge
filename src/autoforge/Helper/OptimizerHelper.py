@@ -464,3 +464,40 @@ def discretize_solution(
         discrete_global_vals.append(torch.argmax(p))
     discrete_global = torch.stack(discrete_global_vals, dim=0)
     return discrete_global, discrete_height_image
+
+
+import torch
+
+
+@torch.jit.script
+def remove_isolated_outliers(
+    depth_map: torch.Tensor, threshold: float = 0.5
+) -> torch.Tensor:
+    # Clone the input to ensure that no views into a leaf variable are used.
+    depth_map_clone = depth_map.clone()
+    # Unsqueeze to shape (1, 1, H, W)
+    unsq = depth_map_clone.unsqueeze(0).unsqueeze(0)
+    # Use explicit padding so that conv2d does not internally use as_strided views.
+    padded = F.pad(unsq, (1, 1, 1, 1), mode="reflect")
+
+    # Create the 3x3 kernel for summing the 8 neighbors.
+    kernel = torch.tensor(
+        [[1.0, 1.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0]],
+        dtype=depth_map.dtype,
+        device=depth_map.device,
+    ).view(1, 1, 3, 3)
+
+    # Compute the sum of the 8-connected neighbors.
+    neighbor_sum = F.conv2d(padded, kernel, padding=0)
+    neighbor_avg = neighbor_sum / 8.0
+    # Squeeze back to (H, W) and clone to further break any remaining view relationships.
+    neighbor_avg = neighbor_avg.squeeze(0).squeeze(0).clone()
+
+    # Compute the absolute difference between each pixel and its neighbor average.
+    diff = torch.abs(depth_map_clone - neighbor_avg)
+    # Create a mask for pixels that differ more than the threshold.
+    mask = diff > threshold
+    # Use torch.where to choose neighbor average where the pixel is an outlier.
+    depth_map_filtered = torch.where(mask, neighbor_avg, depth_map_clone)
+
+    return depth_map_filtered

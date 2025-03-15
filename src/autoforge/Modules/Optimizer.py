@@ -197,6 +197,7 @@ class FilamentOptimizer:
             perception_loss_module=self.perception_loss_module,
             add_penalty_loss=False,
         )
+
         loss.backward()
         self.optimizer.step()
 

@@ -441,4 +441,3 @@ def prune_redundant_layers(
             break
 
     tbar.close()
-    return current_params, best_loss, current_max_layers
