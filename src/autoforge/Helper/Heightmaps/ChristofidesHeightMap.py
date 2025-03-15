@@ -449,7 +449,15 @@ def init_height_map(
     nodes = unique_clusters
 
     # Get the ordering via TSP ordering function.
-    final_ordering = tsp_order_christofides_path(nodes, labs, bg_cluster, fg_cluster)
+    for i in range(50):
+        try:
+            final_ordering = tsp_order_christofides_path(nodes, labs, bg_cluster, fg_cluster)
+            break
+        except Exception:
+            print(f"Failed to find ordering, retrying {i+1}/10")
+            if i == 49:
+                raise ValueError("Failed to find ordering after 50 retries")
+
     # Optionally prune out outliers.
     final_ordering = prune_ordering(
         final_ordering, labs, bg_cluster, fg_cluster, min_length=3, improvement_factor=3
