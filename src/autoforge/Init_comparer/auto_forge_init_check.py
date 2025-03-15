@@ -120,10 +120,6 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
 
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    # Create solver resolution target image
-    solver_img_np = resize_image(img, args.solver_size)
-    target_solver = torch.tensor(solver_img_np, dtype=torch.float32, device=device)
-
     # Create final resolution target image
     output_img_np = resize_image(img, args.output_size)
     output_target = torch.tensor(output_img_np, dtype=torch.float32, device=device)
@@ -149,7 +145,7 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
     # Create the optimizer instance
     optimizer = FilamentOptimizer(
         args=args,
-        target=target_solver,
+        target=output_target,
         pixel_height_logits_init=pixel_height_logits_init,
         material_colors=material_colors,
         material_TDs=material_TDs,
@@ -252,10 +248,10 @@ def main_suppressed(input_image, csv_file, init_method, cluster_layers, lab_spac
 
 
 if __name__ == "__main__":
-    folder = "../../../images/test_images2/"
+    folder = "../../../images/test_images/"
     csv_file = "../../../bambulab.csv"
     images = [folder + "/" + img for img in os.listdir(folder) if img.endswith(".jpg")]
-    parallel_limit = 32
+    parallel_limit = 1
     methods = [
         "kmeans",
         "quantize_median",
@@ -290,7 +286,7 @@ if __name__ == "__main__":
             for i in range(1):
                 tlist.append(
                     exec.submit(
-                        main_suppressed,
+                        main,
                         img,
                         csv_file,
                         method,
@@ -298,6 +294,7 @@ if __name__ == "__main__":
                         lab,
                     )
                 )
+            break
         for t in tqdm(concurrent.futures.as_completed(tlist), total=len(tlist)):
             result_list = out_dict.get(out_dict_str, [])
             result_list.append(t.result())
