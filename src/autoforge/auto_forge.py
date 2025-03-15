@@ -15,7 +15,7 @@ from autoforge.Helper.Heightmaps.DepthEstimateHeightMap import (
     init_height_map_depth_color_adjusted,
 )
 
-from autoforge.Helper.ImageHelper import resize_image, resize_image_exact
+from autoforge.Helper.ImageHelper import resize_image
 from autoforge.Helper.OptimizerHelper import (
     discretize_solution,
     composite_image_disc,
@@ -83,12 +83,6 @@ def main():
         type=int,
         default=1024,
         help="Maximum dimension for target image",
-    )
-    parser.add_argument(
-        "--solver_size",
-        type=int,
-        default=256,
-        help="Maximum dimension for solver (fast) image",
     )
     parser.add_argument(
         "--init_tau",
@@ -263,10 +257,6 @@ def main():
 
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    # This smaller 'target' is the solver resolution
-    solver_img_np = resize_image(img, args.solver_size)
-    target_solver = torch.tensor(solver_img_np, dtype=torch.float32, device=device)
-
     # For the final resolution
     output_img_np = resize_image(img, args.output_size)
     output_target = torch.tensor(output_img_np, dtype=torch.float32, device=device)
@@ -298,12 +288,7 @@ def main():
     if alpha is not None:
         pixel_height_logits_init[alpha < 128] = -13.815512
 
-    # But we will solve at the smaller resolution => resize that init to solver size
-    # Add a dummy channel so that cv2.resize can handle it
-    tmp_3d = pixel_height_logits_init[..., None]  # shape (H, W, 1)
-    phl_solver_np = resize_image_exact(
-        tmp_3d, target_solver.shape[1], target_solver.shape[0]
-    )  # shape (H', W') cause of weird opencv quirk
+    phl_solver_np = pixel_height_logits_init  # shape (H, W, 1)
 
     # VGG Perceptual Loss
     # We currently disable this as it is not used in the optimization.
@@ -312,7 +297,7 @@ def main():
     # Create an optimizer instance
     optimizer = FilamentOptimizer(
         args=args,
-        target=target_solver,
+        target=output_target,
         pixel_height_logits_init=phl_solver_np,
         material_colors=material_colors,
         material_TDs=material_TDs,
@@ -362,7 +347,7 @@ def main():
             max_colors_allowed=args.pruning_max_colors,
             max_swaps_allowed=args.pruning_max_swaps,
             disc_global=disc_global,
-            disc_height_image=torch.from_numpy(pixel_height_logits_init).to(device),
+            disc_height_image=optimizer.best_params["pixel_height_logits"],
             tau_g=optimizer.best_tau,
         )
 
@@ -391,7 +376,7 @@ def main():
     # Now, we want to apply that discrete solution to the full resolution:
     params = {
         "global_logits": disc_global,
-        "pixel_height_logits": torch.from_numpy(pixel_height_logits_init).to(device),
+        "pixel_height_logits": optimizer.best_params["pixel_height_logits"],
     }
 
     if args.perform_pruning:

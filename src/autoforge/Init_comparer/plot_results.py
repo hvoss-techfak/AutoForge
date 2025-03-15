@@ -109,5 +109,10 @@ for i in range(n_keys - 1):
             showarrow=False,
             font=dict(size=12),
         )
+fig.update_layout(
+    autosize=False,
+    width=1920,
+    height=800,
+)
 # save image
 fig.write_image("out.png")

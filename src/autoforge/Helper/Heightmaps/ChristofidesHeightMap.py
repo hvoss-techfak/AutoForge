@@ -487,9 +487,9 @@ def run_init_threads(
                 background_tuple,
                 eps,
                 random_seed + i,
-                init_method="quantize_maxcoverage",
-                cluster_layers=None,
-                lab_space=True,
+                init_method=init_method,
+                cluster_layers=cluster_layers,
+                lab_space=lab_space,
             )
         )
     results = [

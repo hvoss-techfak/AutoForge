@@ -108,13 +108,16 @@ def composite_image_cont(
     background: torch.Tensor,  # [3]
 ) -> torch.Tensor:
     """
-    Continuous compositing over all pixels.
-    Uses Gumbel softmax with either hard or soft sampling depending on tau_global.
+    Continuous compositing over all pixels with learnable layer heights.
+    Uses Gumbel softmax for global material assignment and a sigmoid-based soft mask
+    to determine per-pixel layer contribution. The sigmoid is nearly binary when tau_height > 0.9
+    and becomes increasingly soft as tau_height approaches zero, allowing gradients to flow.
 
     Args:
         pixel_height_logits (torch.Tensor): Logits for pixel heights, shape [H, W].
         global_logits (torch.Tensor): Logits for global material assignment, shape [max_layers, n_materials].
-        tau_height (float): Temperature parameter for height rounding.
+        tau_height (float): Temperature parameter controlling the softness of the layer height.
+                              High values yield nearly discrete (binary) behavior.
         tau_global (float): Temperature parameter for global material assignment.
         h (float): Height of each layer.
         max_layers (int): Maximum number of layers.
@@ -125,36 +128,21 @@ def composite_image_cont(
     Returns:
         torch.Tensor: Composite image tensor, shape [H, W, 3].
     """
-    # Compute continuous and discrete layers for each pixel
+    # Compute a continuous layer index per pixel
     pixel_height = (max_layers * h) * torch.sigmoid(pixel_height_logits)
-    continuous_layers = pixel_height / h
+    continuous_layers = pixel_height / h  # continuous layer assignment
 
-    # adaptive rounding
-    adaptive_layers = adaptive_round(
-        continuous_layers, tau_height, high_tau=0.1, low_tau=0.01, temp=0.1
-    )
-
-    # "Straight-through" trick to keep gradient from adaptive rounding
-    discrete_layers_temp = torch.round(continuous_layers)
-    discrete_layers = (
-        discrete_layers_temp + (adaptive_layers - discrete_layers_temp).detach()
-    ).to(torch.int32)  # shape [H, W]
-
-    # Precompute global material assignments for each layer
-    # Use a single Gumbel Softmax call for all layers.
+    # Global material assignment for each layer using Gumbel softmax
     hard_flag = tau_global < 1e-3
-    # global_logits: [max_layers, n_materials]
     p = F.gumbel_softmax(
         global_logits, tau_global, hard=hard_flag, dim=1
-    )  # [L, n_materials]
+    )  # shape [max_layers, n_materials]
 
-    # Compute color_i and TD_i for each layer in one go.
-    # color_i -> [max_layers, 3], TD_i -> [max_layers]
-    layer_colors = p @ material_colors  # [L, 3]
-    layer_TDs = p @ material_TDs  # [L]
+    # Compute layer colors and transmission parameters for each layer
+    layer_colors = p @ material_colors  # [max_layers, 3]
+    layer_TDs = p @ material_TDs  # [max_layers]
     layer_TDs.clamp_(1e-8, 1e8)
 
-    # Prepare output and compositing variables
     H, W = pixel_height.shape
     comp = torch.zeros(H, W, 3, dtype=torch.float32, device=pixel_height.device)
     remaining = torch.ones(H, W, dtype=torch.float32, device=pixel_height.device)
@@ -165,32 +153,35 @@ def composite_image_cont(
     k = 3.4103447e01
     b = -4.1554203e00
 
-    # Composite from top layer (max_layers-1) down to 0
+    # Composite layers from top (max_layers-1) down to 0
     for i in range(max_layers):
         layer_idx = max_layers - 1 - i
-        # Mask of which pixels actually print this layer:
-        p_print = (discrete_layers > layer_idx).to(dtype=comp.dtype)
+        # Compute a soft mask for layer contribution.
+        # Using a sigmoid centered at (layer_idx + 0.5) provides a soft threshold.
+        # The scaling factor (e.g., 10 * tau_height) makes the sigmoid nearly binary when tau_height is high.
+        scale = 10 * tau_height
+        p_print = torch.sigmoid(
+            (continuous_layers - (layer_idx + 0.5)) * scale
+        )  # [H, W]
 
-        # Effective thickness for those pixels
+        # Compute the effective thickness for this layer per pixel
         eff_thick = p_print * h
 
-        # Opacity based on thickness and material TD
+        # Opacity calculation based on effective thickness and material transmission parameter
         TD_i = layer_TDs[layer_idx]
         opac = o + (A * torch.log1p(k * (eff_thick / TD_i)) + b * (eff_thick / TD_i))
         opac = torch.clamp(opac, 0.0, 1.0)
 
-        # Add contribution to comp
-        color_i = layer_colors[layer_idx]  # shape [3]
-        # We need to broadcast opac: [H, W] -> [H, W, 1]
-        comp = comp + (remaining * opac).unsqueeze(-1) * color_i
+        # Composite the layer's color contribution
+        comp = comp + (remaining * opac).unsqueeze(-1) * layer_colors[layer_idx]
 
-        # Update the remaining factor
+        # Update the remaining light after this layer
         remaining = remaining * (1.0 - opac)
 
     # Add background contribution
     comp = comp + remaining.unsqueeze(-1) * background
 
-    # 6. Scale to [0, 255] range
+    # Scale output to [0, 255] range
     return comp * 255.0
 
 

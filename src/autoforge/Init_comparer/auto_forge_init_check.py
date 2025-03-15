@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from autoforge.Helper.FilamentHelper import hex_to_rgb, load_materials
 from autoforge.Helper.Heightmaps.ChristofidesHeightMap import run_init_threads
-from autoforge.Helper.ImageHelper import resize_image, resize_image_exact
+from autoforge.Helper.ImageHelper import resize_image
 from autoforge.Helper.OptimizerHelper import composite_image_disc
 from autoforge.Helper.PruningHelper import prune_redundant_layers
 from autoforge.Modules.Optimizer import FilamentOptimizer
@@ -143,12 +143,6 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
     if alpha is not None:
         pixel_height_logits_init[alpha < 128] = -13.815512
 
-    # Resize initial height logits to the solver resolution
-    tmp_3d = pixel_height_logits_init[..., None]  # shape (H, W, 1)
-    phl_solver_np = resize_image_exact(
-        tmp_3d, target_solver.shape[1], target_solver.shape[0]
-    )
-
     # VGG Perceptual Loss (disabled in this example)
     perception_loss_module = None
 
@@ -156,7 +150,7 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
     optimizer = FilamentOptimizer(
         args=args,
         target=target_solver,
-        pixel_height_logits_init=phl_solver_np,
+        pixel_height_logits_init=pixel_height_logits_init,
         material_colors=material_colors,
         material_TDs=material_TDs,
         background=background,
@@ -209,7 +203,7 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
     # Apply the discrete solution to full resolution
     params = {
         "global_logits": disc_global,
-        "pixel_height_logits": torch.from_numpy(pixel_height_logits_init).to(device),
+        "pixel_height_logits": optimizer.best_params["pixel_height_logits"],
     }
 
     print("Removing redundant layers from the discrete solution...")
@@ -258,7 +252,7 @@ def main_suppressed(input_image, csv_file, init_method, cluster_layers, lab_spac
 
 
 if __name__ == "__main__":
-    folder = "../../../images/test_images/"
+    folder = "../../../images/test_images2/"
     csv_file = "../../../bambulab.csv"
     images = [folder + "/" + img for img in os.listdir(folder) if img.endswith(".jpg")]
     parallel_limit = 32

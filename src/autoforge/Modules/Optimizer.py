@@ -104,7 +104,7 @@ class FilamentOptimizer:
 
         # Initialize optimizer
         self.optimizer = CAdamW(
-            [self.params["global_logits"]],
+            [self.params["global_logits"], self.params["pixel_height_logits"]],
             lr=self.learning_rate,
         )
 
@@ -117,26 +117,43 @@ class FilamentOptimizer:
         # If you want a figure for real-time visualization:
         if self.visualize_flag:
             plt.ion()
-            self.fig, self.ax = plt.subplots(1, 4, figsize=(14, 6))
-            self.target_im_ax = self.ax[0].imshow(
+            self.fig, self.ax = plt.subplots(2, 3, figsize=(14, 6))
+
+            self.target_im_ax = self.ax[0,0].imshow(
                 np.array(self.target.cpu(), dtype=np.uint8)
             )
-            self.ax[0].set_title("Target Image")
-            self.current_comp_ax = self.ax[1].imshow(
+            self.ax[0,0].set_title("Target Image")
+
+            self.current_comp_ax = self.ax[0,1].imshow(
                 np.zeros((self.H, self.W, 3), dtype=np.uint8)
             )
-            self.ax[1].set_title("Current Composite")
+            self.ax[0,1].set_title("Current Composite")
 
-            self.depth_map_ax = self.ax[2].imshow(
+
+            self.best_comp_ax = self.ax[0,2].imshow(
+                np.zeros((self.H, self.W, 3), dtype=np.uint8)
+            )
+            self.ax[0,2].set_title("Best Discrete Composite")
+            plt.pause(0.1)
+
+            self.depth_map_ax = self.ax[1, 0].imshow(
                 np.zeros((self.H, self.W), dtype=np.uint8), cmap="viridis"
             )
-            self.ax[2].set_title("Current Depth Map")
+            self.ax[1,0].set_title("Current Depth Map")
 
-            self.best_comp_ax = self.ax[3].imshow(
-                np.zeros((self.H, self.W, 3), dtype=np.uint8)
+            self.diff_depth_map_ax = self.ax[1,1].imshow(
+                np.zeros((self.H, self.W), dtype=np.uint8), cmap="viridis"
             )
-            self.ax[3].set_title("Best Discrete Composite")
-            plt.pause(0.1)
+            self.ax[1,1].set_title("Depth Map Difference")
+
+
+
+            # Compute and store the initial height map for later difference computation.
+            with torch.no_grad():
+                initial_height = (self.max_layers * self.h) * torch.sigmoid(
+                    self.params["pixel_height_logits"]
+                )
+            self.initial_height_map = initial_height.cpu().detach().numpy()
 
     def _get_tau(self):
         """
@@ -319,8 +336,20 @@ class FilamentOptimizer:
 
         height_map_uint8 = (height_map_norm * 255).astype(np.uint8)
         self.depth_map_ax.set_data(height_map_uint8)
-        # Update the color limits so that the colormap correctly maps the range 0–255.
         self.depth_map_ax.set_clim(0, 255)
+
+        # Compute and update the difference depth map (current - initial)
+        diff_map = height_map - self.initial_height_map
+        # Normalize the difference map safely.
+        if np.allclose(diff_map.max(), diff_map.min()):
+            diff_map_norm = np.zeros_like(diff_map)
+        else:
+            diff_map_norm = (diff_map - diff_map.min()) / (
+                diff_map.max() - diff_map.min()
+            )
+        diff_map_uint8 = (diff_map_norm * 255).astype(np.uint8)
+        self.diff_depth_map_ax.set_data(diff_map_uint8)
+        self.diff_depth_map_ax.set_clim(0, 255)
 
         self.fig.suptitle(
             f"Step {self.num_steps_done}, Tau: {tau_g:.4f}, Loss: {self.loss:.4f}, Best Discrete Loss: {self.best_discrete_loss:.4f}"
