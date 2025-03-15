@@ -1,5 +1,4 @@
 import argparse
-import math
 import random
 
 import matplotlib.pyplot as plt
@@ -99,7 +98,7 @@ class FilamentOptimizer:
         # Tau schedule
         self.num_steps_done = 0
         self.warmup_steps = args.iterations // 2
-        self.decay_rate = -math.log(self.final_tau) / (
+        self.decay_rate = (self.init_tau - self.final_tau) / (
             args.iterations - self.warmup_steps
         )
 

@@ -29,8 +29,7 @@ class Config:
     min_layers = 0
     background_height = 0.4
     background_color = "#000000"
-    output_size = 1024
-    solver_size = 256
+    output_size = 128
     init_tau = 1.0
     final_tau = 0.01
     visualize = False
@@ -197,7 +196,7 @@ if __name__ == "__main__":
     folder = "../../../images/test_images/"
     csv_file = "../../../bambulab.csv"
     images = [folder + "/" + img for img in os.listdir(folder) if img.endswith(".jpg")]
-    parallel_limit = 1
+    parallel_limit = 15
     methods = [
         "kmeans",
         "quantize_median",
@@ -232,7 +231,7 @@ if __name__ == "__main__":
             for i in range(1):
                 tlist.append(
                     exec.submit(
-                        main,
+                        main_suppressed,
                         img,
                         csv_file,
                         method,
