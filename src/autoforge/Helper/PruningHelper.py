@@ -133,18 +133,17 @@ def prune_num_swaps(
         )
 
         with torch.no_grad():
-
             out_im = optimizer.get_best_discretized_image(
                 custom_global_logits=logits_for_disc
             )
             loss = compute_loss(
-            material_assignment=dg_test,  # shape [max_layers], discrete
-            comp=out_im,
-            target=optimizer.target,
-            perception_loss_module=perception_loss_module,
-            tau_global=tau_for_comp,
-            num_materials=num_materials,
-            add_penalty_loss=False,
+                material_assignment=dg_test,  # shape [max_layers], discrete
+                comp=out_im,
+                target=optimizer.target,
+                perception_loss_module=perception_loss_module,
+                tau_global=tau_for_comp,
+                num_materials=num_materials,
+                add_penalty_loss=False,
             )
 
         # For the loss, we pass the actual dg_test so that compute_loss() knows it’s a discrete assignment
@@ -317,6 +316,7 @@ def prune_redundant_layers(
     perception_loss_module,
     pruning_min_layers: int = 0,
     pruning_max_layers: int = 1e6,
+    tolerance: float = 0.02,
 ):
     """
     Iteratively search for the best layer to remove.
@@ -410,7 +410,7 @@ def prune_redundant_layers(
                     add_penalty_loss=False,
                 ).item()
 
-            if candidate_loss < best_candidate_loss:
+            if candidate_loss <= best_candidate_loss + best_candidate_loss * tolerance:
                 best_candidate = candidate_params
                 best_candidate_loss = candidate_loss
 

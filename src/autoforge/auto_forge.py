@@ -74,12 +74,6 @@ def main():
     )
 
     parser.add_argument(
-        "--output_size",
-        type=int,
-        default=1024,
-        help="Maximum dimension for target image",
-    )
-    parser.add_argument(
         "--init_tau",
         type=float,
         default=1.0,
@@ -98,11 +92,18 @@ def main():
         help="Enable visualization during optimization",
     )
 
+    # Instead of an output_size parameter, we use stl_output_size and nozzle_diameter.
     parser.add_argument(
         "--stl_output_size",
         type=int,
         default=200,
-        help="Size of the longest dimension of the output STL file",
+        help="Size of the longest dimension of the output STL file in mm",
+    )
+    parser.add_argument(
+        "--nozzle_diameter",
+        type=float,
+        default=0.4,
+        help="Diameter of the printer nozzle in mm (details smaller than half this value will be ignored)",
     )
 
     parser.add_argument(
@@ -239,21 +240,24 @@ def main():
 
     # Read input image
     img = cv2.imread(args.input_image, cv2.IMREAD_UNCHANGED)
-
+    computed_output_size = int(round(args.stl_output_size * 2 / args.nozzle_diameter))
+    print(f"Computed solving pixel size: {computed_output_size}")
     alpha = None
-    # check for alpha mask
     if img.shape[2] == 4:
-        # Extract the alpha channel
+        # Extract alpha channel
         alpha = img[:, :, 3]
         alpha = alpha[..., None]
-        alpha = resize_image(alpha, args.output_size)
-        # Convert the image from BGRA to BGR
+        # Compute output size based on stl_output_size and nozzle_diameter
+
+        alpha = resize_image(alpha, computed_output_size)
+        # Remove the alpha channel from the image
         img = img[:, :, :3]
 
+    # Convert image from BGR to RGB
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
     # For the final resolution
-    output_img_np = resize_image(img, args.output_size)
+    output_img_np = resize_image(img, computed_output_size)
     output_target = torch.tensor(output_img_np, dtype=torch.float32, device=device)
 
     # Initialize pixel_height_logits from the large (final) image
