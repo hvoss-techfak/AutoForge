@@ -196,7 +196,7 @@ if __name__ == "__main__":
     folder = "../../../images/test_images/"
     csv_file = "../../../bambulab.csv"
     images = [folder + "/" + img for img in os.listdir(folder) if img.endswith(".jpg")]
-    parallel_limit = 15
+    parallel_limit = os.cpu_count()
     methods = [
         "kmeans",
         "quantize_median",
