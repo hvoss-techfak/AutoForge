@@ -16,16 +16,11 @@ from autoforge.Helper.Heightmaps.DepthEstimateHeightMap import (
 )
 
 from autoforge.Helper.ImageHelper import resize_image
-from autoforge.Helper.OptimizerHelper import (
-    discretize_solution,
-    composite_image_disc,
-)
 from autoforge.Helper.OutputHelper import (
     generate_stl,
     generate_swap_instructions,
     generate_project_file,
 )
-from autoforge.Helper.PruningHelper import prune_redundant_layers
 from autoforge.Modules.Optimizer import FilamentOptimizer
 
 
@@ -282,13 +277,13 @@ def main():
             args.layer_height,
             bgr_tuple,
             random_seed=random_seed,
+            num_threads=8,
         )
 
     # if we have an alpha mask we set the height for those pixels to -13.815512 (the lowest init sigmoid value)
+    # Now with unlocked height map we probably need to think about changing this somehow. TODO: Think about this.
     if alpha is not None:
         pixel_height_logits_init[alpha < 128] = -13.815512
-
-    phl_solver_np = pixel_height_logits_init  # shape (H, W, 1)
 
     # VGG Perceptual Loss
     # We currently disable this as it is not used in the optimization.
@@ -298,7 +293,7 @@ def main():
     optimizer = FilamentOptimizer(
         args=args,
         target=output_target,
-        pixel_height_logits_init=phl_solver_np,
+        pixel_height_logits_init=pixel_height_logits_init,
         material_colors=material_colors,
         material_TDs=material_TDs,
         background=background,
@@ -322,100 +317,27 @@ def main():
 
     post_opt_step = 0
 
-    # After we finish, we can get the final discrete solution at solver resolution
-    disc_global, disc_height_image = optimizer.get_discretized_solution(best=True)
-
-    # Do a quick search for a better rng seed
-    new_rng_seed, new_loss = optimizer.rng_seed_search(
-        optimizer.best_discrete_loss, 100
-    )
-
-    if new_loss < optimizer.best_discrete_loss:
-        optimizer.best_seed = new_rng_seed
-        optimizer.best_discrete_loss = new_loss
-        print(f"New best seed found: {new_rng_seed} with loss: {new_loss}")
-
     optimizer.log_to_tensorboard(
         interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
     )
 
-    print("Applying solved solution to full resolution...")
-
-    # Optionally prune
     if args.perform_pruning:
-        disc_global = optimizer.prune(
+        optimizer.prune(
             max_colors_allowed=args.pruning_max_colors,
             max_swaps_allowed=args.pruning_max_swaps,
-            disc_global=disc_global,
-            disc_height_image=optimizer.best_params["pixel_height_logits"],
-            tau_g=optimizer.best_tau,
+            min_layers_allowed=args.min_layers,
+            max_layers_allowed=args.pruning_max_layer,
         )
-
         optimizer.log_to_tensorboard(
             interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
         )
 
-        # Do a quick search for a better rng seed
-        new_rng_seed, new_loss = optimizer.rng_seed_search(
-            optimizer.best_discrete_loss, 500
-        )
-
-        optimizer.log_to_tensorboard(
-            interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
-        )
-
-        if new_loss < optimizer.best_discrete_loss:
-            optimizer.best_seed = new_rng_seed
-            optimizer.best_discrete_loss = new_loss
-            print(f"New best seed found: {new_rng_seed} with loss: {new_loss}")
-    else:
-        print(
-            f"No better seed found. Best seed loss: {optimizer.best_discrete_loss}. Best searched loss: {new_loss}"
-        )
-
-    # Now, we want to apply that discrete solution to the full resolution:
-    params = {
-        "global_logits": disc_global,
-        "pixel_height_logits": optimizer.best_params["pixel_height_logits"],
-    }
-
-    if args.perform_pruning:
-        print("Removing redundant layers from the discrete solution...")
-        params, pruned_loss, max_layers = prune_redundant_layers(
-            params,
-            final_tau=args.final_tau,
-            h=args.layer_height,
-            target=output_target,  # or whichever target image you use for final compositing
-            material_colors=material_colors,
-            material_TDs=material_TDs,
-            background=background,
-            rng_seed=optimizer.best_seed,  # using the best seed from your optimizer
-            perception_loss_module=perception_loss_module,
-            tolerance=1e-3,  # adjust as needed
-            min_layers=args.min_layers,
-            pruning_max_layers=args.pruning_max_layer,
-        )
-        args.max_layers = max_layers
-        optimizer.best_discrete_loss = pruned_loss
-
-    disc_global, disc_height_image = discretize_solution(
-        params, args.final_tau, args.layer_height, args.max_layers
-    )
+    disc_global, disc_height_image = optimizer.get_discretized_solution(best=True)
 
     print("Done. Saving outputs...")
     # Save Image
-    comp_disc = composite_image_disc(
-        params["pixel_height_logits"],
-        params["global_logits"],
-        args.final_tau,
-        args.final_tau,
-        args.layer_height,
-        args.max_layers,
-        material_colors,
-        material_TDs,
-        background,
-        rng_seed=optimizer.best_seed,
-    )
+    comp_disc = optimizer.get_best_discretized_image()
+    args.max_layers = optimizer.max_layers
 
     optimizer.log_to_tensorboard(
         interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)

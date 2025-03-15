@@ -3,6 +3,7 @@ from tqdm import tqdm
 
 from autoforge.Helper.OptimizerHelper import discretize_solution, composite_image_disc
 from autoforge.Loss.LossFunctions import compute_loss
+from autoforge.Modules.Optimizer import FilamentOptimizer
 
 
 def disc_to_logits(
@@ -28,17 +29,9 @@ def disc_to_logits(
 
 
 def prune_num_colors(
-    disc_global: torch.Tensor,
-    pixel_height_logits: torch.Tensor,
-    target: torch.Tensor,
-    h: float,
-    max_layers: int,
-    material_colors: torch.Tensor,
-    material_TDs: torch.Tensor,
-    background: torch.Tensor,
+    optimizer: FilamentOptimizer,
     max_colors_allowed: int,
     tau_for_comp: float,
-    rng_seed: int,
     perception_loss_module: torch.nn.Module,
 ) -> torch.Tensor:
     """
@@ -46,7 +39,9 @@ def prune_num_colors(
     Using mode='discrete' on the composite_image, but with
     artificially constructed logits from disc_global.
     """
-    num_materials = material_colors.shape[0]
+    num_materials = optimizer.material_colors.shape[0]
+
+    disc_global, pixel_height_logits = optimizer.get_discretized_solution(best=True)
 
     def get_image_loss(dg_test):
         # Turn discrete array [max_layers] into [max_layers, num_materials] "logits"
@@ -55,29 +50,21 @@ def prune_num_colors(
         )
 
         with torch.no_grad():
-            out_im = composite_image_disc(
-                pixel_height_logits,
-                logits_for_disc,
-                tau_for_comp,
-                tau_for_comp,
-                h,
-                max_layers,
-                material_colors,
-                material_TDs,
-                background,
-                rng_seed=rng_seed,
+            out_im = optimizer.get_best_discretized_image(
+                custom_global_logits=logits_for_disc
+            )
+            loss = compute_loss(
+                material_assignment=dg_test,  # shape [max_layers], discrete
+                comp=out_im,
+                target=optimizer.target,
+                perception_loss_module=perception_loss_module,
+                tau_global=tau_for_comp,
+                num_materials=num_materials,
+                add_penalty_loss=False,
             )
 
         # For the loss, we pass the actual dg_test so that compute_loss() knows it’s a discrete assignment
-        return compute_loss(
-            material_assignment=dg_test,  # shape [max_layers], discrete
-            comp=out_im,
-            target=target,
-            perception_loss_module=perception_loss_module,
-            tau_global=tau_for_comp,
-            num_materials=num_materials,
-            add_penalty_loss=False,
-        )
+        return loss
 
     best_dg = disc_global.clone()
     best_loss = get_image_loss(best_dg)
@@ -118,28 +105,27 @@ def prune_num_colors(
         if not found_merge:
             break
     tbar.close()
+
+    # set the best solution in the optimizer
+    optimizer.best_params["global_logits"] = disc_to_logits(
+        best_dg, num_materials=num_materials, big_pos=1e5
+    )
+
     return best_dg
 
 
 def prune_num_swaps(
-    disc_global: torch.Tensor,
-    pixel_height_logits: torch.Tensor,
-    target: torch.Tensor,
-    h: float,
-    max_layers: int,
-    material_colors: torch.Tensor,
-    material_TDs: torch.Tensor,
-    background: torch.Tensor,
+    optimizer: FilamentOptimizer,
     max_swaps_allowed: int,
     tau_for_comp: float,
-    rng_seed: int,
     perception_loss_module: torch.nn.Module,
 ) -> torch.Tensor:
     """
     Iteratively reduce the number of color boundaries until <= max_swaps_allowed,
     using mode='discrete' compositing on the “fake logits.”
     """
-    num_materials = material_colors.shape[0]
+    num_materials = optimizer.material_colors.shape[0]
+    disc_global, pixel_height_logits = optimizer.get_discretized_solution(best=True)
 
     def get_image_loss(dg_test):
         logits_for_disc = disc_to_logits(
@@ -147,27 +133,22 @@ def prune_num_swaps(
         )
 
         with torch.no_grad():
-            out_im = composite_image_disc(
-                pixel_height_logits,
-                logits_for_disc,
-                tau_for_comp,
-                tau_for_comp,
-                h,
-                max_layers,
-                material_colors,
-                material_TDs,
-                background,
-                rng_seed=rng_seed,
+
+            out_im = optimizer.get_best_discretized_image(
+                custom_global_logits=logits_for_disc
             )
-        return compute_loss(
-            material_assignment=dg_test,
+            loss = compute_loss(
+            material_assignment=dg_test,  # shape [max_layers], discrete
             comp=out_im,
-            target=target,
+            target=optimizer.target,
             perception_loss_module=perception_loss_module,
             tau_global=tau_for_comp,
             num_materials=num_materials,
             add_penalty_loss=False,
-        )
+            )
+
+        # For the loss, we pass the actual dg_test so that compute_loss() knows it’s a discrete assignment
+        return loss
 
     best_dg = disc_global.clone()
     best_loss = get_image_loss(best_dg)
@@ -215,56 +196,13 @@ def prune_num_swaps(
         else:
             break
     tbar.close()
+
+    # set the best solution in the optimizer
+    optimizer.best_params["global_logits"] = disc_to_logits(
+        best_dg, num_materials=num_materials, big_pos=1e5
+    )
+
     return best_dg
-
-
-def prune_colors_and_swaps(
-    disc_global: torch.Tensor,
-    pixel_height_logits: torch.Tensor,
-    target: torch.Tensor,
-    h: float,
-    max_layers: int,
-    material_colors: torch.Tensor,
-    material_TDs: torch.Tensor,
-    background: torch.Tensor,
-    max_colors_allowed: int,
-    max_swaps_allowed: int,
-    tau_for_comp: float,
-    rng_seed: int,
-    perception_loss_module: torch.nn.Module,
-) -> torch.Tensor:
-    """
-    First limit # colors, then limit # swaps.
-    """
-    dg_after_color = prune_num_colors(
-        disc_global,
-        pixel_height_logits,
-        target,
-        h,
-        max_layers,
-        material_colors,
-        material_TDs,
-        background,
-        max_colors_allowed,
-        tau_for_comp,
-        rng_seed,
-        perception_loss_module,
-    )
-    dg_after_swaps = prune_num_swaps(
-        dg_after_color,
-        pixel_height_logits,
-        target,
-        h,
-        max_layers,
-        material_colors,
-        material_TDs,
-        background,
-        max_swaps_allowed,
-        tau_for_comp,
-        rng_seed,
-        perception_loss_module,
-    )
-    return disc_to_logits(dg_after_swaps, num_materials=material_colors.shape[0])
 
 
 def merge_color(dg: torch.Tensor, c_from: int, c_to: int) -> torch.Tensor:
@@ -375,18 +313,10 @@ def remove_layer_from_solution(
 
 
 def prune_redundant_layers(
-    params,
-    final_tau,
-    h,
-    target,
-    material_colors,
-    material_TDs,
-    background,
-    rng_seed,
+    optimizer: FilamentOptimizer,
     perception_loss_module,
-    tolerance=1e-3,
-    min_layers=0,
-    pruning_max_layers=1e6,
+    pruning_min_layers: int = 0,
+    pruning_max_layers: int = 1e6,
 ):
     """
     Iteratively search for the best layer to remove.
@@ -406,7 +336,7 @@ def prune_redundant_layers(
         rng_seed (int): Random seed for discretization.
         perception_loss_module (torch.nn.Module): Perceptual loss module.
         tolerance (float): Acceptable increase in loss.
-        min_layers (int): Minimum number of layers to keep.
+        pruning_min_layers (int): Minimum number of layers to keep.
         pruning_max_layers (int): Maximum number of layers allowed after pruning.
 
     Returns:
@@ -414,32 +344,18 @@ def prune_redundant_layers(
         best_loss (float): Loss corresponding to the pruned solution.
         current_max_layers (int): New number of layers after pruning.
     """
-    current_params = params
-    current_max_layers = current_params["global_logits"].shape[0]
 
+    current_max_layers = optimizer.max_layers
     # Compute baseline composite and loss.
-    comp = composite_image_disc(
-        current_params["pixel_height_logits"],
-        current_params["global_logits"],
-        final_tau,
-        final_tau,
-        h,
-        current_max_layers,
-        material_colors,
-        material_TDs,
-        background,
-        rng_seed=rng_seed,
-    )
-    disc_global, _ = discretize_solution(
-        current_params, final_tau, h, current_max_layers, rng_seed
-    )
+    comp = optimizer.get_best_discretized_image()
+
     best_loss = compute_loss(
-        disc_global,
+        None,
         comp,
-        target,
-        perception_loss_module,
-        final_tau,
-        material_colors.shape[0],
+        optimizer.target,
+        None,
+        None,
+        None,
         add_penalty_loss=False,
     ).item()
 
@@ -454,48 +370,49 @@ def prune_redundant_layers(
     improvement = True
     # Continue iterating while we can still remove a layer.
     # We stop if no candidate qualifies and we are not forced to prune by pruning_max_layers.
-    while current_max_layers > min_layers and (
+    while current_max_layers > pruning_min_layers and (
         improvement or current_max_layers > pruning_max_layers
     ):
         tbar.update(1)
         improvement = False
         best_candidate = None
         best_candidate_loss = 1e10
-        best_layer = None
         # For each layer candidate, compute the loss if that layer were removed.
         for layer in range(current_max_layers):
             candidate_params, candidate_max_layers = remove_layer_from_solution(
-                current_params, layer, final_tau, h, current_max_layers, rng_seed
+                optimizer.best_params,
+                layer,
+                optimizer.final_tau,
+                optimizer.h,
+                current_max_layers,
+                optimizer.best_seed,
             )
-            candidate_comp = composite_image_disc(
-                candidate_params["pixel_height_logits"],
-                candidate_params["global_logits"],
-                final_tau,
-                final_tau,
-                h,
-                candidate_max_layers,
-                material_colors,
-                material_TDs,
-                background,
-                rng_seed=rng_seed,
-            )
-            candidate_disc_global, _ = discretize_solution(
-                candidate_params, final_tau, h, candidate_max_layers, rng_seed
-            )
-            candidate_loss = compute_loss(
-                candidate_disc_global,
-                candidate_comp,
-                target,
-                perception_loss_module,
-                final_tau,
-                material_colors.shape[0],
-                add_penalty_loss=False,
-            ).item()
+            with torch.no_grad():
+                candidate_comp = composite_image_disc(
+                    candidate_params["pixel_height_logits"],
+                    candidate_params["global_logits"],
+                    optimizer.final_tau,
+                    optimizer.final_tau,
+                    optimizer.h,
+                    candidate_max_layers,
+                    optimizer.material_colors,
+                    optimizer.material_TDs,
+                    optimizer.background,
+                    rng_seed=optimizer.best_seed,
+                )
+                candidate_loss = compute_loss(
+                    None,
+                    candidate_comp,
+                    optimizer.target,
+                    None,
+                    None,
+                    None,
+                    add_penalty_loss=False,
+                ).item()
 
             if candidate_loss < best_candidate_loss:
                 best_candidate = candidate_params
                 best_candidate_loss = candidate_loss
-                best_layer = layer
 
         # If we found a candidate, remove it and restart the search.
         if best_candidate is not None:
@@ -510,6 +427,11 @@ def prune_redundant_layers(
                 )
                 current_params = best_candidate
                 current_max_layers = current_params["global_logits"].shape[0]
+
+                # set optimizer
+                optimizer.best_params = current_params
+                optimizer.max_layers = current_max_layers
+
                 best_loss = best_candidate_loss
                 improvement = True
             else:

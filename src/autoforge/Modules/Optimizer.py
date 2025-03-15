@@ -5,8 +5,8 @@ import random
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
 from autoforge.Helper.CAdamW import CAdamW
 from autoforge.Helper.OptimizerHelper import (
@@ -14,7 +14,8 @@ from autoforge.Helper.OptimizerHelper import (
     composite_image_cont,
     composite_image_disc,
 )
-from autoforge.Helper.PruningHelper import prune_colors_and_swaps, find_color_bands
+
+
 from autoforge.Loss.LossFunctions import loss_fn, compute_loss
 
 
@@ -119,34 +120,31 @@ class FilamentOptimizer:
             plt.ion()
             self.fig, self.ax = plt.subplots(2, 3, figsize=(14, 6))
 
-            self.target_im_ax = self.ax[0,0].imshow(
+            self.target_im_ax = self.ax[0, 0].imshow(
                 np.array(self.target.cpu(), dtype=np.uint8)
             )
-            self.ax[0,0].set_title("Target Image")
+            self.ax[0, 0].set_title("Target Image")
 
-            self.current_comp_ax = self.ax[0,1].imshow(
+            self.current_comp_ax = self.ax[0, 1].imshow(
                 np.zeros((self.H, self.W, 3), dtype=np.uint8)
             )
-            self.ax[0,1].set_title("Current Composite")
+            self.ax[0, 1].set_title("Current Composite")
 
-
-            self.best_comp_ax = self.ax[0,2].imshow(
+            self.best_comp_ax = self.ax[0, 2].imshow(
                 np.zeros((self.H, self.W, 3), dtype=np.uint8)
             )
-            self.ax[0,2].set_title("Best Discrete Composite")
+            self.ax[0, 2].set_title("Best Discrete Composite")
             plt.pause(0.1)
 
             self.depth_map_ax = self.ax[1, 0].imshow(
                 np.zeros((self.H, self.W), dtype=np.uint8), cmap="viridis"
             )
-            self.ax[1,0].set_title("Current Depth Map")
+            self.ax[1, 0].set_title("Current Depth Map")
 
-            self.diff_depth_map_ax = self.ax[1,1].imshow(
+            self.diff_depth_map_ax = self.ax[1, 1].imshow(
                 np.zeros((self.H, self.W), dtype=np.uint8), cmap="viridis"
             )
-            self.ax[1,1].set_title("Depth Map Difference")
-
-
+            self.ax[1, 1].set_title("Depth Map Difference")
 
             # Compute and store the initial height map for later difference computation.
             with torch.no_grad():
@@ -167,10 +165,9 @@ class FilamentOptimizer:
         if i < self.warmup_steps:
             return tau_init, tau_init
         else:
-            # simple exponential decay
+            # simple linear decay
             t = max(
-                self.final_tau,
-                tau_init * math.exp(-self.decay_rate * (i - self.warmup_steps)),
+                self.final_tau, tau_init - self.decay_rate * (i - self.warmup_steps)
             )
             return t, t
 
@@ -386,6 +383,7 @@ class FilamentOptimizer:
         if best and self.best_params is None:
             return None, None
 
+        print(f"Getting discretized solution for best: {best}")
         current_params = self.best_params if best else self.params
         if custom_height_logits is not None:
             current_params["pixel_height_logits"] = custom_height_logits
@@ -411,51 +409,60 @@ class FilamentOptimizer:
                 )
             return disc_global, disc_height_image
 
+    def get_best_discretized_image(
+        self,
+        custom_height_logits: torch.Tensor = None,
+        custom_global_logits: torch.Tensor = None,
+    ):
+        with torch.no_grad():
+            best_comp = composite_image_disc(
+                self.best_params["pixel_height_logits"]
+                if custom_height_logits is None
+                else custom_height_logits,
+                self.best_params["global_logits"]
+                if custom_global_logits is None
+                else custom_global_logits,
+                self.final_tau,
+                self.final_tau,
+                self.h,
+                self.max_layers,
+                self.material_colors,
+                self.material_TDs,
+                self.background,
+                rng_seed=self.best_seed,
+            )
+        return best_comp
+
     def prune(
         self,
         max_colors_allowed: int,
         max_swaps_allowed: int,
-        disc_global: torch.Tensor = None,
-        disc_height_image: torch.Tensor = None,
-        tau_g: float = None,
+        min_layers_allowed: int,
+        max_layers_allowed: int,
     ):
-        """
-        Discretize and run pruning on the current solution in-place.
-
-        Args:
-            max_colors_allowed (int): Maximum number of colors allowed after pruning.
-            max_swaps_allowed (int): Maximum number of swaps allowed after pruning.
-            disc_global (torch.Tensor, optional): Discrete global assignment. Defaults to None.
-            disc_height_image (torch.Tensor, optional): Pixel-height map. Defaults to None.
-            tau_g (float, optional): Tau value for global logits. Defaults to None.
-
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Pruned discrete global assignment and pixel-height map.
-        """
-        if disc_global is None or disc_height_image is None:
-            disc_global, disc_height_image = self.get_discretized_solution()
-        if tau_g is None:
-            tau_h, tau_g = self._get_tau()
-
         # Now run pruning
-        disc_global_pruned = prune_colors_and_swaps(
-            disc_global,
-            self.params["pixel_height_logits"],
-            self.target,
-            self.h,
-            self.max_layers,
-            self.material_colors,
-            self.material_TDs,
-            self.background,
-            max_colors_allowed,
-            max_swaps_allowed,
-            tau_for_comp=tau_g,
-            rng_seed=self.best_seed,
-            perception_loss_module=self.perception_loss_module,
+        from autoforge.Helper.PruningHelper import (
+            prune_num_colors,
+            prune_num_swaps,
+            prune_redundant_layers,
         )
 
-        return disc_global_pruned
+        prune_num_colors(
+            self,
+            max_colors_allowed,
+            self.final_tau,
+            None,
+        )
+        self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
+        prune_num_swaps(
+            self,
+            max_swaps_allowed,
+            self.final_tau,
+            None,
+        )
+        self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
+        prune_redundant_layers(self, None, min_layers_allowed, max_layers_allowed)
+        self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
 
     def _maybe_update_best_discrete(self):
         """
@@ -500,6 +507,7 @@ class FilamentOptimizer:
                 num_materials=self.material_colors.shape[0],
                 add_penalty_loss=False,
             ).item()
+            from autoforge.Helper.PruningHelper import find_color_bands
 
             # 4) Update if better
             if current_disc_loss < self.best_discrete_loss:
@@ -509,13 +517,16 @@ class FilamentOptimizer:
                 self.best_seed = seed
                 self.best_swaps = len(find_color_bands(disc_global)) - 1
 
-    def rng_seed_search(self, start_loss: float, num_seeds: int):
+    def rng_seed_search(
+        self, start_loss: float, num_seeds: int, autoset_seed: bool = False
+    ):
         """
         Search for the best seed for the best discrete solution.
 
         Args:
             start_loss (float): Initial loss value.
             num_seeds (int): Number of seeds to search.
+            autoset_seed (bool, optional): Whether to automatically set the seed. Defaults to False.
 
         Returns:
             int: Best seed found.
@@ -551,6 +562,8 @@ class FilamentOptimizer:
             if current_disc_loss < best_loss:
                 best_loss = current_disc_loss
                 best_seed = seed
+        if autoset_seed and best_loss < start_loss:
+            self.best_seed = best_seed
         return best_seed, best_loss
 
     def __del__(self):

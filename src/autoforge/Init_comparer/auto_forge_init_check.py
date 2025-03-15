@@ -14,8 +14,6 @@ from tqdm import tqdm
 from autoforge.Helper.FilamentHelper import hex_to_rgb, load_materials
 from autoforge.Helper.Heightmaps.ChristofidesHeightMap import run_init_threads
 from autoforge.Helper.ImageHelper import resize_image
-from autoforge.Helper.OptimizerHelper import composite_image_disc
-from autoforge.Helper.PruningHelper import prune_redundant_layers
 from autoforge.Modules.Optimizer import FilamentOptimizer
 
 
@@ -24,7 +22,7 @@ class Config:
     input_image = "default_input.png"  # Path to input image
     csv_file = "default_materials.csv"  # Path to CSV file with material data
     output_folder = "output"
-    iterations = 2500
+    iterations = 2000
     learning_rate = 1e-2
     layer_height = 0.04
     max_layers = 75
@@ -133,6 +131,7 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
         init_method=init_method,
         cluster_layers=cluster_layers,
         lab_space=lab_space,
+        num_threads=8,
     )
 
     # Set initial height for transparent areas if an alpha mask exists
@@ -142,7 +141,7 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
     # VGG Perceptual Loss (disabled in this example)
     perception_loss_module = None
 
-    # Create the optimizer instance
+    # Create an optimizer instance
     optimizer = FilamentOptimizer(
         args=args,
         target=output_target,
@@ -158,7 +157,8 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
     print("Starting optimization...")
     tbar = tqdm(range(args.iterations))
     for i in tbar:
-        loss_val = optimizer.step(record_best=(i % 10 == 0))
+        loss_val = optimizer.step(record_best=i % 10 == 0)
+
         optimizer.visualize(interval=25)
         optimizer.log_to_tensorboard(interval=100)
 
@@ -167,73 +167,19 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
                 f"Iteration {i + 1}, Loss = {loss_val:.4f}, best validation Loss = {optimizer.best_discrete_loss:.4f}"
             )
 
-    # Get the final discrete solution at solver resolution
-    disc_global, disc_height_image = optimizer.get_discretized_solution(best=True)
-
-    # Optional RNG seed search for improvement
-    new_rng_seed, new_loss = optimizer.rng_seed_search(
-        optimizer.best_discrete_loss, 100
-    )
-    if new_loss < optimizer.best_discrete_loss:
-        optimizer.best_seed = new_rng_seed
-        optimizer.best_discrete_loss = new_loss
-        print(f"New best seed found: {new_rng_seed} with loss: {new_loss}")
-
-    print("Applying solved solution to full resolution...")
-    disc_global = optimizer.prune(
+    optimizer.prune(
         max_colors_allowed=args.pruning_max_colors,
         max_swaps_allowed=args.pruning_max_swaps,
-        disc_global=disc_global,
-        disc_height_image=torch.from_numpy(pixel_height_logits_init).to(device),
-        tau_g=optimizer.best_tau,
+        min_layers_allowed=args.min_layers,
+        max_layers_allowed=args.pruning_max_layer,
     )
-
-    # Another quick RNG seed search after pruning
-    new_rng_seed, new_loss = optimizer.rng_seed_search(
-        optimizer.best_discrete_loss, 100
-    )
-    if new_loss < optimizer.best_discrete_loss:
-        optimizer.best_seed = new_rng_seed
-        optimizer.best_discrete_loss = new_loss
-
-    # Apply the discrete solution to full resolution
-    params = {
-        "global_logits": disc_global,
-        "pixel_height_logits": optimizer.best_params["pixel_height_logits"],
-    }
-
-    print("Removing redundant layers from the discrete solution...")
-    params, pruned_loss, max_layers = prune_redundant_layers(
-        params,
-        final_tau=args.final_tau,
-        h=args.layer_height,
-        target=output_target,  # Final compositing target image
-        material_colors=material_colors,
-        material_TDs=material_TDs,
-        background=background,
-        rng_seed=optimizer.best_seed,
-        perception_loss_module=perception_loss_module,
-        tolerance=1e-3,
-        min_layers=args.min_layers,
-        pruning_max_layers=args.pruning_max_layer,
-    )
-    args.max_layers = max_layers
-    optimizer.best_discrete_loss = pruned_loss
 
     print("Done. Saving outputs...")
-    # Composite the final discrete solution image
-    comp_disc = composite_image_disc(
-        params["pixel_height_logits"],
-        params["global_logits"],
-        args.final_tau,
-        args.final_tau,
-        args.layer_height,
-        args.max_layers,
-        material_colors,
-        material_TDs,
-        background,
-        rng_seed=optimizer.best_seed,
-    )
+    # Save Image
+    comp_disc = optimizer.get_best_discretized_image()
+    args.max_layers = optimizer.max_layers
+
+    comp_disc = comp_disc.detach()
 
     # Compute and print the MSE loss between the target and final output
     mse_loss = torch.nn.functional.mse_loss(output_target, comp_disc)
