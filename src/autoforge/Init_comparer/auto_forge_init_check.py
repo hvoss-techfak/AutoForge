@@ -294,7 +294,6 @@ if __name__ == "__main__":
                         lab,
                     )
                 )
-            break
         for t in tqdm(concurrent.futures.as_completed(tlist), total=len(tlist)):
             result_list = out_dict.get(out_dict_str, [])
             result_list.append(t.result())
