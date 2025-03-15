@@ -282,6 +282,9 @@ def main():
             bgr_tuple,
             random_seed=random_seed,
             num_threads=8,
+            init_method="kmeans",
+            cluster_layers=300,
+            lab_space=True,
         )
 
     # if we have an alpha mask we set the height for those pixels to -13.815512 (the lowest init sigmoid value)
