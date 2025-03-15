@@ -2,6 +2,7 @@ import concurrent
 import sys
 import os
 import time
+import traceback
 from concurrent.futures.process import ProcessPoolExecutor
 from contextlib import redirect_stdout, redirect_stderr
 from random import shuffle
@@ -221,30 +222,33 @@ if __name__ == "__main__":
     shuffle(do_list)
 
     for i, (method, cluster, lab) in enumerate(do_list):
-        out_dict_str = f"{method}_{cluster}_{lab}"
-        print(
-            f"Running {method} with {cluster} clusters and lab={lab}, {i + 1}/{len(do_list)}"
-        )
-        exec = ProcessPoolExecutor(max_workers=parallel_limit)
-        tlist = []
-        for img in images:
-            for i in range(1):
-                tlist.append(
-                    exec.submit(
-                        main_suppressed,
-                        img,
-                        csv_file,
-                        method,
-                        cluster,
-                        lab,
+        try:
+            out_dict_str = f"{method}_{cluster}_{lab}"
+            print(
+                f"Running {method} with {cluster} clusters and lab={lab}, {i + 1}/{len(do_list)}"
+            )
+            exec = ProcessPoolExecutor(max_workers=parallel_limit)
+            tlist = []
+            for img in images:
+                for i in range(1):
+                    tlist.append(
+                        exec.submit(
+                            main_suppressed,
+                            img,
+                            csv_file,
+                            method,
+                            cluster,
+                            lab,
+                        )
                     )
-                )
-        for t in tqdm(concurrent.futures.as_completed(tlist), total=len(tlist)):
-            result_list = out_dict.get(out_dict_str, [])
-            result_list.append(t.result())
-            out_dict[out_dict_str] = result_list
-        # save out_dict as json
-        import json
+            for t in tqdm(concurrent.futures.as_completed(tlist), total=len(tlist)):
+                result_list = out_dict.get(out_dict_str, [])
+                result_list.append(t.result())
+                out_dict[out_dict_str] = result_list
+            # save out_dict as json
+            import json
 
-        with open("out_dict.json", "w") as f:
-            json.dump(out_dict, f)
+            with open("out_dict.json", "w") as f:
+                json.dump(out_dict, f)
+        except Exception:
+            traceback.print_exc()
