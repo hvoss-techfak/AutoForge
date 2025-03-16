@@ -57,13 +57,18 @@ The script is run from the command line and accepts several arguments. Below is 
 > **Note:** You will need [Hueforge](https://shop.thehueforge.com/) installed to export your filament CSV.  
 > To get your CSV file, simply go to the "Filaments" menu in Hueforge, click the export button, select your filaments, and export them as a CSV file.
 
-> If you want to limit the amount of colors the program can use, you can simply delete the colors you don't want from the CSV file.
 
 ```bash
-autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv --output_folder outputs 
+autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv 
 ```
 
-### Command Line Arguments
+> If you want to limit the amount of colors the program can use, you can set these as command line arguments. \
+> For Example: 8 colors and a maximum of 20 swaps:
+
+```bash
+autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv --pruning_max_colors 8 --pruning_max_swaps 20
+```
+
 
 ### Command Line Arguments
 
