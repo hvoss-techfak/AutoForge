@@ -197,7 +197,7 @@ if __name__ == "__main__":
     folder = "../../../images/test_images/"
     csv_file = "../../../bambulab.csv"
     images = [folder + "/" + img for img in os.listdir(folder) if img.endswith(".jpg")]
-    parallel_limit = os.cpu_count()
+    parallel_limit = 10
     methods = [
         "kmeans",
         "quantize_median",
@@ -245,6 +245,8 @@ if __name__ == "__main__":
                 result_list = out_dict.get(out_dict_str, [])
                 result_list.append(t.result())
                 out_dict[out_dict_str] = result_list
+
+            exec.shutdown()
             # save out_dict as json
             import json
 
