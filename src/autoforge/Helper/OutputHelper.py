@@ -6,6 +6,7 @@ import uuid
 
 import numpy as np
 import trimesh
+from trimesh import Trimesh
 
 from autoforge.Helper.FilamentHelper import load_materials_data
 
@@ -378,7 +379,7 @@ def generate_stl(
     buffer.seek(0)
 
     # Load the mesh from the in-memory buffer using trimesh.
-    mesh = trimesh.load(buffer, file_type="stl")
+    mesh: Trimesh = trimesh.load(buffer, file_type="stl")
     mesh.merge_vertices()
     mesh.export(filename)
 
