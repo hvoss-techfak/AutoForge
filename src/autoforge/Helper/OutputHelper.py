@@ -1,9 +1,11 @@
+import io
 import json
 import os
 import struct
 import uuid
 
 import numpy as np
+import trimesh
 
 from autoforge.Helper.FilamentHelper import load_materials_data
 
@@ -366,13 +368,19 @@ def generate_stl(
     stl_data["v3"] = all_triangles[:, 2, :]
     stl_data["attr"] = 0
 
-    # --- Write the STL File in a Single Operation ---
-    with open(filename, "wb") as f:
-        header_str = "Binary STL generated from heightmap with alpha mask"
-        header = header_str.encode("utf-8").ljust(80, b" ")
-        f.write(header)
-        f.write(struct.pack("<I", num_triangles))
-        f.write(stl_data.tobytes())
+    # Write to an in-memory buffer
+    buffer = io.BytesIO()
+    header_str = "Binary STL generated from heightmap with alpha mask"
+    header = header_str.encode("utf-8").ljust(80, b" ")
+    buffer.write(header)
+    buffer.write(struct.pack("<I", num_triangles))
+    buffer.write(stl_data.tobytes())
+    buffer.seek(0)
+
+    # Load the mesh from the in-memory buffer using trimesh.
+    mesh = trimesh.load(buffer, file_type="stl")
+    mesh.merge_vertices()
+    mesh.export(filename)
 
 
 def generate_swap_instructions(

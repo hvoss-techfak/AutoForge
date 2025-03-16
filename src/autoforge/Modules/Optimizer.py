@@ -13,8 +13,6 @@ from autoforge.Helper.OptimizerHelper import (
     composite_image_cont,
     composite_image_disc,
 )
-
-
 from autoforge.Loss.LossFunctions import loss_fn, compute_loss
 
 
@@ -113,6 +111,7 @@ class FilamentOptimizer:
         self.best_params = None
         self.best_tau = None
         self.best_seed = None
+        self.best_step = None
 
         # If you want a figure for real-time visualization:
         if self.visualize_flag:
@@ -144,6 +143,11 @@ class FilamentOptimizer:
                 np.zeros((self.H, self.W), dtype=np.uint8), cmap="viridis"
             )
             self.ax[1, 1].set_title("Depth Map Difference")
+
+            self.disc_depth_map_ax = self.ax[1, 2].imshow(
+                np.zeros((self.H, self.W), dtype=np.uint8), cmap="viridis"
+            )
+            self.ax[1, 2].set_title("Discrete Depth Map")
 
             # Compute and store the initial height map for later difference computation.
             with torch.no_grad():
@@ -184,6 +188,15 @@ class FilamentOptimizer:
 
         tau_height, tau_global = self._get_tau()
 
+        if self.num_steps_done < self.args.iterations // 10:
+            penalty_loss = 0
+        else:
+            penalty_loss = min(
+                1.0,
+                (self.num_steps_done - self.args.iterations // 10)
+                / (self.args.iterations // 5),
+            )
+
         loss = loss_fn(
             self.params,
             target=self.target,
@@ -195,7 +208,7 @@ class FilamentOptimizer:
             material_TDs=self.material_TDs,
             background=self.background,
             perception_loss_module=self.perception_loss_module,
-            add_penalty_loss=self.num_steps_done > self.args.iterations // 10,
+            add_penalty_loss=penalty_loss,
         )
 
         loss.backward()
@@ -298,6 +311,7 @@ class FilamentOptimizer:
         self.current_comp_ax.set_data(comp_np)
 
         if self.best_params is not None:
+            # Update the depth map correctly.
             with torch.no_grad():
                 best_comp = composite_image_disc(
                     self.best_params["pixel_height_logits"],
@@ -315,6 +329,24 @@ class FilamentOptimizer:
                 np.uint8
             )
             self.best_comp_ax.set_data(best_comp_np)
+
+            with torch.no_grad():
+                height_map = (self.max_layers * self.h) * torch.sigmoid(
+                    self.best_params["pixel_height_logits"]
+                )
+                height_map = height_map.cpu().detach().numpy()
+
+            # Normalize safely, checking for a constant image.
+            if np.allclose(height_map.max(), height_map.min()):
+                height_map_norm = np.zeros_like(height_map)
+            else:
+                height_map_norm = (height_map - height_map.min()) / (
+                    height_map.max() - height_map.min()
+                )
+
+            height_map_uint8 = (height_map_norm * 255).astype(np.uint8)
+            self.disc_depth_map_ax.set_data(height_map_uint8)
+            self.disc_depth_map_ax.set_clim(0, 255)
 
         # Update the depth map correctly.
         with torch.no_grad():
@@ -446,9 +478,11 @@ class FilamentOptimizer:
             prune_redundant_layers,
         )
 
-        # self.best_params["pixel_height_logits"] = remove_isolated_outliers(
-        #     self.best_params["pixel_height_logits"], threshold=0.75
+        # self.best_params["pixel_height_logits"] = smooth_coplanar_faces(
+        #     self.best_params["pixel_height_logits"], 0.1
         # )
+
+        # prune_fireflies(self)
 
         prune_num_colors(
             self,
@@ -464,6 +498,9 @@ class FilamentOptimizer:
             None,
         )
         self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
+
+        # prune_fireflies(self)
+
         prune_redundant_layers(self, None, min_layers_allowed, max_layers_allowed)
         self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
 
@@ -514,6 +551,7 @@ class FilamentOptimizer:
                 self.best_tau = tau_g
                 self.best_seed = seed
                 self.best_swaps = len(find_color_bands(disc_global)) - 1
+                self.best_step = self.num_steps_done
 
     def rng_seed_search(
         self, start_loss: float, num_seeds: int, autoset_seed: bool = False
@@ -533,9 +571,6 @@ class FilamentOptimizer:
         best_loss = start_loss
         for i in tqdm(range(num_seeds), desc="Searching for new best seed"):
             seed = np.random.randint(0, 1000000)
-            disc_global, disc_height_image = discretize_solution(
-                self.best_params, self.final_tau, self.h, self.max_layers, rng_seed=seed
-            )
             comp_disc = composite_image_disc(
                 self.best_params["pixel_height_logits"],
                 self.best_params["global_logits"],

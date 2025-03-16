@@ -1,3 +1,5 @@
+import math
+
 import torch
 from tqdm import tqdm
 
@@ -306,7 +308,7 @@ def prune_redundant_layers(
     perception_loss_module,
     pruning_min_layers: int = 0,
     pruning_max_layers: int = 1e6,
-    tolerance: float = 0.02,
+    tolerance: float = 0.10,
 ):
     """
     Iteratively search for the best layer to remove.
@@ -390,14 +392,14 @@ def prune_redundant_layers(
                     optimizer.target,
                 ).item()
 
-            if candidate_loss <= best_candidate_loss + best_candidate_loss * tolerance:
+            if candidate_loss <= best_candidate_loss:
                 best_candidate = candidate_params
                 best_candidate_loss = candidate_loss
 
         # If we found a candidate, remove it and restart the search.
         if best_candidate is not None:
             if (
-                best_candidate_loss < best_loss
+                best_candidate_loss <= best_loss
                 or current_max_layers > pruning_max_layers
             ):
                 removed_layers += 1
@@ -421,3 +423,206 @@ def prune_redundant_layers(
             break
 
     tbar.close()
+
+
+def remove_outlier_pixels(
+    height_logits: torch.Tensor, threshold: float
+) -> torch.Tensor:
+    """
+    For every pixel in `height_logits`, if at least six out of its 8 neighbors have an
+    absolute difference greater than `threshold` from the center pixel, replace the pixel
+    with the average of only those neighbors exceeding the threshold.
+
+    Args:
+        height_logits (torch.Tensor): 2D tensor representing the depth map.
+        threshold (float): The threshold value for differences.
+
+    Returns:
+        torch.Tensor: The cleaned depth map.
+    """
+    # Define the eight neighbor shifts (row_shift, col_shift)
+    shifts = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+    # Collect neighbors using torch.roll (note: this wraps around at the edges)
+    neighbors = []
+    for dx, dy in shifts:
+        shifted = torch.roll(
+            torch.roll(height_logits, shifts=dx, dims=0), shifts=dy, dims=1
+        )
+        neighbors.append(shifted)
+
+    # Stack the neighbors to shape (8, H, W)
+    neighbors = torch.stack(neighbors, dim=0)
+
+    # Compute the absolute difference between each neighbor and the center pixel
+    diff = torch.abs(neighbors - height_logits)
+
+    # Create a boolean mask for neighbors exceeding the threshold
+    valid = diff > threshold  # shape (8, H, W)
+    count_valid = valid.sum(dim=0)  # number of neighbors exceeding threshold per pixel
+
+    # Determine which pixels should be replaced (if at least six neighbors exceed threshold)
+    mask = count_valid >= 6
+
+    # Compute the sum of valid neighbor values for each pixel
+    # We use torch.where to zero out values not exceeding the threshold.
+    valid_neighbors = torch.where(
+        valid,
+        neighbors,
+        torch.tensor(0.0, dtype=neighbors.dtype, device=neighbors.device),
+    )
+    sum_valid = valid_neighbors.sum(dim=0)
+
+    # Compute the average for the valid neighbors.
+    # We use count_valid as the divisor; note that for pixels not meeting the criteria, the value is unused.
+    avg_valid = sum_valid / count_valid.clamp(min=1)
+
+    # Create a copy to update the pixels in outlier regions
+    cleaned_height_logits = height_logits.clone()
+    cleaned_height_logits[mask] = avg_valid[mask]
+
+    num_changed = mask.sum().item()
+
+    return cleaned_height_logits
+
+
+def prune_fireflies(optimizer, start_threshold=10, auto_set=True):
+    """
+    Iteratively reduces the threshold, computes the loss for each,
+    and returns the pixel_height_logits with the best loss.
+
+    Args:
+        optimizer: Object that provides get_best_discretized_image() and has target attribute.
+        compute_loss (function): Function to compute loss; expects parameters comp and target.
+        start_threshold (float): Initial threshold value.
+        auto_set (bool): Automatically set the best pixel_height_logits in the optimizer.
+
+    Returns:
+        best_custom_height_logits (torch.Tensor): The processed depth map with best loss.
+        best_threshold (float): The threshold value that achieved the best loss.
+        best_loss (float): The best loss achieved.
+    """
+    # Generate a series of threshold values between start_threshold and end_threshold.
+    pixel_height_logits = optimizer.best_params["pixel_height_logits"]
+    best_custom_height_logits = pixel_height_logits
+    best_threshold = start_threshold
+    th = start_threshold
+
+    with torch.no_grad():
+        out_im = optimizer.get_best_discretized_image(
+            custom_height_logits=pixel_height_logits
+        )
+        best_loss = compute_loss(
+            comp=out_im,
+            target=optimizer.target,
+        )
+    new_loss = best_loss
+    while th > 0.1:
+        # Apply your outlier removal with the current threshold.
+        custom_height_logits = remove_outlier_pixels(pixel_height_logits, threshold=th)
+
+        # Evaluate the resulting image by computing the loss.
+        with torch.no_grad():
+            out_im = optimizer.get_best_discretized_image(
+                custom_height_logits=custom_height_logits
+            )
+            loss = compute_loss(
+                comp=out_im,
+                target=optimizer.target,
+            )
+
+        # print(f"Threshold: {th:.3f}, Loss: {loss:.4f}")
+        # Track the best performing threshold.
+        if loss < best_loss * 1.05:
+            new_loss = best_loss
+            best_custom_height_logits = custom_height_logits
+            best_threshold = th
+
+        th *= 0.95
+
+    print(f"New loss: {new_loss:.4f}, Best threshold: {best_threshold:.3f}")
+    if auto_set:
+        optimizer.best_params["pixel_height_logits"] = best_custom_height_logits
+
+    return best_custom_height_logits
+
+
+def smooth_coplanar_faces(
+    height_logits: torch.Tensor, angle_threshold: float
+) -> torch.Tensor:
+    """
+    Smooths regions in the depth map that are considered coplanar.
+    For each pixel, this function computes an approximate surface normal via finite differences
+    and compares it to the normals of the eight neighboring pixels. Neighbors with an angle
+    difference (in degrees) less than `angle_threshold` are considered coplanar. The pixel is
+    replaced with the average of itself and its coplanar neighbors.
+
+    Args:
+        height_logits (torch.Tensor): 2D tensor representing the depth map.
+        angle_threshold (float): Maximum angle difference (in degrees) for neighbors to be
+                                 considered coplanar.
+
+    Returns:
+        torch.Tensor: The smoothed depth map.
+    """
+    # Convert the angle threshold from degrees to radians.
+    threshold_rad = math.radians(angle_threshold)
+
+    # Compute gradients using central differences via torch.roll (wraps at the edges)
+    grad_x = (
+        torch.roll(height_logits, shifts=-1, dims=1)
+        - torch.roll(height_logits, shifts=1, dims=1)
+    ) / 2.0
+    grad_y = (
+        torch.roll(height_logits, shifts=-1, dims=0)
+        - torch.roll(height_logits, shifts=1, dims=0)
+    ) / 2.0
+
+    # Approximate the surface normals.
+    # For a height function h(x,y), one common estimate is n = [-dh/dx, -dh/dy, 1] (then normalized)
+    ones = torch.ones_like(height_logits)
+    normal_x = -grad_x
+    normal_y = -grad_y
+    normal_z = ones
+    norm = torch.sqrt(normal_x**2 + normal_y**2 + normal_z**2)
+    normal_x /= norm
+    normal_y /= norm
+    normal_z /= norm
+    # Stack into a tensor of shape (3, H, W)
+    normals = torch.stack([normal_x, normal_y, normal_z], dim=0)
+
+    # Define the eight neighbor shifts (for height map, we work with the spatial dims 0 and 1)
+    shifts = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+    # Initialize accumulators for the heights and a count of contributing pixels.
+    # We always include the center pixel.
+    coplanar_sum = height_logits.clone()
+    count = torch.ones_like(height_logits)
+
+    # For each neighbor, compute the angle difference between the center and neighbor normals.
+    for dx, dy in shifts:
+        # Shift the normals to obtain the neighbor's normal at each pixel.
+        # Note: the normals tensor shape is (3, H, W) so we shift dims 1 and 2.
+        neighbor_normals = torch.roll(
+            torch.roll(normals, shifts=dx, dims=1), shifts=dy, dims=2
+        )
+        # Dot product between the center normals and the neighbor normals.
+        dot = (normals * neighbor_normals).sum(dim=0)
+        # Clamp dot products for numerical stability.
+        dot = dot.clamp(-1.0, 1.0)
+        # Compute the angle difference (in radians)
+        angle_diff = torch.acos(dot)
+        # Determine which neighbors are nearly coplanar.
+        mask = angle_diff < threshold_rad
+        # Retrieve the corresponding neighbor heights from height_logits.
+        neighbor_heights = torch.roll(
+            torch.roll(height_logits, shifts=dx, dims=0), shifts=dy, dims=1
+        )
+        # Add neighbor height values where the coplanar condition is met.
+        coplanar_sum += neighbor_heights * mask.float()
+        count += mask.float()
+
+    # Compute the average height for the coplanar region.
+    smoothed_height_logits = coplanar_sum / count.clamp(min=1)
+
+    return smoothed_height_logits

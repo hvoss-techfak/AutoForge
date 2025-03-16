@@ -105,6 +105,12 @@ def main():
         default=0.4,
         help="Diameter of the printer nozzle in mm (details smaller than half this value will be ignored)",
     )
+    parser.add_argument(
+        "--early_stopping",
+        type=int,
+        default=1500,
+        help="Number of steps without improvement before stopping",
+    )
 
     parser.add_argument(
         "--perform_pruning",
@@ -281,7 +287,7 @@ def main():
             args.layer_height,
             bgr_tuple,
             random_seed=random_seed,
-            num_threads=8,
+            num_threads=16,
             init_method="kmeans",
             cluster_layers=300,
             lab_space=True,
@@ -321,14 +327,22 @@ def main():
             tbar.set_description(
                 f"Iteration {i + 1}, Loss = {loss_val:.4f}, best validation Loss = {optimizer.best_discrete_loss:.4f}"
             )
+        if (
+            optimizer.best_step is not None
+            and optimizer.num_steps_done - optimizer.best_step > args.early_stopping
+        ):
+            print(
+                "Early stopping after",
+                args.early_stopping,
+                "steps without improvement.",
+            )
+            break
 
     post_opt_step = 0
 
     optimizer.log_to_tensorboard(
         interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
     )
-
-
 
     if args.perform_pruning:
         optimizer.prune(

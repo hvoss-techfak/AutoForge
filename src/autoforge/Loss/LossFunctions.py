@@ -16,7 +16,7 @@ def loss_fn(
     material_TDs: torch.Tensor,
     background: torch.Tensor,
     perception_loss_module: torch.nn.Module,
-    add_penalty_loss: bool = True,
+    add_penalty_loss: float = 0.0,
 ) -> torch.Tensor:
     """
     Full forward pass for continuous assignment:
@@ -47,7 +47,7 @@ def compute_loss(
     target: torch.Tensor,
     pixel_height_logits: torch.Tensor = None,
     tau_height: float = 1.0,
-    add_penalty_loss: bool = False,
+    add_penalty_loss: float = 0.0,
 ) -> torch.Tensor:
     """
     Combined MSE + Perceptual + penalty losses.
@@ -60,15 +60,18 @@ def compute_loss(
     mse_loss = F.huber_loss(comp_mse, target_mse)
 
     if pixel_height_logits is not None:
-        # target_gray = target.mean(dim=2)  # shape becomes [H, W]
+        target_gray = target.mean(dim=2)  # shape becomes [H, W]
 
-        # # Compute weights using the grayscale image
-        # weight_x = torch.exp(
-        #     -torch.abs(target_gray[:, 1:] - target_gray[:, :-1])
-        # )  # shape [H, W-1]
-        # weight_y = torch.exp(
-        #     -torch.abs(target_gray[1:, :] - target_gray[:-1, :])
-        # )  # shape [H-1, W]
+        # Compute weights using the grayscale image
+        weight_x = torch.exp(
+            -torch.abs(target_gray[:, 1:] - target_gray[:, :-1])
+        )  # shape [H, W-1]
+        weight_y = torch.exp(
+            -torch.abs(target_gray[1:, :] - target_gray[:-1, :])
+        )  # shape [H-1, W]
+
+        weight_x = torch.clamp(weight_x, 0.5, 1.0)
+        weight_y = torch.clamp(weight_y, 0.5, 1.0)
 
         # Compute differences in the depth map
         dx = torch.abs(
@@ -78,14 +81,13 @@ def compute_loss(
             pixel_height_logits[1:, :] - pixel_height_logits[:-1, :]
         )  # shape [H-1, W]
 
-        # Optionally, if you're comparing these differences to zero,
         # provide a target tensor (zeros) for the huber loss.
-        loss_dx = torch.mean(F.huber_loss(dx, torch.zeros_like(dx)))
-        loss_dy = torch.mean(F.huber_loss(dy, torch.zeros_like(dy)))
+        loss_dx = torch.mean(F.huber_loss(dx * weight_x, torch.zeros_like(dx)))
+        loss_dy = torch.mean(F.huber_loss(dy * weight_y, torch.zeros_like(dy)))
+        # loss_dx = torch.mean(F.huber_loss(dx, torch.zeros_like(dx)))
+        # loss_dy = torch.mean(F.huber_loss(dy, torch.zeros_like(dy)))
 
-        smoothness_loss = (loss_dx + loss_dy) * 20
-        if not add_penalty_loss:
-            smoothness_loss = smoothness_loss / 100
+        smoothness_loss = (loss_dx + loss_dy) * (20 * add_penalty_loss)
         # print(f"mse_loss: {mse_loss}, smoothness_loss: {smoothness_loss}")
         total_loss = mse_loss + smoothness_loss
     else:
