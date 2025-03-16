@@ -54,13 +54,8 @@ def prune_num_colors(
                 custom_global_logits=logits_for_disc
             )
             loss = compute_loss(
-                material_assignment=dg_test,  # shape [max_layers], discrete
                 comp=out_im,
                 target=optimizer.target,
-                perception_loss_module=perception_loss_module,
-                tau_global=tau_for_comp,
-                num_materials=num_materials,
-                add_penalty_loss=False,
             )
 
         # For the loss, we pass the actual dg_test so that compute_loss() knows it’s a discrete assignment
@@ -137,13 +132,8 @@ def prune_num_swaps(
                 custom_global_logits=logits_for_disc
             )
             loss = compute_loss(
-                material_assignment=dg_test,  # shape [max_layers], discrete
                 comp=out_im,
                 target=optimizer.target,
-                perception_loss_module=perception_loss_module,
-                tau_global=tau_for_comp,
-                num_materials=num_materials,
-                add_penalty_loss=False,
             )
 
         # For the loss, we pass the actual dg_test so that compute_loss() knows it’s a discrete assignment
@@ -350,13 +340,8 @@ def prune_redundant_layers(
     comp = optimizer.get_best_discretized_image()
 
     best_loss = compute_loss(
-        None,
         comp,
         optimizer.target,
-        None,
-        None,
-        None,
-        add_penalty_loss=False,
     ).item()
 
     from tqdm import tqdm
@@ -401,13 +386,8 @@ def prune_redundant_layers(
                     rng_seed=optimizer.best_seed,
                 )
                 candidate_loss = compute_loss(
-                    None,
                     candidate_comp,
                     optimizer.target,
-                    None,
-                    None,
-                    None,
-                    add_penalty_loss=False,
                 ).item()
 
             if candidate_loss <= best_candidate_loss + best_candidate_loss * tolerance:

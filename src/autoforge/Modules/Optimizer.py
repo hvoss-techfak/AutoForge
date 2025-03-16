@@ -97,7 +97,7 @@ class FilamentOptimizer:
 
         # Tau schedule
         self.num_steps_done = 0
-        self.warmup_steps = args.iterations // 2
+        self.warmup_steps = args.iterations // 10
         self.decay_rate = (self.init_tau - self.final_tau) / (
             args.iterations - self.warmup_steps
         )
@@ -195,7 +195,7 @@ class FilamentOptimizer:
             material_TDs=self.material_TDs,
             background=self.background,
             perception_loss_module=self.perception_loss_module,
-            add_penalty_loss=False,
+            add_penalty_loss=self.num_steps_done > self.args.iterations // 10,
         )
 
         loss.backward()
@@ -383,7 +383,6 @@ class FilamentOptimizer:
         if best and self.best_params is None:
             return None, None
 
-        print(f"Getting discretized solution for best: {best}")
         current_params = self.best_params if best else self.params
         if custom_height_logits is not None:
             current_params["pixel_height_logits"] = custom_height_logits
@@ -447,6 +446,10 @@ class FilamentOptimizer:
             prune_redundant_layers,
         )
 
+        # self.best_params["pixel_height_logits"] = remove_isolated_outliers(
+        #     self.best_params["pixel_height_logits"], threshold=0.75
+        # )
+
         prune_num_colors(
             self,
             max_colors_allowed,
@@ -499,13 +502,8 @@ class FilamentOptimizer:
             #    If you have a separate function for that, just call it.
             #    Otherwise, reuse the standard compute_loss with add_penalty_loss=False, etc.
             current_disc_loss = compute_loss(
-                material_assignment=disc_global,  # shape [max_layers,], discrete
                 comp=comp_disc,
                 target=self.target,
-                perception_loss_module=self.perception_loss_module,
-                tau_global=tau_g,
-                num_materials=self.material_colors.shape[0],
-                add_penalty_loss=False,
             ).item()
             from autoforge.Helper.PruningHelper import find_color_bands
 
@@ -551,13 +549,8 @@ class FilamentOptimizer:
                 rng_seed=seed,
             )
             current_disc_loss = compute_loss(
-                material_assignment=disc_global,
                 comp=comp_disc,
                 target=self.target,
-                perception_loss_module=self.perception_loss_module,
-                tau_global=self.final_tau,
-                num_materials=self.material_colors.shape[0],
-                add_penalty_loss=False,
             ).item()
             if current_disc_loss < best_loss:
                 best_loss = current_disc_loss

@@ -207,158 +207,172 @@ def generate_stl(
     """
     H, W = height_map.shape
 
-    # Compute valid mask: True if no alpha mask or alpha >= 128.
-    if alpha_mask is None:
-        valid_mask = np.ones((H, W), dtype=bool)
-    else:
-        valid_mask = alpha_mask >= 128
+    # Compute valid mask: every pixel is valid if no alpha mask is provided.
+    valid_mask = (
+        np.ones((H, W), dtype=bool) if alpha_mask is None else (alpha_mask >= 128)
+    )
 
-    # --- Create vertices for the top surface ---
-    # We compute a grid of vertices (even for masked-out regions) but later only use those that are valid.
-    top_vertices = np.zeros((H, W, 3), dtype=np.float32)
-    for i in range(H):
-        for j in range(W):
-            top_vertices[i, j, 0] = j
-            # Note: y coordinate is set so that row 0 is at the top.
-            top_vertices[i, j, 1] = H - 1 - i
-            top_vertices[i, j, 2] = height_map[i, j] + background_height
+    # --- Vectorized Creation of Vertices ---
+    # Create a meshgrid of coordinates. Note that the y coordinate is flipped so that row 0 is at the top.
+    j, i = np.meshgrid(np.arange(W), np.arange(H))
+    x = j.astype(np.float32)
+    y = (H - 1 - i).astype(np.float32)
+    z = height_map.astype(np.float32) + background_height
 
-    # Create corresponding bottom vertices (same x,y but z = 0)
+    top_vertices = np.stack([x, y, z], axis=2)
     bottom_vertices = top_vertices.copy()
     bottom_vertices[:, :, 2] = 0
 
-    # --- Scale vertices so that the maximum x or y dimension equals maximum_x_y_size ---
+    # Scale vertices so the maximum x or y dimension equals maximum_x_y_size.
     original_max = max(W - 1, H - 1)
     scale = maximum_x_y_size / original_max
-    top_vertices[:, :, 0] *= scale
-    top_vertices[:, :, 1] *= scale
-    bottom_vertices[:, :, 0] *= scale
-    bottom_vertices[:, :, 1] *= scale
+    top_vertices[:, :, :2] *= scale
+    bottom_vertices[:, :, :2] *= scale
 
-    triangles = []  # List to collect all triangles (each as a tuple of three vertices)
+    # --- Top and Bottom Surfaces ---
+    # Only use cells (quads) where all four corners are valid.
+    quad_valid = (
+        valid_mask[:-1, :-1]
+        & valid_mask[:-1, 1:]
+        & valid_mask[1:, 1:]
+        & valid_mask[1:, :-1]
+    )
+    valid_i, valid_j = np.nonzero(quad_valid)
+    num_quads = len(valid_i)
 
-    def add_triangle(v1, v2, v3):
-        """Append a triangle (defined by 3 vertices) to the triangle list."""
-        triangles.append((v1, v2, v3))
+    # Define the four corners of each valid quad.
+    v0 = top_vertices[valid_i, valid_j]
+    v1 = top_vertices[valid_i, valid_j + 1]
+    v2 = top_vertices[valid_i + 1, valid_j + 1]
+    v3 = top_vertices[valid_i + 1, valid_j]
 
-    # --- Top Surface ---
-    # For the top surface, we iterate over each cell (quad) in the grid.
-    # Only if all 4 corners of the quad are valid do we add two triangles.
-    # We also store the grid indices (i,j) of the vertices used so we can later extract the boundary edges.
-    top_triangles_indices = []  # Each element is a tuple of 3 (i,j) indices.
-    for i in range(H - 1):
-        for j in range(W - 1):
-            if (
-                valid_mask[i, j]
-                and valid_mask[i, j + 1]
-                and valid_mask[i + 1, j + 1]
-                and valid_mask[i + 1, j]
-            ):
-                # Define the four corners of the quad.
-                v0 = top_vertices[i, j]
-                v1 = top_vertices[i, j + 1]
-                v2 = top_vertices[i + 1, j + 1]
-                v3 = top_vertices[i + 1, j]
-                # For the top surface, use a reversed order so that the computed normal (via cross product) faces upward.
-                add_triangle(v2, v1, v0)
-                add_triangle(v3, v2, v0)
-                # Save the corresponding grid indices (for later boundary detection)
-                top_triangles_indices.append(((i, j), (i, j + 1), (i + 1, j + 1)))
-                top_triangles_indices.append(((i + 1, j), (i + 1, j + 1), (i, j)))
+    # Top surface: using triangles (v2, v1, v0) and (v3, v2, v0)
+    top_triangles = np.concatenate(
+        [np.stack([v2, v1, v0], axis=1), np.stack([v3, v2, v0], axis=1)], axis=0
+    )
+
+    # Bottom face (using bottom vertices; note the reversed order so normals point downward)
+    bv0 = bottom_vertices[valid_i, valid_j]
+    bv1 = bottom_vertices[valid_i, valid_j + 1]
+    bv2 = bottom_vertices[valid_i + 1, valid_j + 1]
+    bv3 = bottom_vertices[valid_i + 1, valid_j]
+
+    bottom_triangles = np.concatenate(
+        [np.stack([bv0, bv1, bv2], axis=1), np.stack([bv0, bv2, bv3], axis=1)], axis=0
+    )
 
     # --- Side Walls ---
-    # Instead of simply using the rectangular border, we compute the boundary of the top surface.
-    # We count each undirected edge from the top surface triangles and select those that appear only once.
-    edge_count = {}
+    # Determine boundary edges from the grid of valid quads.
+    # For each quad edge, if there is no neighboring valid quad sharing that edge, it is a boundary.
+    side_triangles_list = []
 
-    def add_edge(idx1, idx2):
-        # Store an undirected edge as a sorted tuple of the grid indices.
-        key = tuple(sorted((idx1, idx2)))
-        edge_count[key] = edge_count.get(key, 0) + 1
+    # Left edges: for quads in column 0 or when left neighbor is not valid.
+    left_cond = np.zeros_like(quad_valid, dtype=bool)
+    left_cond[:, 0] = quad_valid[:, 0]
+    left_cond[:, 1:] = quad_valid[:, 1:] & (~quad_valid[:, :-1])
+    li, lj = np.nonzero(left_cond)
+    lv0 = top_vertices[li, lj]
+    lv1 = top_vertices[li + 1, lj]
+    lb0 = bottom_vertices[li, lj]
+    lb1 = bottom_vertices[li + 1, lj]
+    left_tris = np.concatenate(
+        [np.stack([lv0, lv1, lb1], axis=1), np.stack([lv0, lb1, lb0], axis=1)], axis=0
+    )
+    side_triangles_list.append(left_tris)
 
-    for tri in top_triangles_indices:
-        add_edge(tri[0], tri[1])
-        add_edge(tri[1], tri[2])
-        add_edge(tri[2], tri[0])
+    # Right edges: for quads in the last column or when right neighbor is not valid.
+    right_cond = np.zeros_like(quad_valid, dtype=bool)
+    right_cond[:, -1] = quad_valid[:, -1]
+    right_cond[:, :-1] = quad_valid[:, :-1] & (~quad_valid[:, 1:])
+    ri, rj = np.nonzero(right_cond)
+    rv0 = top_vertices[ri, rj + 1]
+    rv1 = top_vertices[ri + 1, rj + 1]
+    rb0 = bottom_vertices[ri, rj + 1]
+    rb1 = bottom_vertices[ri + 1, rj + 1]
+    right_tris = np.concatenate(
+        [np.stack([rv0, rv1, rb1], axis=1), np.stack([rv0, rb1, rb0], axis=1)], axis=0
+    )
+    side_triangles_list.append(right_tris)
 
-    # A boundary edge appears only once.
-    boundary_edges = [edge for edge, count in edge_count.items() if count == 1]
+    # Top edges: for quads in the first row or when the above neighbor is not valid.
+    top_cond = np.zeros_like(quad_valid, dtype=bool)
+    top_cond[0, :] = quad_valid[0, :]
+    top_cond[1:, :] = quad_valid[1:, :] & (~quad_valid[:-1, :])
+    ti, tj = np.nonzero(top_cond)
+    tv0 = top_vertices[ti, tj]
+    tv1 = top_vertices[ti, tj + 1]
+    tb0 = bottom_vertices[ti, tj]
+    tb1 = bottom_vertices[ti, tj + 1]
+    top_wall_tris = np.concatenate(
+        [np.stack([tv0, tv1, tb1], axis=1), np.stack([tv0, tb1, tb0], axis=1)], axis=0
+    )
+    side_triangles_list.append(top_wall_tris)
 
-    # Helper functions to get the coordinate for a given grid index.
-    def get_top_vertex(idx):
-        i, j = idx
-        return top_vertices[i, j]
+    # Bottom edges: for quads in the last row or when the below neighbor is not valid.
+    bottom_cond = np.zeros_like(quad_valid, dtype=bool)
+    bottom_cond[-1, :] = quad_valid[-1, :]
+    bottom_cond[:-1, :] = quad_valid[:-1, :] & (~quad_valid[1:, :])
+    bi, bj = np.nonzero(bottom_cond)
+    bv0_edge = top_vertices[bi + 1, bj]
+    bv1_edge = top_vertices[bi + 1, bj + 1]
+    bb0 = bottom_vertices[bi + 1, bj]
+    bb1 = bottom_vertices[bi + 1, bj + 1]
+    bottom_wall_tris = np.concatenate(
+        [
+            np.stack([bv0_edge, bv1_edge, bb1], axis=1),
+            np.stack([bv0_edge, bb1, bb0], axis=1),
+        ],
+        axis=0,
+    )
+    side_triangles_list.append(bottom_wall_tris)
 
-    def get_bottom_vertex(idx):
-        i, j = idx
-        return bottom_vertices[i, j]
+    # Combine all side wall triangles.
+    side_triangles = (
+        np.concatenate(side_triangles_list, axis=0)
+        if side_triangles_list
+        else np.empty((0, 3, 3), dtype=np.float32)
+    )
 
-    # For each boundary edge, create a vertical wall.
-    for edge in boundary_edges:
-        idx1, idx2 = edge
-        v_top1 = get_top_vertex(idx1)
-        v_top2 = get_top_vertex(idx2)
-        v_bottom1 = get_bottom_vertex(idx1)
-        v_bottom2 = get_bottom_vertex(idx2)
-        # Create a quad (two triangles) connecting the top edge to the bottom.
-        add_triangle(v_top1, v_top2, v_bottom2)
-        add_triangle(v_top1, v_bottom2, v_bottom1)
+    # --- Combine All Triangles ---
+    all_triangles = np.concatenate(
+        [top_triangles, side_triangles, bottom_triangles], axis=0
+    )
 
-    # --- Bottom Face ---
-    # For the bottom face, we mimic the top-surface logic but using the bottom vertices.
-    # The ordering is reversed (relative to the top face) so that the normals face downward.
-    for i in range(H - 1):
-        for j in range(W - 1):
-            if (
-                valid_mask[i, j]
-                and valid_mask[i, j + 1]
-                and valid_mask[i + 1, j + 1]
-                and valid_mask[i + 1, j]
-            ):
-                v0 = bottom_vertices[i, j]
-                v1 = bottom_vertices[i, j + 1]
-                v2 = bottom_vertices[i + 1, j + 1]
-                v3 = bottom_vertices[i + 1, j]
-                # Order so that the normal will point downward.
-                add_triangle(v0, v1, v2)
-                add_triangle(v0, v2, v3)
+    # --- Compute Normals Vectorized ---
+    v1_arr = all_triangles[:, 0, :]
+    v2_arr = all_triangles[:, 1, :]
+    v3_arr = all_triangles[:, 2, :]
+    normals = np.cross(v2_arr - v1_arr, v3_arr - v1_arr)
+    norms = np.linalg.norm(normals, axis=1)
+    norms[norms == 0] = 1  # Prevent division by zero
+    normals /= norms[:, np.newaxis]
 
-    num_triangles = len(triangles)
+    num_triangles = all_triangles.shape[0]
 
-    # --- Write Binary STL File ---
+    # --- Create a Structured Array for Binary STL ---
+    stl_dtype = np.dtype(
+        [
+            ("normal", np.float32, (3,)),
+            ("v1", np.float32, (3,)),
+            ("v2", np.float32, (3,)),
+            ("v3", np.float32, (3,)),
+            ("attr", np.uint16),
+        ]
+    )
+    stl_data = np.empty(num_triangles, dtype=stl_dtype)
+    stl_data["normal"] = normals
+    stl_data["v1"] = all_triangles[:, 0, :]
+    stl_data["v2"] = all_triangles[:, 1, :]
+    stl_data["v3"] = all_triangles[:, 2, :]
+    stl_data["attr"] = 0
+
+    # --- Write the STL File in a Single Operation ---
     with open(filename, "wb") as f:
         header_str = "Binary STL generated from heightmap with alpha mask"
-        header = header_str.encode("utf-8")
-        header = header.ljust(80, b" ")
+        header = header_str.encode("utf-8").ljust(80, b" ")
         f.write(header)
         f.write(struct.pack("<I", num_triangles))
-        for tri in triangles:
-            v1, v2, v3 = tri
-            # Compute the normal as the normalized cross product of (v2-v1) and (v3-v1).
-            normal = np.cross(v2 - v1, v3 - v1)
-            norm = np.linalg.norm(normal)
-            if norm == 0:
-                normal = np.array([0, 0, 0], dtype=np.float32)
-            else:
-                normal = normal / norm
-            f.write(
-                struct.pack(
-                    "<12fH",
-                    normal[0],
-                    normal[1],
-                    normal[2],
-                    v1[0],
-                    v1[1],
-                    v1[2],
-                    v2[0],
-                    v2[1],
-                    v2[2],
-                    v3[0],
-                    v3[1],
-                    v3[2],
-                    0,
-                )
-            )
+        f.write(stl_data.tobytes())
 
 
 def generate_swap_instructions(

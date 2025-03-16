@@ -96,7 +96,7 @@ def main():
     parser.add_argument(
         "--stl_output_size",
         type=int,
-        default=200,
+        default=150,
         help="Size of the longest dimension of the output STL file in mm",
     )
     parser.add_argument(
@@ -312,7 +312,7 @@ def main():
     print("Starting optimization...")
     tbar = tqdm(range(args.iterations))
     for i in tbar:
-        loss_val = optimizer.step(record_best=i % 10 == 0)
+        loss_val = optimizer.step(record_best=i % 8 == 0)
 
         optimizer.visualize(interval=25)
         optimizer.log_to_tensorboard(interval=100)
@@ -327,6 +327,8 @@ def main():
     optimizer.log_to_tensorboard(
         interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
     )
+
+
 
     if args.perform_pruning:
         optimizer.prune(

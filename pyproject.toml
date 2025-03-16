@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "AutoForge"
-version="1.5.5"
+version="1.6.0"
 description = "AutoForge is a Python tool for generating 3D printed layered models from an input image."
 authors = [{ name = "Hendric Voss", email = "hvoss@techfak.uni-bielefeld.de" }]
 readme = "README.md"
@@ -23,7 +23,9 @@ dependencies = [
   "scikit-image",
   "scikit-learn",
   "tensorboard",
-  "pillow>=11.1.0"
+  "pillow>=11.1.0",
+  "shapely>=2.0.7",
+  "trimesh>=4.6.4"
 ]
 
 [tool.setuptools]

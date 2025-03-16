@@ -34,24 +34,20 @@ def loss_fn(
         background,
     )
     return compute_loss(
-        material_assignment=params["global_logits"],
         comp=comp,
         target=target,
-        perception_loss_module=perception_loss_module,
-        tau_global=tau_global,
-        num_materials=material_colors.shape[0],
+        pixel_height_logits=params["pixel_height_logits"],
+        tau_height=tau_height,
         add_penalty_loss=add_penalty_loss,
     )
 
 
 def compute_loss(
-    material_assignment: torch.Tensor,
     comp: torch.Tensor,
     target: torch.Tensor,
-    perception_loss_module: torch.nn.Module,
-    tau_global: float,
-    num_materials: int,
-    add_penalty_loss: bool = True,
+    pixel_height_logits: torch.Tensor = None,
+    tau_height: float = 1.0,
+    add_penalty_loss: bool = False,
 ) -> torch.Tensor:
     """
     Combined MSE + Perceptual + penalty losses.
@@ -62,42 +58,36 @@ def compute_loss(
     # target = increase_saturation(target, 0.1)
     target_mse = srgb_to_lab(target)
     mse_loss = F.huber_loss(comp_mse, target_mse)
-    # Perceptual Loss
-    # comp_batch = comp.permute(2, 0, 1).unsqueeze(0)
-    # target_batch = target.permute(2, 0, 1).unsqueeze(0)
-    # perception_loss = perception_loss_module(comp_batch, target_batch)
 
-    # Basic penalty
-    # if material_assignment.dim() == 2:
-    #     # Continuous assignment => shape (max_layers, num_materials)
-    #     p = F.softmax(material_assignment, dim=1)
-    #     dot_products = torch.sum(p[:-1] * p[1:], dim=1)  # shape (max_layers-1,)
-    #     color_change_penalty = torch.mean(1.0 - dot_products)
-    #
-    #     color_usage = torch.mean(p, dim=0)
-    #     few_colors_penalty = torch.sum(torch.sqrt(1e-8 + color_usage))
-    # else:
-    #     # Discrete assignment => shape (max_layers,)
-    #     disc = material_assignment
-    #     same_color = (disc[:-1] == disc[1:]).float()
-    #     dot_products = same_color
-    #     color_change_penalty = (
-    #         torch.mean(1.0 - dot_products) if add_penalty_loss else 0.0
-    #     )
-    #
-    #     max_layers = disc.shape[0]
-    #     usage_counts = torch.bincount(disc, minlength=num_materials).float()
-    #     color_usage = usage_counts / float(max_layers)
-    #     few_colors_penalty = (
-    #         torch.sum(torch.sqrt(1e-8 + color_usage)) if add_penalty_loss else 0.0
-    #     )
-    #
-    # # Weighted sum
-    # lambda_swap = (1.0 - tau_global) * 0.1
-    # total_loss = (
-    #     mse_loss + lambda_swap * color_change_penalty + lambda_swap * few_colors_penalty
-    # )
+    if pixel_height_logits is not None:
+        # target_gray = target.mean(dim=2)  # shape becomes [H, W]
 
-    # combine with the perceptual loss
-    total_loss = mse_loss  # + perception_loss * 10.0
+        # # Compute weights using the grayscale image
+        # weight_x = torch.exp(
+        #     -torch.abs(target_gray[:, 1:] - target_gray[:, :-1])
+        # )  # shape [H, W-1]
+        # weight_y = torch.exp(
+        #     -torch.abs(target_gray[1:, :] - target_gray[:-1, :])
+        # )  # shape [H-1, W]
+
+        # Compute differences in the depth map
+        dx = torch.abs(
+            pixel_height_logits[:, 1:] - pixel_height_logits[:, :-1]
+        )  # shape [H, W-1]
+        dy = torch.abs(
+            pixel_height_logits[1:, :] - pixel_height_logits[:-1, :]
+        )  # shape [H-1, W]
+
+        # Optionally, if you're comparing these differences to zero,
+        # provide a target tensor (zeros) for the huber loss.
+        loss_dx = torch.mean(F.huber_loss(dx, torch.zeros_like(dx)))
+        loss_dy = torch.mean(F.huber_loss(dy, torch.zeros_like(dy)))
+
+        smoothness_loss = (loss_dx + loss_dy) * 20
+        if not add_penalty_loss:
+            smoothness_loss = smoothness_loss / 100
+        # print(f"mse_loss: {mse_loss}, smoothness_loss: {smoothness_loss}")
+        total_loss = mse_loss + smoothness_loss
+    else:
+        total_loss = mse_loss
     return total_loss
