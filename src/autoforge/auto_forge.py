@@ -289,7 +289,7 @@ def main():
             random_seed=random_seed,
             num_threads=16,
             init_method="kmeans",
-            cluster_layers=300,
+            cluster_layers=18,
             lab_space=True,
         )
 
