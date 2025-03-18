@@ -52,11 +52,12 @@ class Config:
     tensorboard = False
 
 
-def main(input_image, csv_file, init_method, cluster_layers, lab_space):
+def main(input_image, csv_file, lr):
     # Create config object using default values
     args = Config()
     args.input_image = input_image
     args.csv_file = csv_file
+    args.learning_rate = lr
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -128,9 +129,9 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
         args.layer_height,
         bgr_tuple,
         random_seed=random_seed,
-        init_method=init_method,
-        cluster_layers=cluster_layers,
-        lab_space=lab_space,
+        init_method="kmeans",
+        cluster_layers=20,
+        lab_space=False,
         num_threads=8,
     )
 
@@ -186,10 +187,10 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
     return mse_loss.item()
 
 
-def main_suppressed(input_image, csv_file, init_method, cluster_layers, lab_space):
+def main_suppressed(input_image, csv_file, lr):
     with open(os.devnull, "w") as fnull:
         with redirect_stdout(fnull), redirect_stderr(fnull):
-            result = main(input_image, csv_file, init_method, cluster_layers, lab_space)
+            result = main(input_image, csv_file, lr)
     return result
 
 
@@ -197,35 +198,26 @@ if __name__ == "__main__":
     folder = "../../../images/test_images/"
     csv_file = "../../../bambulab.csv"
     images = [folder + "/" + img for img in os.listdir(folder) if img.endswith(".jpg")]
+    start_lr = 1e-1
     parallel_limit = 10
-    methods = [
-        "kmeans",
-        "quantize_median",
-        "quantize_maxcoverage",
-        "quantize_fastoctree",
-    ]
+
     max_layers = 75
-    cluster_layers = [
-        max_layers // 4,
-        max_layers // 2,
-        max_layers,
-        max_layers * 2,
-        max_layers * 4,
-    ]
-    use_lab_space = [True, False]
 
     # test every permutation using itertools
     from itertools import product
 
     out_dict = {}
-    do_list = list(product(methods, cluster_layers, use_lab_space))
-    shuffle(do_list)
+    do_list = []
+    while start_lr > 1e-5:
+        do_list.append(start_lr)
+        start_lr *= 0.9
+    print(do_list)
 
-    for i, (method, cluster, lab) in enumerate(do_list):
+    for i, lr in enumerate(do_list):
         try:
-            out_dict_str = f"{method}_{cluster}_{lab}"
+            out_dict_str = f"lr={lr}"
             print(
-                f"Running {method} with {cluster} clusters and lab={lab}, {i + 1}/{len(do_list)}"
+                f"Running learning_rate={lr}, {i + 1}/{len(do_list)}"
             )
             exec = ProcessPoolExecutor(max_workers=parallel_limit)
             tlist = []
@@ -236,9 +228,7 @@ if __name__ == "__main__":
                             main_suppressed,
                             img,
                             csv_file,
-                            method,
-                            cluster,
-                            lab,
+                            lr,
                         )
                     )
             for t in tqdm(concurrent.futures.as_completed(tlist), total=len(tlist)):
