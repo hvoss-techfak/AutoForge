@@ -50,46 +50,42 @@ def compute_loss(
     add_penalty_loss: float = 0.0,
 ) -> torch.Tensor:
     """
-    Combined MSE + Perceptual + penalty losses.
+    Combined MSE + Perceptual + penalty losses with patch-based smoothness.
     """
-    # MSE
+    # MSE Loss
     comp_mse = srgb_to_lab(comp)
-    # we slightly increase saturation of our target image to make the color matching more robust
-    # target = increase_saturation(target, 0.1)
     target_mse = srgb_to_lab(target)
     mse_loss = F.huber_loss(comp_mse, target_mse)
 
     if pixel_height_logits is not None:
+        # Existing neighbor-based smoothness loss:
         target_gray = target.mean(dim=2)  # shape becomes [H, W]
-
-        # Compute weights using the grayscale image
-        weight_x = torch.exp(
-            -torch.abs(target_gray[:, 1:] - target_gray[:, :-1])
-        )  # shape [H, W-1]
-        weight_y = torch.exp(
-            -torch.abs(target_gray[1:, :] - target_gray[:-1, :])
-        )  # shape [H-1, W]
-
+        weight_x = torch.exp(-torch.abs(target_gray[:, 1:] - target_gray[:, :-1]))
+        weight_y = torch.exp(-torch.abs(target_gray[1:, :] - target_gray[:-1, :]))
         weight_x = torch.clamp(weight_x, 0.5, 1.0)
         weight_y = torch.clamp(weight_y, 0.5, 1.0)
-
-        # Compute differences in the depth map
-        dx = torch.abs(
-            pixel_height_logits[:, 1:] - pixel_height_logits[:, :-1]
-        )  # shape [H, W-1]
-        dy = torch.abs(
-            pixel_height_logits[1:, :] - pixel_height_logits[:-1, :]
-        )  # shape [H-1, W]
-
-        # provide a target tensor (zeros) for the huber loss.
+        dx = torch.abs(pixel_height_logits[:, 1:] - pixel_height_logits[:, :-1])
+        dy = torch.abs(pixel_height_logits[1:, :] - pixel_height_logits[:-1, :])
         loss_dx = torch.mean(F.huber_loss(dx * weight_x, torch.zeros_like(dx)))
         loss_dy = torch.mean(F.huber_loss(dy * weight_y, torch.zeros_like(dy)))
-        # loss_dx = torch.mean(F.huber_loss(dx, torch.zeros_like(dx)))
-        # loss_dy = torch.mean(F.huber_loss(dy, torch.zeros_like(dy)))
+        smoothness_loss = (loss_dx + loss_dy) * (40 * add_penalty_loss)
 
-        smoothness_loss = (loss_dx + loss_dy) * (20 * add_penalty_loss)
-        # print(f"mse_loss: {mse_loss}, smoothness_loss: {smoothness_loss}")
-        total_loss = mse_loss + smoothness_loss
+        # Additional patch-based smoothness loss (using a 3x3 Laplacian):
+        laplacian_kernel = (
+            torch.tensor(
+                [[0, 1, 0], [1, -4, 1], [0, 1, 0]],
+                dtype=pixel_height_logits.dtype,
+                device=pixel_height_logits.device,
+            )
+            .unsqueeze(0)
+            .unsqueeze(0)
+        )
+        height_map = pixel_height_logits.unsqueeze(0).unsqueeze(0)
+        laplacian_output = F.conv2d(height_map, laplacian_kernel, padding=1)
+        patch_smooth_loss = (
+            F.huber_loss(laplacian_output, torch.zeros_like(laplacian_output)) * 10
+        )
+        total_loss = mse_loss + smoothness_loss + add_penalty_loss * patch_smooth_loss
     else:
         total_loss = mse_loss
     return total_loss
