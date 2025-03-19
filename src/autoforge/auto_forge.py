@@ -302,7 +302,7 @@ def main():
             args.layer_height,
             bgr_tuple,
             random_seed=random_seed,
-            num_threads=16,
+            num_threads=8,
             init_method="kmeans",
             cluster_layers=18,
             lab_space=True,

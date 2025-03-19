@@ -240,25 +240,28 @@ def create_mapping(final_ordering, labs, all_labels):
 
 def tsp_order_christofides_path(nodes, labs, bg, fg):
     """
-    nodes: list of cluster indices (must include bg and fg)
+    Ensure that the background and foreground nodes are always in the TSP cycle.
+    nodes: list of cluster indices (ideally including bg and fg)
     labs: Lab-space coordinates (indexed by cluster index)
     bg, fg: background and foreground cluster indices
-
     Returns an ordering (list of cluster indices) that contains all nodes,
     starts with bg and ends with fg.
     """
-    artificial = -1
-    augmented_nodes = nodes + [artificial]
-    LARGE = 1e6
+    # Guarantee that bg and fg are included in nodes.
+    nodes = list(set(nodes) | {bg, fg})
 
-    # Precompute the distance matrix for original nodes.
-    D = build_distance_matrix(labs, nodes)
+    artificial = -1
+    LARGE = 1e6
     n = len(nodes)
 
-    # Build an augmented matrix of size (n+1)x(n+1).
+    # Precompute the distance matrix for the given nodes.
+    D = build_distance_matrix(labs, nodes)
+
+    # Build an augmented (n+1)x(n+1) matrix.
     aug_mat = np.zeros((n + 1, n + 1))
     aug_mat[:n, :n] = D
-    # For the artificial node, set cost = 0 for bg/fg, LARGE otherwise.
+
+    # For the artificial node, set cost = 0 for bg/fg and LARGE for others.
     for i, u in enumerate(nodes):
         if u in {bg, fg}:
             aug_mat[i, n] = 0.0
@@ -268,32 +271,33 @@ def tsp_order_christofides_path(nodes, labs, bg, fg):
             aug_mat[n, i] = LARGE
     aug_mat[n, n] = 0.0
 
-    # Convert the augmented matrix into a graph dictionary.
+    # Create augmented nodes list.
     aug_nodes = nodes + [artificial]
     graph = matrix_to_graph(aug_mat, aug_nodes)
 
-    # Run Christofides on the augmented graph.
+    # Run Christofides algorithm on the augmented graph.
     cycle = christofides_tsp(graph)
-    # Remove the artificial node.
+    # Remove the artificial node if present.
     cycle = [node for node in cycle if node != artificial]
 
+    # Ensure bg and fg are in the cycle.
+    if bg not in cycle:
+        cycle.insert(0, bg)
+    if fg not in cycle:
+        cycle.append(fg)
+
     # Rotate the cycle so that bg is first.
-    if bg in cycle:
+    if cycle[0] != bg:
         idx = cycle.index(bg)
         cycle = cycle[idx:] + cycle[:idx]
-    else:
-        raise ValueError("Background node missing from cycle")
 
     # Force fg to be the last element.
-    if fg not in cycle:
-        raise ValueError("Foreground node missing from cycle")
     if cycle[-1] != fg:
         cycle.remove(fg)
         cycle.append(fg)
 
-    # --- NEW: Check if reversing the internal order yields a lower ordering metric ---
+    # Optionally, check if reversing the internal order improves the ordering metric.
     if len(cycle) > 2:
-        # Reverse the ordering of the nodes between bg and fg.
         reversed_cycle = [cycle[0]] + cycle[1:-1][::-1] + [cycle[-1]]
         if compute_ordering_metric(reversed_cycle, labs) < compute_ordering_metric(
             cycle, labs
@@ -449,14 +453,7 @@ def init_height_map(
     nodes = unique_clusters
 
     # Get the ordering via TSP ordering function.
-    for i in range(50):
-        try:
-            final_ordering = tsp_order_christofides_path(nodes, labs, bg_cluster, fg_cluster)
-            break
-        except Exception:
-            print(f"Failed to find ordering, retrying {i+1}/10")
-            if i == 49:
-                raise ValueError("Failed to find ordering after 50 retries")
+    final_ordering = tsp_order_christofides_path(nodes, labs, bg_cluster, fg_cluster)
 
     # Optionally prune out outliers.
     final_ordering = prune_ordering(
