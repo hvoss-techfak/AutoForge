@@ -24,10 +24,6 @@ The pruning is set to a maximum of 8 color and 20 swaps, so each image uses at m
   </div>
 </div>
 
-If someone uses this program and 3d prints something with it, please let me know :) \
-I would love to see what you made!
-
-
 ## Features
 
 - **Image-to-Model Conversion**: Converts an input image into a layered model suitable for 3D printing.
@@ -39,8 +35,23 @@ I would love to see what you made!
 - **Live Visualization**: (Optional) Displays live composite images during the optimization process.
 - **Hueforge export**: Outputs a project file that can be opened with hueforge.
 
+## [Google Colab Notebook](https://colab.research.google.com/drive/13sWCss9-ew2xnoJl4c4SSpComSNi-1ih)
 
-## Installation
+If you're new to Google Colab, follow these simple steps to run the notebook:
+
+1. **Open the Notebook:**  
+   Click [here](https://colab.research.google.com/drive/13sWCss9-ew2xnoJl4c4SSpComSNi-1ih) to open the notebook in Google Colab.
+
+2. **Select GPU Runtime:**  
+   In Colab, go to the menu and click **Runtime → Change runtime type**. Under **Hardware accelerator**, choose **T4 GPU** (or any other available GPU type).
+
+3. **Run All Cells:**  
+   Once the notebook loads, click **Runtime → Run all** to execute the cells in sequence. Follow the on-screen prompts to configure the materials CSV, upload your image, and run Autoforge.
+
+4. **Review and Download:**  
+   After the process completes, you'll see a preview of the output image. Finally, the notebook will zip the output folder for you to download.
+
+## Manual Installation
 
 To install AutoForge, simply install the current version from PyPI:
 ```bash
@@ -80,10 +91,10 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 
 - `--output_folder` Folder where output files will be saved (default: `output`).
 - `--iterations` Number of optimization iterations (default: 5000).
-- `--learning_rate` Learning rate for optimization (default: 1e-2).
+- `--learning_rate` Learning rate for optimization (default: 0.015).
 - `--layer_height` Layer thickness in millimeters (default: 0.04).
-- `--max_layers` Maximum number of layers (default: 50).  
-  **Note:** This is about 2mm + the background height
+- `--max_layers` Maximum number of layers (default: 75).  
+  **Note:** This is about 3mm + the background height
 - `--background_height` Height of the background in millimeters (default: 0.4).  
   **Note:** The background height must be divisible by the layer height.
 - `--background_color` Background color in hexadecimal format (default: `#000000` aka Black).  

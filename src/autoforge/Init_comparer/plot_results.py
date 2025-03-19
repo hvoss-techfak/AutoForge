@@ -14,10 +14,12 @@ for key, values in data.items():
     arr = np.array(values)
     mean_val = np.mean(arr)
     std_val = np.std(arr)
+    #key is formatted as lr=float, we need to extract the float value and round it to 4 decimal values
+    key = round(float(key.split("=")[1]), 5)
     stats.append((key, mean_val, std_val, arr))
 
 # Sort the list of tuples based on the mean (ascending order)
-stats.sort(key=lambda x: x[1])
+#stats.sort(key=lambda x: x[1])
 
 # Extract sorted lists of keys, means, stds, and store the sorted arrays in a dictionary
 sorted_keys = [item[0] for item in stats]
@@ -53,7 +55,6 @@ fig.update_layout(
     barmode="group",
 )
 
-
 # Function to generate significance stars based on the p-value.
 def significance_label(p):
     if p < 0.001:
@@ -65,50 +66,57 @@ def significance_label(p):
     else:
         return ""
 
+# First, compute all significant pairwise comparisons
+significant_pairs = []  # will hold tuples of (p_value, i, j)
+for i in range(n_keys):
+    for j in range(i + 1, n_keys):
+        group1 = data_sorted[sorted_keys[i]]
+        group2 = data_sorted[sorted_keys[j]]
+        stat, p_value = ttest_ind(group1, group2)
+        if p_value < 0.05:
+            significant_pairs.append((p_value, i, j))
 
-# To avoid overlapping significance annotations when bars share a common index,
-# keep track of the highest annotation drawn for each bar.
-annotation_levels = {i: 0 for i in range(n_keys)}
-# Base margin added above the highest error bar to start the significance line.
-base_margin = max(means) * 0.05  # Adjust as needed
+# Sort pairs by p-value (most significant first)
+significant_pairs.sort(key=lambda x: x[0])
 
-# Loop over adjacent pairs in the sorted order and perform t-tests.
-for i in range(n_keys - 1):
-    group1 = data_sorted[sorted_keys[i]]
-    group2 = data_sorted[sorted_keys[i + 1]]
-    stat, p_value = ttest_ind(group1, group2)
+# To ensure each bar is annotated only once, track used indices.
+used_bars = set()
+base_margin = max(means) * 0.05  # margin above the error bars
 
-    # Only annotate if the difference is significant (p < 0.05)
-    if p_value < 0.05:
-        # Determine the base y-level from the taller of the two error bars.
-        base_y = max(means[i] + stds[i], means[i + 1] + stds[i + 1])
-        # Ensure new annotations are drawn above any previous ones.
-        current_level = max(annotation_levels[i], annotation_levels[i + 1])
-        line_y = base_y + base_margin + current_level
+significant_pairs = []
+for p_value, i, j in significant_pairs:
+    # If either bar is already annotated, skip this pair.
+    if i in used_bars or j in used_bars:
+        continue
 
-        # Update annotation levels for these two bars.
-        annotation_levels[i] = line_y
-        annotation_levels[i + 1] = line_y
+    # Compute the base y-level from the higher error bar of the two.
+    base_y = max(means[i] + stds[i], means[j] + stds[j])
+    line_y = base_y + base_margin
 
-        # Add a horizontal line between the two bars.
-        fig.add_shape(
-            type="line",
-            x0=x_positions[i],
-            x1=x_positions[i + 1],
-            y0=line_y,
-            y1=line_y,
-            line=dict(color="black", width=1),
-            xref="x",
-            yref="y",
-        )
-        # Add the significance stars annotation above the line.
-        fig.add_annotation(
-            x=(x_positions[i] + x_positions[i + 1]) / 2,
-            y=line_y + base_margin * 0.2,
-            text=significance_label(p_value),
-            showarrow=False,
-            font=dict(size=12),
-        )
+    # Mark these bars as used.
+    used_bars.update([i, j])
+
+    # Draw horizontal significance line between the two bars.
+    fig.add_shape(
+        type="line",
+        x0=x_positions[i],
+        x1=x_positions[j],
+        y0=line_y,
+        y1=line_y,
+        line=dict(color="black", width=1),
+        xref="x",
+        yref="y",
+    )
+    # Place the significance annotation (stars) above the line.
+    fig.add_annotation(
+        x=(x_positions[i] + x_positions[j]) / 2,
+        y=line_y + base_margin * 0.2,
+        text=significance_label(p_value),
+        showarrow=False,
+        font=dict(size=12),
+    )
+
+
 fig.update_layout(
     autosize=False,
     width=1920,

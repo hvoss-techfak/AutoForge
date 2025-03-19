@@ -24,15 +24,20 @@ class Config:
     csv_file = "default_materials.csv"  # Path to CSV file with material data
     output_folder = "output"
     iterations = 2000
-    learning_rate = 1e-2
+    learning_rate = 0.015
+
+    warmup_fraction = 0.1 #[0.0, 1.0]
+    height_logits_learning_start_fraction = 0.1 #[0.0, 1.0] but should be less than height_logits_learning_full_fraction
+    height_logits_learning_full_fraction = 0.5 # [0.0, 1.0] but should be more than height_logits_learning_start_fraction
+    init_tau = 1.0 # [0.0, 1.0] needs to be more than final_tau
+    final_tau = 0.01 # [0.0, 1.0] needs to be less than init_tau
+
     layer_height = 0.04
     max_layers = 75
     min_layers = 0
     background_height = 0.4
     background_color = "#000000"
     output_size = 128
-    init_tau = 1.0
-    final_tau = 0.01
     visualize = False
     stl_output_size = 200
     perform_pruning = True
@@ -52,11 +57,18 @@ class Config:
     tensorboard = False
 
 
-def main(input_image, csv_file, init_method, cluster_layers, lab_space):
-    # Create config object using default values
+def main(input_image, csv_file, warmup, h_start, h_full, tau_init, tau_final):
+    # Create config object using default values and override with given hyperparameters.
     args = Config()
     args.input_image = input_image
     args.csv_file = csv_file
+
+    # Set the hyperparameters for the grid search.
+    args.warmup_fraction = warmup
+    args.height_logits_learning_start_fraction = h_start
+    args.height_logits_learning_full_fraction = h_full
+    args.init_tau = tau_init
+    args.final_tau = tau_final
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -128,9 +140,9 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
         args.layer_height,
         bgr_tuple,
         random_seed=random_seed,
-        init_method=init_method,
-        cluster_layers=cluster_layers,
-        lab_space=lab_space,
+        init_method="kmeans",
+        cluster_layers=20,
+        lab_space=False,
         num_threads=8,
     )
 
@@ -186,47 +198,41 @@ def main(input_image, csv_file, init_method, cluster_layers, lab_space):
     return mse_loss.item()
 
 
-def main_suppressed(input_image, csv_file, init_method, cluster_layers, lab_space):
+def main_suppressed(input_image, csv_file, warmup, h_start, h_full, tau_init, tau_final):
     with open(os.devnull, "w") as fnull:
         with redirect_stdout(fnull), redirect_stderr(fnull):
-            result = main(input_image, csv_file, init_method, cluster_layers, lab_space)
+            result = main(input_image, csv_file, warmup, h_start, h_full, tau_init, tau_final)
     return result
 
 
 if __name__ == "__main__":
     folder = "../../../images/test_images/"
     csv_file = "../../../bambulab.csv"
-    images = [folder + "/" + img for img in os.listdir(folder) if img.endswith(".jpg")]
+    images = [os.path.join(folder, img) for img in os.listdir(folder) if img.endswith(".jpg")]
+    fixed_lr = 1e-1
     parallel_limit = 10
-    methods = [
-        "kmeans",
-        "quantize_median",
-        "quantize_maxcoverage",
-        "quantize_fastoctree",
-    ]
-    max_layers = 75
-    cluster_layers = [
-        max_layers // 4,
-        max_layers // 2,
-        max_layers,
-        max_layers * 2,
-        max_layers * 4,
-    ]
-    use_lab_space = [True, False]
 
-    # test every permutation using itertools
+    # Define grid search parameters
+    warmup_values = np.linspace(0, 1, 5)  # 5 values for warmup_fraction
+    height_values = np.linspace(0, 1, 5)  # 5 values for height fractions
+    tau_values = np.linspace(0, 1, 5)     # 5 values for tau
+
+    # Build valid pairs for height fractions (start < full)
+    height_pairs = [(hs, hf) for hs in height_values for hf in height_values if hs < hf]
+    # Build valid pairs for tau (init_tau > final_tau)
+    tau_pairs = [(ti, tf) for ti in tau_values for tf in tau_values if ti > tf]
+
+    # Create grid: warmup x height_pairs x tau_pairs = 5 * 10 * 10 = 500 combinations
     from itertools import product
+    hyperparam_grid = list(product(warmup_values, height_pairs, tau_pairs))
+    print(f"Total hyperparameter combinations: {len(hyperparam_grid)}")
 
     out_dict = {}
-    do_list = list(product(methods, cluster_layers, use_lab_space))
-    shuffle(do_list)
-
-    for i, (method, cluster, lab) in enumerate(do_list):
+    # Loop over each hyperparameter combination
+    for idx, (warmup, (h_start, h_full), (tau_init, tau_final)) in enumerate(hyperparam_grid):
         try:
-            out_dict_str = f"{method}_{cluster}_{lab}"
-            print(
-                f"Running {method} with {cluster} clusters and lab={lab}, {i + 1}/{len(do_list)}"
-            )
+            out_dict_str = f"w={warmup}_height_start={h_start}_height_full={h_full}_tau_init={tau_init}_tau_final={tau_final}"
+            print(f"Running {idx+1}/{len(hyperparam_grid)}: {out_dict_str}")
             exec = ProcessPoolExecutor(max_workers=parallel_limit)
             tlist = []
             for img in images:
@@ -236,9 +242,11 @@ if __name__ == "__main__":
                             main_suppressed,
                             img,
                             csv_file,
-                            method,
-                            cluster,
-                            lab,
+                            warmup,
+                            h_start,
+                            h_full,
+                            tau_init,
+                            tau_final,
                         )
                     )
             for t in tqdm(concurrent.futures.as_completed(tlist), total=len(tlist)):
