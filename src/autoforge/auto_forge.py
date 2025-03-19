@@ -46,15 +46,28 @@ def main():
     )
 
     parser.add_argument(
-        "--warmup_fraction", type=float, default=0.1, help="Fraction of iterations for keeping the tau at the initial value"
+        "--warmup_fraction", type=float, default=1.0, help="Fraction of iterations for keeping the tau at the initial value"
     )
+    #
+    # parser.add_argument(
+    #     "--height_logits_learning_start_fraction", type=float, default=0.75, help="Fraction of iterations at which we start to learn the height map"
+    # )
+    #
+    # parser.add_argument(
+    #     "--height_logits_learning_full_fraction", type=float, default=1.0, help="Fraction of iterations at which the height map learning is fully enabled"
+    # )
 
     parser.add_argument(
-        "--height_logits_learning_start_fraction", type=float, default=0.1, help="Fraction of iterations at which we start to learn the height map"
+        "--init_tau",
+        type=float,
+        default=1.0,
+        help="Initial tau value for Gumbel-Softmax",
     )
-
     parser.add_argument(
-        "--height_logits_learning_full_fraction", type=float, default=0.5, help="Fraction of iterations at which the height map learning is fully enabled"
+        "--final_tau",
+        type=float,
+        default=0.01,
+        help="Final tau value for Gumbel-Softmax",
     )
 
     parser.add_argument(
@@ -85,18 +98,7 @@ def main():
         "--background_color", type=str, default="#000000", help="Background color"
     )
 
-    parser.add_argument(
-        "--init_tau",
-        type=float,
-        default=1.0,
-        help="Initial tau value for Gumbel-Softmax",
-    )
-    parser.add_argument(
-        "--final_tau",
-        type=float,
-        default=0.01,
-        help="Final tau value for Gumbel-Softmax",
-    )
+
 
     parser.add_argument(
         "--visualize",
