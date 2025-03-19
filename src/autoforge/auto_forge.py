@@ -46,7 +46,10 @@ def main():
     )
 
     parser.add_argument(
-        "--warmup_fraction", type=float, default=1.0, help="Fraction of iterations for keeping the tau at the initial value"
+        "--warmup_fraction",
+        type=float,
+        default=1.0,
+        help="Fraction of iterations for keeping the tau at the initial value",
     )
     #
     # parser.add_argument(
@@ -97,8 +100,6 @@ def main():
     parser.add_argument(
         "--background_color", type=str, default="#000000", help="Background color"
     )
-
-
 
     parser.add_argument(
         "--visualize",

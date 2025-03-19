@@ -68,7 +68,7 @@ def compute_loss(
         dy = torch.abs(pixel_height_logits[1:, :] - pixel_height_logits[:-1, :])
         loss_dx = torch.mean(F.huber_loss(dx * weight_x, torch.zeros_like(dx)))
         loss_dy = torch.mean(F.huber_loss(dy * weight_y, torch.zeros_like(dy)))
-        smoothness_loss = (loss_dx + loss_dy) * (40 * add_penalty_loss)
+        smoothness_loss = (loss_dx + loss_dy) * (10 * add_penalty_loss)
 
         # Additional patch-based smoothness loss (using a 3x3 Laplacian):
         laplacian_kernel = (
