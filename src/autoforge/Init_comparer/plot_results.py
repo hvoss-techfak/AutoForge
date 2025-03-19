@@ -14,10 +14,12 @@ for key, values in data.items():
     arr = np.array(values)
     mean_val = np.mean(arr)
     std_val = np.std(arr)
+    #key is formatted as lr=float, we need to extract the float value and round it to 4 decimal values
+    key = round(float(key.split("=")[1]), 5)
     stats.append((key, mean_val, std_val, arr))
 
 # Sort the list of tuples based on the mean (ascending order)
-stats.sort(key=lambda x: x[1])
+#stats.sort(key=lambda x: x[1])
 
 # Extract sorted lists of keys, means, stds, and store the sorted arrays in a dictionary
 sorted_keys = [item[0] for item in stats]
@@ -81,6 +83,7 @@ significant_pairs.sort(key=lambda x: x[0])
 used_bars = set()
 base_margin = max(means) * 0.05  # margin above the error bars
 
+significant_pairs = []
 for p_value, i, j in significant_pairs:
     # If either bar is already annotated, skip this pair.
     if i in used_bars or j in used_bars:

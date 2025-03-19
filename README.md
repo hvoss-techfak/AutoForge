@@ -80,10 +80,10 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 
 - `--output_folder` Folder where output files will be saved (default: `output`).
 - `--iterations` Number of optimization iterations (default: 5000).
-- `--learning_rate` Learning rate for optimization (default: 1e-2).
+- `--learning_rate` Learning rate for optimization (default: 0.015).
 - `--layer_height` Layer thickness in millimeters (default: 0.04).
-- `--max_layers` Maximum number of layers (default: 50).  
-  **Note:** This is about 2mm + the background height
+- `--max_layers` Maximum number of layers (default: 75).  
+  **Note:** This is about 3mm + the background height
 - `--background_height` Height of the background in millimeters (default: 0.4).  
   **Note:** The background height must be divisible by the layer height.
 - `--background_color` Background color in hexadecimal format (default: `#000000` aka Black).  

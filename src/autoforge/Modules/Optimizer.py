@@ -95,7 +95,7 @@ class FilamentOptimizer:
 
         # Tau schedule
         self.num_steps_done = 0
-        self.warmup_steps = args.iterations // 10
+        self.warmup_steps = args.warmup_fraction * args.iterations
         self.decay_rate = (self.init_tau - self.final_tau) / (
             args.iterations - self.warmup_steps
         )
@@ -197,6 +197,18 @@ class FilamentOptimizer:
                 / (self.args.iterations // 5),
             )
 
+        start_fraction = self.args.height_logits_learning_start_fraction
+        full_fraction = self.args.height_logits_learning_full_fraction
+
+        total_iters = self.args.iterations
+        current_step = self.num_steps_done
+        if current_step < start_fraction * total_iters:
+            scaling = 0.0
+        elif current_step < full_fraction * total_iters:
+            scaling = (current_step - start_fraction * total_iters) / ((full_fraction - start_fraction) * total_iters)
+        else:
+            scaling = 1.0
+
         loss = loss_fn(
             self.params,
             target=self.target,
@@ -208,10 +220,17 @@ class FilamentOptimizer:
             material_TDs=self.material_TDs,
             background=self.background,
             perception_loss_module=self.perception_loss_module,
-            add_penalty_loss=penalty_loss,
+            add_penalty_loss=scaling,
         )
 
         loss.backward()
+
+        # We scale the gradients for the height logits by a factor of 'scaling' to force no updates in the beginning
+        # and allow stronger and stronger updates as we go along.
+        if self.params["pixel_height_logits"].grad is not None:
+            self.params["pixel_height_logits"].grad.mul_(scaling)
+
+
         self.optimizer.step()
 
         self.num_steps_done += 1

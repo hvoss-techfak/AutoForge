@@ -46,9 +46,21 @@ def main():
     )
 
     parser.add_argument(
+        "--warmup_fraction", type=float, default=0.1, help="Fraction of iterations for keeping the tau at the initial value"
+    )
+
+    parser.add_argument(
+        "--height_logits_learning_start_fraction", type=float, default=0.1, help="Fraction of iterations at which we start to learn the height map"
+    )
+
+    parser.add_argument(
+        "--height_logits_learning_full_fraction", type=float, default=0.5, help="Fraction of iterations at which the height map learning is fully enabled"
+    )
+
+    parser.add_argument(
         "--learning_rate",
         type=float,
-        default=1e-2,
+        default=0.015,
         help="Learning rate for optimization",
     )
     parser.add_argument(
