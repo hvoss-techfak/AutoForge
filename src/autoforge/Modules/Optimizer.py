@@ -129,7 +129,7 @@ class FilamentOptimizer:
             [0.229, 0.224, 0.225],
         )
         focus_maps = []
-        for _ in tqdm(range(4), desc="Creating loss function attention map..."):
+        for _ in tqdm(range(1), desc="Creating loss function attention map..."):
             out = cam_model(target_preprocessed.unsqueeze(0))
             # ScoreCAM returns a dict with keys corresponding to layers.
             focus_map = cam_extractor(out.squeeze(0).argmax().item(), out)[0]
@@ -138,8 +138,9 @@ class FilamentOptimizer:
                 focus_map.max() - focus_map.min() + 1e-8
             )
             focus_maps.append(focus_map)
-        # get median
-        self.focus_map = torch.stack(focus_maps).median(dim=0)[0]
+        # get maximum over all maps
+        self.focus_map = torch.stack(focus_maps)
+        self.focus_map = self.focus_map.max(dim=0)[0]
         # normalize again
         self.focus_map = (self.focus_map - self.focus_map.min()) / (
             self.focus_map.max() - self.focus_map.min() + 1e-8
@@ -519,6 +520,7 @@ class FilamentOptimizer:
         max_swaps_allowed: int,
         min_layers_allowed: int,
         max_layers_allowed: int,
+        search_seed: bool = True,
     ):
         # Now run pruning
         from autoforge.Helper.PruningHelper import (
@@ -539,19 +541,22 @@ class FilamentOptimizer:
             self.final_tau,
             None,
         )
-        self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
+        if search_seed:
+            self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
         prune_num_swaps(
             self,
             max_swaps_allowed,
             self.final_tau,
             None,
         )
-        self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
+        if search_seed:
+            self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
 
         # prune_fireflies(self)
 
         prune_redundant_layers(self, None, min_layers_allowed, max_layers_allowed)
-        self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
+        if search_seed:
+            self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
 
     def _maybe_update_best_discrete(self):
         """

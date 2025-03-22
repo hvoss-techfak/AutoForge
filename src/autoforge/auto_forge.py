@@ -134,6 +134,12 @@ def main():
         help="Perform pruning after optimization",
     )
     parser.add_argument(
+        "--pruning_rounds",
+        type=int,
+        default=2,
+        help="Number of pruning rounds to perform",
+    )
+    parser.add_argument(
         "--pruning_max_colors",
         type=int,
         default=100,
@@ -360,15 +366,20 @@ def main():
     )
 
     if args.perform_pruning:
-        optimizer.prune(
-            max_colors_allowed=args.pruning_max_colors,
-            max_swaps_allowed=args.pruning_max_swaps,
-            min_layers_allowed=args.min_layers,
-            max_layers_allowed=args.pruning_max_layer,
-        )
-        optimizer.log_to_tensorboard(
-            interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
-        )
+        for i in range(args.pruning_rounds):
+            print(f"Pruning round {i + 1}/{args.pruning_rounds}:")
+            optimizer.prune(
+                max_colors_allowed=args.pruning_max_colors,
+                max_swaps_allowed=args.pruning_max_swaps,
+                min_layers_allowed=args.min_layers,
+                max_layers_allowed=args.pruning_max_layer,
+                search_seed=True if i == 0 else False,
+            )
+            optimizer.log_to_tensorboard(
+                interval=1,
+                namespace="post_opt",
+                step=(post_opt_step := post_opt_step + 1),
+            )
 
     disc_global, disc_height_image = optimizer.get_discretized_solution(best=True)
 

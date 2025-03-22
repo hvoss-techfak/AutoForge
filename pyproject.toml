@@ -25,7 +25,7 @@ dependencies = [
   "tensorboard",
   "pillow>=11.1.0",
   "shapely>=2.0.7",
-  "trimesh>=4.6.4"
+  "trimesh>=4.6.4",
 ]
 
 [tool.setuptools]
