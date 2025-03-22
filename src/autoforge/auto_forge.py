@@ -302,7 +302,7 @@ def main():
             args.layer_height,
             bgr_tuple,
             random_seed=random_seed,
-            num_threads=1,
+            num_threads=16,
             init_method="kmeans",
             cluster_layers=18,
             lab_space=True,
@@ -359,7 +359,7 @@ def main():
         interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
     )
 
-    if args.perform_pruning and False:
+    if args.perform_pruning:
         optimizer.prune(
             max_colors_allowed=args.pruning_max_colors,
             max_swaps_allowed=args.pruning_max_swaps,
