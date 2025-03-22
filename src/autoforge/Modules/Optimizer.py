@@ -5,6 +5,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
+from torchcam.methods import SmoothGradCAMpp
+from torchcam.utils import overlay_mask
+from torchvision import models
+from torchvision.models import ResNet18_Weights
+from torchvision.transforms._functional_tensor import resize, normalize
+from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
 
 from autoforge.Helper.CAdamW import CAdamW
@@ -95,7 +101,9 @@ class FilamentOptimizer:
 
         # Tau schedule
         self.num_steps_done = 0
-        self.warmup_steps = min(args.iterations-1,args.warmup_fraction * args.iterations)
+        self.warmup_steps = min(
+            args.iterations - 1, args.warmup_fraction * args.iterations
+        )
         self.decay_rate = (self.init_tau - self.final_tau) / (
             args.iterations - self.warmup_steps
         )
@@ -104,6 +112,48 @@ class FilamentOptimizer:
         self.optimizer = CAdamW(
             [self.params["global_logits"], self.params["pixel_height_logits"]],
             lr=self.learning_rate,
+        )
+
+        # Setup the focus map component
+        # Load a state-of-the-art ResNet50 model with pretrained weights.
+        cam_model = models.resnet18(weights=ResNet18_Weights.DEFAULT).to(
+            self.target.device
+        )
+        cam_model.eval()
+        # Use ScoreCAM from torchcam on the 'layer4' block.
+        cam_extractor = SmoothGradCAMpp(cam_model, target_layer="layer4")
+        # Preprocess the target image for ResNet50.
+        target_preprocessed = normalize(
+            resize(self.target.permute(2, 0, 1), (224, 224)) / 255.0,
+            [0.485, 0.456, 0.406],
+            [0.229, 0.224, 0.225],
+        )
+        focus_maps = []
+        for _ in tqdm(range(4), desc="Creating loss function attention map..."):
+            out = cam_model(target_preprocessed.unsqueeze(0))
+            # ScoreCAM returns a dict with keys corresponding to layers.
+            focus_map = cam_extractor(out.squeeze(0).argmax().item(), out)[0]
+            # Normalize the focus map to [0, 1]
+            focus_map = (focus_map - focus_map.min()) / (
+                focus_map.max() - focus_map.min() + 1e-8
+            )
+            focus_maps.append(focus_map)
+        # get median
+        self.focus_map = torch.stack(focus_maps).median(dim=0)[0]
+        # normalize again
+        self.focus_map = (self.focus_map - self.focus_map.min()) / (
+            self.focus_map.max() - self.focus_map.min() + 1e-8
+        )
+
+        # resize back to target size, current dim is [1,h,w]
+        self.focus_map = (
+            torch.nn.functional.interpolate(
+                self.focus_map.unsqueeze(0),
+                (self.H, self.W),
+                mode="bilinear",
+            )
+            .squeeze(0)
+            .squeeze(0)
         )
 
         # Setup best discrete solution tracking
@@ -137,17 +187,24 @@ class FilamentOptimizer:
             self.depth_map_ax = self.ax[1, 0].imshow(
                 np.zeros((self.H, self.W), dtype=np.uint8), cmap="viridis"
             )
-            self.ax[1, 0].set_title("Current Depth Map")
+            self.ax[1, 0].set_title("Current Height Map")
 
             self.diff_depth_map_ax = self.ax[1, 1].imshow(
                 np.zeros((self.H, self.W), dtype=np.uint8), cmap="viridis"
             )
-            self.ax[1, 1].set_title("Depth Map Difference")
+            self.ax[1, 1].set_title("Height Map Changes")
 
-            self.disc_depth_map_ax = self.ax[1, 2].imshow(
-                np.zeros((self.H, self.W), dtype=np.uint8), cmap="viridis"
+            target_vis = self.target.cpu().detach().numpy()
+            focus_vis = self.focus_map.cpu().detach().numpy()
+
+            overlay = overlay_mask(
+                to_pil_image(target_vis),
+                to_pil_image(focus_vis, mode="F"),
+                alpha=0.5,
             )
-            self.ax[1, 2].set_title("Discrete Depth Map")
+
+            self.focus_map_ax = self.ax[1, 2].imshow(overlay)
+            self.ax[1, 2].set_title("Image Focus Map (currently unused)")
 
             # Compute and store the initial height map for later difference computation.
             with torch.no_grad():
@@ -188,17 +245,8 @@ class FilamentOptimizer:
 
         tau_height, tau_global = self._get_tau()
 
-        if self.num_steps_done < self.args.iterations // 10:
-            penalty_loss = 0
-        else:
-            penalty_loss = min(
-                1.0,
-                (self.num_steps_done - self.args.iterations // 10)
-                / (self.args.iterations // 5),
-            )
-
-        #start_fraction = self.args.height_logits_learning_start_fraction
-        #full_fraction = self.args.height_logits_learning_full_fraction
+        # start_fraction = self.args.height_logits_learning_start_fraction
+        # full_fraction = self.args.height_logits_learning_full_fraction
 
         # total_iters = self.args.iterations
         # current_step = self.num_steps_done
@@ -219,8 +267,9 @@ class FilamentOptimizer:
             material_colors=self.material_colors,
             material_TDs=self.material_TDs,
             background=self.background,
-            perception_loss_module=self.perception_loss_module,
-            add_penalty_loss=1.0,
+            add_penalty_loss=10.0,
+            focus_map=self.focus_map,
+            focus_strength=0.0,
         )
 
         loss.backward()
@@ -229,7 +278,6 @@ class FilamentOptimizer:
         # and allow stronger and stronger updates as we go along.
         if self.params["pixel_height_logits"].grad is not None:
             self.params["pixel_height_logits"].grad.mul_(1e-8)
-
 
         self.optimizer.step()
 
@@ -348,24 +396,6 @@ class FilamentOptimizer:
                 np.uint8
             )
             self.best_comp_ax.set_data(best_comp_np)
-
-            with torch.no_grad():
-                height_map = (self.max_layers * self.h) * torch.sigmoid(
-                    self.best_params["pixel_height_logits"]
-                )
-                height_map = height_map.cpu().detach().numpy()
-
-            # Normalize safely, checking for a constant image.
-            if np.allclose(height_map.max(), height_map.min()):
-                height_map_norm = np.zeros_like(height_map)
-            else:
-                height_map_norm = (height_map - height_map.min()) / (
-                    height_map.max() - height_map.min()
-                )
-
-            height_map_uint8 = (height_map_norm * 255).astype(np.uint8)
-            self.disc_depth_map_ax.set_data(height_map_uint8)
-            self.disc_depth_map_ax.set_clim(0, 255)
 
         # Update the depth map correctly.
         with torch.no_grad():

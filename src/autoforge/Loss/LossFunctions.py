@@ -15,8 +15,9 @@ def loss_fn(
     material_colors: torch.Tensor,
     material_TDs: torch.Tensor,
     background: torch.Tensor,
-    perception_loss_module: torch.nn.Module,
     add_penalty_loss: float = 0.0,
+    focus_map: torch.Tensor = None,
+    focus_strength: float = 10.0,
 ) -> torch.Tensor:
     """
     Full forward pass for continuous assignment:
@@ -39,6 +40,8 @@ def loss_fn(
         pixel_height_logits=params["pixel_height_logits"],
         tau_height=tau_height,
         add_penalty_loss=add_penalty_loss,
+        focus_map=focus_map,
+        focus_strength=focus_strength,
     )
 
 
@@ -48,6 +51,8 @@ def compute_loss(
     pixel_height_logits: torch.Tensor = None,
     tau_height: float = 1.0,
     add_penalty_loss: float = 0.0,
+    focus_map: torch.Tensor = None,
+    focus_strength: float = 10.0,
 ) -> torch.Tensor:
     """
     Combined MSE + Perceptual + penalty losses with patch-based smoothness.
@@ -55,7 +60,21 @@ def compute_loss(
     # MSE Loss
     comp_mse = srgb_to_lab(comp)
     target_mse = srgb_to_lab(target)
-    mse_loss = F.huber_loss(comp_mse, target_mse)
+
+    if focus_map is not None and focus_strength > 0.0:
+        # Expand focus_map to [H, W, 1] to match the color channels.
+        focus_map_exp = focus_map.unsqueeze(-1)
+        base_loss = F.huber_loss(comp_mse, target_mse, reduction="none")
+        # we need to sum up to a maximum of one, so normalize based on strength
+        min_strength = 1 / focus_strength
+        max_strength = 1 - min_strength
+        # focus map is normalized between 0 and 1
+        normalized_focus = min_strength + focus_map_exp * max_strength
+        weighted_loss = base_loss * normalized_focus
+
+        mse_loss = weighted_loss.mean()
+    else:
+        mse_loss = F.huber_loss(comp_mse, target_mse)
 
     if pixel_height_logits is not None:
         # Existing neighbor-based smoothness loss:
@@ -68,7 +87,7 @@ def compute_loss(
         dy = torch.abs(pixel_height_logits[1:, :] - pixel_height_logits[:-1, :])
         loss_dx = torch.mean(F.huber_loss(dx * weight_x, torch.zeros_like(dx)))
         loss_dy = torch.mean(F.huber_loss(dy * weight_y, torch.zeros_like(dy)))
-        smoothness_loss = (loss_dx + loss_dy) * (10 * add_penalty_loss)
+        smoothness_loss = (loss_dx + loss_dy) * add_penalty_loss
 
         # Additional patch-based smoothness loss (using a 3x3 Laplacian):
         laplacian_kernel = (
@@ -82,8 +101,8 @@ def compute_loss(
         )
         height_map = pixel_height_logits.unsqueeze(0).unsqueeze(0)
         laplacian_output = F.conv2d(height_map, laplacian_kernel, padding=1)
-        patch_smooth_loss = (
-            F.huber_loss(laplacian_output, torch.zeros_like(laplacian_output)) * 10
+        patch_smooth_loss = F.huber_loss(
+            laplacian_output, torch.zeros_like(laplacian_output)
         )
         total_loss = mse_loss + smoothness_loss + add_penalty_loss * patch_smooth_loss
     else:

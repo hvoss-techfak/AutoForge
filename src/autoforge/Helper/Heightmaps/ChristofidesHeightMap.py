@@ -1,5 +1,4 @@
 import concurrent.futures
-import os
 import random
 from concurrent.futures import ThreadPoolExecutor
 
@@ -482,7 +481,7 @@ def run_init_threads(
 ):
     if random_seed is None:
         random_seed = np.random.randint(1e6)
-    exec = ThreadPoolExecutor(max_workers=os.cpu_count())
+    exec = ThreadPoolExecutor(max_workers=2)
     futures = []
     for i in range(num_threads):
         futures.append(
