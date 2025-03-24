@@ -26,6 +26,7 @@ dependencies = [
   "pillow>=11.1.0",
   "shapely>=2.0.7",
   "trimesh>=4.6.4",
+  "torchcam>=0.4.0",
 ]
 
 [tool.setuptools]
