@@ -275,8 +275,7 @@ class FilamentOptimizer:
 
         loss.backward()
 
-        # We scale the gradients for the height logits by a factor of 'scaling' to force no updates in the beginning
-        # and allow stronger and stronger updates as we go along.
+        # We scale the gradients for the height logits by a factor to only allow updates for very strong (wrong layer/color) gradients.
         if self.params["pixel_height_logits"].grad is not None:
             self.params["pixel_height_logits"].grad.mul_(1e-8)
 

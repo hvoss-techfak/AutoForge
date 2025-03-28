@@ -217,6 +217,18 @@ def main():
     parser.add_argument(
         "--tensorboard", action="store_true", help="Enable TensorBoard logging"
     )
+    parser.add_argument(
+        "--num_init_rounds",
+        type=int,
+        default=64,
+        help="Number of rounds to choose the starting height map from.",
+    )
+    parser.add_argument(
+        "--num_init_cluster_layers",
+        type=int,
+        default=18,
+        help="Number of layers to cluster the image into.",
+    )
 
     args = parser.parse_args()
 
@@ -308,9 +320,9 @@ def main():
             args.layer_height,
             bgr_tuple,
             random_seed=random_seed,
-            num_threads=16,
+            num_threads=args.num_init_rounds,
             init_method="kmeans",
-            cluster_layers=18,
+            cluster_layers=args.num_init_cluster_layers,
             lab_space=True,
         )
 

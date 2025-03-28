@@ -1,14 +1,13 @@
-import concurrent.futures
+import os
 import random
-from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from PIL import Image
 from PIL.Image import Quantize
+from joblib import Parallel, delayed
 from scipy.spatial.distance import cdist
 from skimage.color import rgb2lab
 from sklearn.cluster import MiniBatchKMeans
-from tqdm import tqdm
 
 
 def build_distance_matrix(labs, nodes):
@@ -470,7 +469,7 @@ def init_height_map(
 def run_init_threads(
     target,
     max_layers,
-    h,  # unused here but preserved for API compatibility
+    h,  # unused but preserved for API compatibility
     background_tuple,
     eps=1e-6,
     random_seed=None,
@@ -481,33 +480,33 @@ def run_init_threads(
 ):
     if random_seed is None:
         random_seed = np.random.randint(1e6)
-    exec = ThreadPoolExecutor(max_workers=2)
-    futures = []
-    for i in range(num_threads):
-        futures.append(
-            exec.submit(
-                init_height_map,
-                target,
-                max_layers,
-                h,
-                background_tuple,
-                eps,
-                random_seed + i,
-                init_method=init_method,
-                cluster_layers=cluster_layers,
-                lab_space=lab_space,
-            )
-        )
-    results = [
-        f.result()
-        for f in tqdm(
-            concurrent.futures.as_completed(futures),
-            desc="Running Height Map Initialization Threads",
-            total=num_threads,
-        )
-    ]
-    # print(f"metric values: {[r[1] for r in results]}")
-    # get lowest ordering metric
-    best_result = min(results, key=lambda x: x[1])
 
+    tasks = [
+        delayed(init_height_map)(
+            target,
+            max_layers,
+            h,
+            background_tuple,
+            eps,
+            random_seed + i,
+            init_method=init_method,
+            cluster_layers=cluster_layers,
+            lab_space=lab_space,
+        )
+        for i in range(num_threads)
+    ]
+
+    # Execute tasks in parallel; adjust n_jobs to match your available cores
+    results = Parallel(n_jobs=os.cpu_count(), verbose=10)(tasks)
+
+    metrics = [r[1] for r in results]
+    mean_metric = np.mean(metrics)
+    std_metric = np.std(metrics)
+    min_metric = np.min(metrics)
+    max_metric = np.max(metrics)
+    print(
+        f"mean: {mean_metric}, std: {std_metric}, min: {min_metric}, max: {max_metric}"
+    )
+    print(f"Choosing best ordering with metric: {min_metric}")
+    best_result = min(results, key=lambda x: x[1])
     return best_result[0]

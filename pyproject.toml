@@ -27,6 +27,7 @@ dependencies = [
   "shapely>=2.0.7",
   "trimesh>=4.6.4",
   "torchcam>=0.4.0",
+  "joblib>=1.4.2"
 ]
 
 [tool.setuptools]
