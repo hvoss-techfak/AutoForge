@@ -51,6 +51,12 @@ def main():
         default=1.0,
         help="Fraction of iterations for keeping the tau at the initial value",
     )
+    parser.add_argument(
+        "--learning_rate_warmup_fraction",
+        type=float,
+        default=0.25,
+        help="Fraction of iterations that the learning rate is increasing (warmup)",
+    )
     #
     # parser.add_argument(
     #     "--height_logits_learning_start_fraction", type=float, default=0.75, help="Fraction of iterations at which we start to learn the height map"
@@ -132,12 +138,6 @@ def main():
         type=bool,
         default=True,
         help="Perform pruning after optimization",
-    )
-    parser.add_argument(
-        "--pruning_rounds",
-        type=int,
-        default=2,
-        help="Number of pruning rounds to perform",
     )
     parser.add_argument(
         "--pruning_max_colors",
@@ -226,11 +226,13 @@ def main():
     parser.add_argument(
         "--num_init_cluster_layers",
         type=int,
-        default=18,
+        default=-1,
         help="Number of layers to cluster the image into.",
     )
 
     args = parser.parse_args()
+    if args.num_init_cluster_layers == -1:
+        args.num_init_cluster_layers = args.max_layers // 2
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -299,6 +301,7 @@ def main():
     output_img_np = resize_image(img, computed_output_size)
     output_target = torch.tensor(output_img_np, dtype=torch.float32, device=device)
 
+    global_logits_init = None
     # Initialize pixel_height_logits from the large (final) image
     if args.use_depth_anything_height_initialization:
         pixel_height_logits_init = init_height_map_depth_color_adjusted(
@@ -314,7 +317,7 @@ def main():
     else:
         print("Initalizing height map. This can take a moment...")
         # Default initialization
-        pixel_height_logits_init = run_init_threads(
+        pixel_height_logits_init, global_logits_init = run_init_threads(
             output_img_np,
             args.max_layers,
             args.layer_height,
@@ -323,7 +326,7 @@ def main():
             num_threads=args.num_init_rounds,
             init_method="kmeans",
             cluster_layers=args.num_init_cluster_layers,
-            lab_space=True,
+            material_colors=material_colors_np,
         )
 
     # if we have an alpha mask we set the height for those pixels to -13.815512 (the lowest init sigmoid value)
@@ -340,6 +343,7 @@ def main():
         args=args,
         target=output_target,
         pixel_height_logits_init=pixel_height_logits_init,
+        global_logits_init=global_logits_init,
         material_colors=material_colors,
         material_TDs=material_TDs,
         background=background,
@@ -378,20 +382,18 @@ def main():
     )
 
     if args.perform_pruning:
-        for i in range(args.pruning_rounds):
-            print(f"Pruning round {i + 1}/{args.pruning_rounds}:")
-            optimizer.prune(
-                max_colors_allowed=args.pruning_max_colors,
-                max_swaps_allowed=args.pruning_max_swaps,
-                min_layers_allowed=args.min_layers,
-                max_layers_allowed=args.pruning_max_layer,
-                search_seed=True if i == 0 else False,
-            )
-            optimizer.log_to_tensorboard(
-                interval=1,
-                namespace="post_opt",
-                step=(post_opt_step := post_opt_step + 1),
-            )
+        optimizer.prune(
+            max_colors_allowed=args.pruning_max_colors,
+            max_swaps_allowed=args.pruning_max_swaps,
+            min_layers_allowed=args.min_layers,
+            max_layers_allowed=args.pruning_max_layer,
+            search_seed=True if i == 0 else False,
+        )
+        optimizer.log_to_tensorboard(
+            interval=1,
+            namespace="post_opt",
+            step=(post_opt_step := post_opt_step + 1),
+        )
 
     disc_global, disc_height_image = optimizer.get_discretized_solution(best=True)
 

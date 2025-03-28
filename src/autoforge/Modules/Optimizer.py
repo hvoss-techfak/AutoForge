@@ -28,6 +28,7 @@ class FilamentOptimizer:
         args: argparse.Namespace,
         target: torch.Tensor,
         pixel_height_logits_init: np.ndarray,
+        global_logits_init: np.ndarray,
         material_colors: torch.Tensor,
         material_TDs: torch.Tensor,
         background: torch.Tensor,
@@ -78,18 +79,22 @@ class FilamentOptimizer:
         else:
             self.writer = None
 
-        # We have an initial guess for 'global_logits'
-        num_materials = material_colors.shape[0]
-        global_logits_init = (
-            torch.ones(
-                (self.max_layers, num_materials), dtype=torch.float32, device=device
+        if global_logits_init is None:
+            # We have an initial guess for 'global_logits'
+            num_materials = material_colors.shape[0]
+            global_logits_init = (
+                torch.ones(
+                    (self.max_layers, num_materials), dtype=torch.float32, device=device
+                )
+                * -1.0
             )
-            * -1.0
-        )
-        for i in range(self.max_layers):
-            global_logits_init[i, i % num_materials] = 1.0
+            for i in range(self.max_layers):
+                global_logits_init[i, i % num_materials] = 1.0
 
-        global_logits_init += torch.rand_like(global_logits_init) * 0.2 - 0.1
+            global_logits_init += torch.rand_like(global_logits_init) * 0.2 - 0.1
+        global_logits_init = torch.from_numpy(global_logits_init).to(
+            dtype=torch.float32, device=device
+        )
         global_logits_init.requires_grad_(True)
 
         self.loss = None
@@ -244,6 +249,16 @@ class FilamentOptimizer:
         """
         self.optimizer.zero_grad()
 
+        warmup_steps = int(
+            self.args.iteration * self.args.learning_rate_warmup_fraction
+        )
+
+        for g in self.optimizer.param_groups:
+            g["lr"] = min(
+                self.learning_rate,
+                max(1e-9, (warmup_steps * self.num_steps_done) * self.learning_rate),
+            )
+
         tau_height, tau_global = self._get_tau()
 
         # start_fraction = self.args.height_logits_learning_start_fraction
@@ -276,8 +291,11 @@ class FilamentOptimizer:
         loss.backward()
 
         # We scale the gradients for the height logits by a factor to only allow updates for very strong (wrong layer/color) gradients.
-        if self.params["pixel_height_logits"].grad is not None:
-            self.params["pixel_height_logits"].grad.mul_(1e-8)
+        # if (
+        #     self.params["pixel_height_logits"].grad is not None
+        #     and self.num_steps_done < 100
+        # ):
+        #     self.params["pixel_height_logits"].grad.mul_(1e-8)
 
         self.optimizer.step()
 
@@ -418,16 +436,16 @@ class FilamentOptimizer:
 
         # Compute and update the difference depth map (current - initial)
         diff_map = height_map - self.initial_height_map
+        print(diff_map.min(), diff_map.max())
         # Normalize the difference map safely.
-        if np.allclose(diff_map.max(), diff_map.min()):
-            diff_map_norm = np.zeros_like(diff_map)
-        else:
-            diff_map_norm = (diff_map - diff_map.min()) / (
-                diff_map.max() - diff_map.min()
-            )
-        diff_map_uint8 = (diff_map_norm * 255).astype(np.uint8)
-        self.diff_depth_map_ax.set_data(diff_map_uint8)
-        self.diff_depth_map_ax.set_clim(0, 255)
+        # if np.allclose(diff_map.max(), diff_map.min()):
+        #     diff_map_norm = np.zeros_like(diff_map)
+        # else:
+        #     diff_map_norm = (diff_map - diff_map.min()) / (
+        #         diff_map.max() - diff_map.min()
+        #     )
+        self.diff_depth_map_ax.set_data(diff_map)
+        self.diff_depth_map_ax.set_clim(-2.5, 2.5)
 
         self.fig.suptitle(
             f"Step {self.num_steps_done}, Tau: {tau_g:.4f}, Loss: {self.loss:.4f}, Best Discrete Loss: {self.best_discrete_loss:.4f}"

@@ -321,6 +321,23 @@ def compute_ordering_metric(ordering, labs):
 
 
 # --- Revised init_height_map with Optimizations ---
+def interpolate_arrays(value_array_pairs, num_points):
+    # Sort pairs by the value (first element in each pair)
+    value_array_pairs.sort(key=lambda x: x[0])
+
+    values = np.array([pair[0] for pair in value_array_pairs])
+    arrays = np.array([pair[1] for pair in value_array_pairs])
+
+    # Generate the new interpolation positions
+    new_values = np.linspace(values[0], values[-1], num_points)
+
+    # Interpolate each element in the arrays
+    interpolated_arrays = []
+    for i in range(arrays.shape[1]):  # Assuming arrays are 2D or more
+        interpolated_column = np.interp(new_values, values, arrays[:, i])
+        interpolated_arrays.append(interpolated_column)
+
+    return np.stack(interpolated_arrays, axis=1)  # Reconstruct the interpolated array
 
 
 def init_height_map(
@@ -334,6 +351,7 @@ def init_height_map(
     init_method="quantize_maxcoverage",
     cluster_layers=None,
     lab_space=True,
+    material_colors=None,
 ):
     """
     init_method should be one of quantize_median,quantize_maxcoverage,quantize_fastoctree,kmeans
@@ -453,17 +471,53 @@ def init_height_map(
     # Get the ordering via TSP ordering function.
     final_ordering = tsp_order_christofides_path(nodes, labs, bg_cluster, fg_cluster)
 
-    # Optionally prune out outliers.
-    final_ordering = prune_ordering(
-        final_ordering, labs, bg_cluster, fg_cluster, min_length=3, improvement_factor=3
-    )
+    # # Optionally prune out outliers.
+    # final_ordering = prune_ordering(
+    #     final_ordering, labs, bg_cluster, fg_cluster, min_length=3, improvement_factor=3
+    # )
 
     # Create a mapping that covers all clusters.
     new_values = create_mapping(final_ordering, labs, unique_clusters)
     new_labels = np.vectorize(lambda x: new_values[x])(labels).astype(np.float32)
+
     pixel_height_logits = np.log((new_labels + eps) / (1 - new_labels + eps))
     ordering_metric = compute_ordering_metric(final_ordering, labs)
-    return pixel_height_logits, ordering_metric
+
+    global_logits_out = None
+    if material_colors is not None:
+        # Convert material_colors (assumed in [-1, 3]) to normalized [0, 1] for Lab conversion.
+        # Adjust as needed depending on your color convention.
+        # Reshape to (1, num_materials, 3) so that rgb2lab returns shape (1, num_materials, 3)
+        if lab_space:
+            material_lab = rgb2lab(material_colors.reshape(1, -1, 3)).reshape(-1, 3)
+            # Apply the same lab_weights.
+            material_lab[:, 0] *= lab_weights[0]
+            material_lab[:, 1] *= lab_weights[1]
+            material_lab[:, 2] *= lab_weights[2]
+            materials = material_colors
+        else:
+            materials = material_colors
+
+        num_materials = materials.shape[0]
+
+        # Initialize global logits for each cluster in unique_clusters.
+        global_logits = []
+
+        for idx, label in enumerate(unique_clusters):
+            # Use the final mapping value for this cluster.
+            t = new_values[label]
+            # Compute distances from this cluster’s lab value to each material (in Lab space).
+            cluster_lab = labs[label]
+            dists = np.linalg.norm(materials - cluster_lab, axis=1)
+            best_j = np.argmin(dists)
+            out_logit = np.ones(num_materials) * -1.0
+            out_logit[best_j] = 1.0
+            global_logits.append((t, out_logit))
+
+        global_logits = sorted(global_logits, key=lambda x: x[0])
+        global_logits_out = interpolate_arrays(global_logits, max_layers)
+
+    return pixel_height_logits, global_logits_out, ordering_metric
 
 
 def run_init_threads(
@@ -474,13 +528,13 @@ def run_init_threads(
     eps=1e-6,
     random_seed=None,
     num_threads=64,
-    init_method="quantize_maxcoverage",
+    init_method="kmeans",
     cluster_layers=None,
-    lab_space=True,
+    material_colors=None,
 ):
     if random_seed is None:
         random_seed = np.random.randint(1e6)
-
+    lab_space = False
     tasks = [
         delayed(init_height_map)(
             target,
@@ -492,6 +546,7 @@ def run_init_threads(
             init_method=init_method,
             cluster_layers=cluster_layers,
             lab_space=lab_space,
+            material_colors=material_colors,
         )
         for i in range(num_threads)
     ]
@@ -499,7 +554,7 @@ def run_init_threads(
     # Execute tasks in parallel; adjust n_jobs to match your available cores
     results = Parallel(n_jobs=os.cpu_count(), verbose=10)(tasks)
 
-    metrics = [r[1] for r in results]
+    metrics = [r[2] for r in results]
     mean_metric = np.mean(metrics)
     std_metric = np.std(metrics)
     min_metric = np.min(metrics)
@@ -508,5 +563,5 @@ def run_init_threads(
         f"mean: {mean_metric}, std: {std_metric}, min: {min_metric}, max: {max_metric}"
     )
     print(f"Choosing best ordering with metric: {min_metric}")
-    best_result = min(results, key=lambda x: x[1])
-    return best_result[0]
+    best_result = min(results, key=lambda x: x[2])
+    return best_result[0], best_result[1]
