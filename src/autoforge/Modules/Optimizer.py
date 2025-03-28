@@ -250,7 +250,7 @@ class FilamentOptimizer:
         self.optimizer.zero_grad()
 
         warmup_steps = int(
-            self.args.iteration * self.args.learning_rate_warmup_fraction
+            self.args.iterations * self.args.learning_rate_warmup_fraction
         )
 
         for g in self.optimizer.param_groups:
