@@ -436,7 +436,7 @@ class FilamentOptimizer:
 
         # Compute and update the difference depth map (current - initial)
         diff_map = height_map - self.initial_height_map
-        print(diff_map.min(), diff_map.max())
+        # print(diff_map.min(), diff_map.max())
         # Normalize the difference map safely.
         # if np.allclose(diff_map.max(), diff_map.min()):
         #     diff_map_norm = np.zeros_like(diff_map)
