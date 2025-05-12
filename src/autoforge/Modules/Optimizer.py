@@ -115,7 +115,7 @@ class FilamentOptimizer:
 
         # Initialize optimizer
         self.optimizer = CAdamW(
-            [self.params["global_logits"], self.params["pixel_height_logits"]],
+            [self.params["global_logits"]],#, self.params["pixel_height_logits"]],
             lr=self.learning_rate,
         )
 
@@ -291,11 +291,8 @@ class FilamentOptimizer:
         loss.backward()
 
         # We scale the gradients for the height logits by a factor to only allow updates for very strong (wrong layer/color) gradients.
-        # if (
-        #     self.params["pixel_height_logits"].grad is not None
-        #     and self.num_steps_done < 100
-        # ):
-        #     self.params["pixel_height_logits"].grad.mul_(1e-8)
+        if (self.params["pixel_height_logits"].grad is not None):
+            self.params["pixel_height_logits"].grad.mul_(1e-10)
 
         self.optimizer.step()
 

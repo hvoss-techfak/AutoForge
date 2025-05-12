@@ -1,7 +1,5 @@
 import torch
 import torch.nn.functional as F
-import math
-
 
 
 @torch.jit.script
@@ -66,31 +64,6 @@ def deterministic_rand_like(tensor: torch.Tensor, seed: int) -> torch.Tensor:
 
 
 @torch.jit.script
-def _sample_layer_probs(
-    logits: torch.Tensor,        # [L,M]
-    tau: float,
-    rng_seed: int = -1,
-) -> torch.Tensor:               # returns P  [L,M]
-    hard_flag: bool = bool(tau < 1e-3)        # same rule in both paths
-    if rng_seed >= 0:
-        # deterministic Gumbel
-        L, M = logits.shape
-        gumbel = torch.empty_like(logits)
-        eps: float = 1e-20
-        for l in range(L):
-            u = deterministic_rand_like(logits[l], rng_seed + l)
-            g = -torch.log(-torch.log(u + eps) + eps)
-            gumbel[l] = g
-        P = F.softmax((logits + gumbel) / tau, dim=1)
-        if hard_flag:                        # straight-through one-hot
-            idx = torch.argmax(P, dim=1, keepdim=True)
-            P_h = torch.zeros_like(P).scatter_(1, idx, 1.0)
-            P = (P_h - P).detach() + P
-        return P
-    else:
-        return F.gumbel_softmax(logits, tau, hard=hard_flag, dim=1)
-
-@torch.jit.script
 def deterministic_gumbel_softmax(
     logits: torch.Tensor, tau: float, hard: bool, rng_seed: int
 ) -> torch.Tensor:
@@ -107,91 +80,32 @@ def deterministic_gumbel_softmax(
         torch.Tensor: The resulting tensor after applying the Gumbel-Softmax trick.
     """
     eps: float = 1e-20
-    # Instead of torch.rand_like use our deterministic_rand_like.
+    # Instead of torch.rand_like(..., generator=...), use our deterministic_rand_like.
     U = deterministic_rand_like(logits, rng_seed)
-    #compute Gumbel noise.
+    # Compute Gumbel noise.
     gumbel_noise = -torch.log(-torch.log(U + eps) + eps)
     y = (logits + gumbel_noise) / tau
     y_soft = F.softmax(y, dim=-1)
     if hard:
-        #compute one-hot using argmax and scatter.
+        # Compute one-hot using argmax and scatter.
         index = torch.argmax(y_soft, dim=-1, keepdim=True)
         y_hard = torch.zeros_like(y_soft).scatter_(-1, index, 1.0)
-        #use the straight-through estimator.
+        # Use the straight-through estimator.
         y = (y_hard - y_soft).detach() + y_soft
     return y
 
 
-
 @torch.jit.script
-def _srgb_to_linear(c: torch.Tensor) -> torch.Tensor:          # c ∈ [0,1]
-    return torch.where(c <= 0.04045, c / 12.92,
-                       torch.pow((c + 0.055) / 1.055, 2.4))
-
-
-@torch.jit.script
-def _rgb_to_CIELab_L(rgb: torch.Tensor) -> torch.Tensor:       # rgb[...,3]
-    """
-    Return the CIE-L* channel (D65/sRGB).
-    """
-    r = rgb[..., 0]
-    g = rgb[..., 1]
-    b = rgb[..., 2]
-
-    rl = _srgb_to_linear(r)
-    gl = _srgb_to_linear(g)
-    bl = _srgb_to_linear(b)
-
-    # sRGB → XYZ
-    X = rl * 0.4124564 + gl * 0.3575761 + bl * 0.1804375
-    Y = rl * 0.2126729 + gl * 0.7151522 + bl * 0.0721750
-    Z = rl * 0.0193339 + gl * 0.1191920 + bl * 0.9503041
-
-    # Normalise to D65 white
-    X = X / 0.95047
-    Y = Y / 1.0
-    Z = Z / 1.08883
-
-    delta   = 6.0 / 29.0
-    delta3  = delta * delta * delta
-    inv_den = 1.0 / (3.0 * delta * delta)
-
-    fy = torch.where(
-        Y > delta3,
-        torch.pow(Y, 1.0 / 3.0),
-        Y * inv_den + 4.0 / 29.0,
-    )
-
-    L = 116.0 * fy - 16.0
-    return L
-
-
-@torch.jit.script
-def _clamp01_scalar(x: float) -> float:
-    if x < 0.0:
-        return 0.0
-    elif x > 1.0:
-        return 1.0
-    else:
-        return x
-
-@torch.jit.script
-def _clamp01(x: torch.Tensor) -> torch.Tensor:
-    return torch.clamp(x, 0.0, 1.0)
-
-
-@torch.jit.script
-def composite_image_cont(                      # noqa: C901 – keep it flat
-    pixel_height_logits: torch.Tensor,         # [H,W]
-    global_logits: torch.Tensor,               # [max_layers,n_materials]
+def composite_image_cont(
+    pixel_height_logits: torch.Tensor,
+    global_logits: torch.Tensor,
     tau_height: float,
     tau_global: float,
     h: float,
     max_layers: int,
-    material_colors: torch.Tensor,             # [n_materials,3]  sRGB 0-1
-    material_TDs: torch.Tensor,                # [n_materials]
-    background: torch.Tensor,                  # [3]
-    rng_seed: int = -1,
+    material_colors: torch.Tensor,  # [n_materials, 3]
+    material_TDs: torch.Tensor,  # [n_materials]
+    background: torch.Tensor,  # [3]
 ) -> torch.Tensor:
     """
     Continuous compositing over all pixels with learnable layer heights.
@@ -214,146 +128,247 @@ def composite_image_cont(                      # noqa: C901 – keep it flat
     Returns:
         torch.Tensor: Composite image tensor, shape [H, W, 3].
     """
+    # Compute a continuous layer index per pixel
+    pixel_height = (max_layers * h) * torch.sigmoid(pixel_height_logits)
+    continuous_layers = pixel_height / h  # continuous layer assignment
 
-    #layer-wise material choice via Gumbel soft-max
-    hard_flag: bool = bool(tau_global < 1e-3)
-    P = _sample_layer_probs(global_logits, tau_global, rng_seed)   # [L,M]
+    # Global material assignment for each layer using Gumbel softmax
+    hard_flag = tau_global < 1e-3
+    p = F.gumbel_softmax(
+        global_logits, tau_global, hard=hard_flag, dim=1
+    )  # shape [max_layers, n_materials]
 
-    layer_rgb   = torch.matmul(P, material_colors)            # [L,3]
-    layer_thick = torch.matmul(P, material_TDs).clamp_(1e-8)  # [L]
+    # Compute layer colors and transmission parameters for each layer
+    layer_colors = p @ material_colors  # [max_layers, 3]
+    layer_TDs = p @ material_TDs  # [max_layers]
+    layer_TDs.clamp_(1e-8, 1e8)
 
-    #Per-pixel continuous layer index
-    H, W = pixel_height_logits.shape
-    device = pixel_height_logits.device
+    H, W = pixel_height.shape
+    comp = torch.zeros(H, W, 3, dtype=torch.float32, device=pixel_height.device)
+    remaining = torch.ones(H, W, dtype=torch.float32, device=pixel_height.device)
 
-    pixel_height   = (max_layers * h) * torch.sigmoid(pixel_height_logits)
-    continuous_idx = pixel_height / h                         # [H,W]
+    # Opacity function parameters
+    o = -1.2416557e-02
+    A = 9.6407950e-01
+    k = 3.4103447e01
+    b = -4.1554203e00
 
-    # Start with background colour. Set alpha too maybe 0.15
-    comp_rgb   = background.view(1, 1, 3).expand(H, W, 3).clone()
-    comp_alpha = torch.full((H, W), 0.15, dtype=torch.float32, device=device)
+    # Composite layers from top (max_layers-1) down to 0
+    for i in range(max_layers):
+        layer_idx = max_layers - 1 - i
+        # Compute a soft mask for layer contribution.
+        # Using a sigmoid centered at (layer_idx + 0.5) provides a soft threshold.
+        # The scaling factor (e.g., 10 * tau_height) makes the sigmoid nearly binary when tau_height is high.
+        scale = 10 * tau_height
+        p_print = torch.sigmoid(
+            (continuous_layers - (layer_idx + 0.5)) * scale
+        )  # [H, W]
 
-    # color cielab tracker. We currently only use lightness as this makes it a bit easier.
-    L_mean = _rgb_to_CIELab_L(comp_rgb).mean().item()
+        # Compute the effective thickness for this layer per pixel
+        eff_thick = p_print * h
 
-    depth_acc: float = h
+        # Opacity calculation based on effective thickness and material transmission parameter
+        TD_i = layer_TDs[layer_idx]
+        opac = o + (A * torch.log1p(k * (eff_thick / TD_i)) + b * (eff_thick / TD_i))
+        opac = torch.clamp(opac, 0.0, 1.0)
 
-    const_surface_alpha: float = 0.15
+        # Composite the layer's color contribution
+        comp = comp + (remaining * opac).unsqueeze(-1) * layer_colors[layer_idx]
 
-    #front to back
-    for l in range(max_layers):
-        # keep gradients alive
-        scale = tau_height
-        p_print = torch.sigmoid((continuous_idx - (l + 0.5)) * scale)   # [H,W]
+        # Update the remaining light after this layer
+        remaining = remaining * (1.0 - opac)
 
-        #limit absolute coeff. This should probably help with the runaway problem?
-        t = layer_thick[l].item()                     # scalar
-        abs_coeff = t * 0.1 if t > 0.0 else 0.001
+    # Add background contribution
+    comp = comp + remaining.unsqueeze(-1) * background
 
-        L_layer = _rgb_to_CIELab_L(
-            layer_rgb[l].view(1, 1, 3)
-        ).mean().item() * 0.01
-
-        branch_a = (L_mean - L_layer) > 0.0 and (L_layer < 0.5) and (t > 1.0) #quick workaround to limit influence.
-
-        if branch_a:
-            scale_d = max(L_mean / (1.0 - (L_mean - L_layer)), 1.0)
-            scale_d = math.sqrt(scale_d * abs_coeff)
-            atten = depth_acc / scale_d
-        else:
-            atten = depth_acc / abs_coeff
-
-        atten = _clamp01_scalar(atten)
-        mix_coeff = math.sqrt(atten)
-
-        #effective per-pixel mix (scalar × soft mask)
-        eff = mix_coeff * p_print                    # [H,W]
-
-        #over blend
-        lay_rgb = layer_rgb[l].view(1, 1, 3)
-        comp_rgb   = comp_rgb * (1.0 - eff.unsqueeze(-1)) + lay_rgb * eff.unsqueeze(-1)
-        comp_alpha = comp_alpha * (1.0 - eff) + const_surface_alpha * eff
-
-        # Update for next layer
-        L_mean = _rgb_to_CIELab_L(comp_rgb).mean().item()
-        depth_acc += h
-
-    # Return 0-255
-    return comp_rgb * 255.0
+    # Scale output to [0, 255] range
+    return comp * 255.0
 
 
 @torch.jit.script
 def composite_image_disc(
-    pixel_height_logits: torch.Tensor,       # [H,W]
-    global_logits: torch.Tensor,             # [max_layers,n_materials]
+    pixel_height_logits: torch.Tensor,  # [H,W]
+    global_logits: torch.Tensor,  # [max_layers, n_materials]
     tau_height: float,
     tau_global: float,
     h: float,
     max_layers: int,
-    material_colors: torch.Tensor,           # [n_materials,3]  sRGB 0-1
-    material_TDs: torch.Tensor,              # [n_materials]
-    background: torch.Tensor,                # [3]
+    material_colors: torch.Tensor,  # [n_materials, 3]
+    material_TDs: torch.Tensor,  # [n_materials]
+    background: torch.Tensor,  # [3]
     rng_seed: int = -1,
 ) -> torch.Tensor:
+    """
+    Perform discrete compositing over all pixels.
 
-    device = global_logits.device
-    probs = _sample_layer_probs(global_logits, tau_global, rng_seed)   # [L,M]
-    layer_mat = torch.argmax(probs, dim=1)                            # [L]
+    Args:
+        pixel_height_logits (torch.Tensor): Logits for pixel heights, shape [H, W].
+        global_logits (torch.Tensor): Logits for global material assignment, shape [max_layers, n_materials].
+        tau_height (float): Temperature parameter for height rounding.
+        tau_global (float): Temperature parameter for global material assignment.
+        h (float): Height of each layer.
+        max_layers (int): Maximum number of layers.
+        material_colors (torch.Tensor): Tensor of material colors, shape [n_materials, 3].
+        material_TDs (torch.Tensor): Tensor of material transmission/opacity parameters, shape [n_materials].
+        background (torch.Tensor): Background color tensor, shape [3].
+        rng_seed (int, optional): Random seed for deterministic sampling. Defaults to -1.
 
-    layer_rgb   = material_colors[layer_mat]        # [L,3]
-    layer_thick = material_TDs[layer_mat]           # [L]
+    Returns:
+        torch.Tensor: Composite image tensor, shape [H, W, 3].
+    """
 
-    pixel_height   = (max_layers * h) * torch.sigmoid(pixel_height_logits)
-    continuous_idx = pixel_height / h                                  # [H,W]
+    # -------------------------------------------------------------------------
+    # 1) Compute discrete per-pixel layer counts (discrete_layers).
+    # -------------------------------------------------------------------------
+    #  pixel_height ~ [0, max_layers*h]
+    pixel_height = (max_layers * h) * torch.sigmoid(pixel_height_logits)
 
+    #  continuous_layers ~ [0, max_layers]
+    continuous_layers = pixel_height / h
+
+    #  Use your "adaptive rounding" trick if desired:
     adaptive_layers = adaptive_round(
-        continuous_idx, tau_height, high_tau=0.1, low_tau=0.01, temp=0.1)
-    dl_tmp   = torch.round(continuous_idx)
-    d_layers = (dl_tmp + (adaptive_layers - dl_tmp).detach()).to(torch.int32)  # [H,W]
+        continuous_layers, tau_height, high_tau=0.1, low_tau=0.01, temp=0.1
+    )
+    discrete_layers_temp = torch.round(continuous_layers)
+    discrete_layers = (
+        discrete_layers_temp + (adaptive_layers - discrete_layers_temp).detach()
+    ).to(torch.int32)  # [H,W]
 
-    H, W = pixel_height_logits.shape
-    comp_rgb   = background.view(1, 1, 3).expand(H, W, 3).clone()
-    const_alpha: float = 0.15
-    L_mean = _rgb_to_CIELab_L(comp_rgb).mean().item()
-    depth_acc: float = h
+    # -------------------------------------------------------------------------
+    # 2) Pick a single global material per layer, either deterministically
+    #    or via gumbel softmax
+    # -------------------------------------------------------------------------
+    if rng_seed >= 0:
+        # Deterministic sampling for each layer
+        new_mats_list = []
+        for layer_idx in range(max_layers):
+            p_i = deterministic_gumbel_softmax(
+                global_logits[layer_idx],
+                tau_global,
+                hard=True,
+                rng_seed=(rng_seed + layer_idx),
+            )
+            mat_i = torch.argmax(p_i, dim=0).to(torch.int32)
+            new_mats_list.append(mat_i)
+        new_mats = torch.stack(new_mats_list, dim=0)  # [max_layers]
+    else:
+        # Standard (random) Gumbel softmax
+        p_all = F.gumbel_softmax(global_logits, tau_global, hard=True, dim=1)  # [L, M]
+        new_mats = torch.argmax(p_all, dim=1).to(torch.int32)  # [max_layers]
 
-    #same front to black but with hard mask
-    for l in range(max_layers):
-        #HARDMASK: print if discrete_layers > current layer
-        p_print = d_layers.gt(l).to(torch.float32)             # [H,W]
-        if not torch.any(p_print):
-            depth_acc += h
-            continue
-        
-        t  = float(layer_thick[l].item())
-        abs_coeff = t * 0.1 if t > 0.0 else 0.001
+    H, W = pixel_height.shape
+    device = pixel_height.device
 
-        L_layer = _rgb_to_CIELab_L(
-            layer_rgb[l].view(1, 1, 3)
-        ).mean().item() * 0.01
+    comp = torch.zeros(H, W, 3, dtype=torch.float32, device=device)
+    remaining = torch.ones(H, W, dtype=torch.float32, device=device)
 
-        branch_a = (L_mean - L_layer) > 0.0 and (L_layer < 0.5) and (t > 1.0)
+    # Current material index for each pixel, or -1 for none
+    cur_mat = -torch.ones((H, W), dtype=torch.int32, device=device)
 
-        if branch_a:
-            scale_d = max(L_mean / (1.0 - (L_mean - L_layer)), 1.0)
-            scale_d = math.sqrt(scale_d * abs_coeff)
-            atten = depth_acc / scale_d
-        else:
-            atten = depth_acc / abs_coeff
+    # Accumulated thickness for the current segment
+    acc_thick = torch.zeros((H, W), dtype=torch.float32, device=device)
 
-        atten = _clamp01_scalar(atten)
-        mix_coeff = math.sqrt(atten)
+    # Opacity function parameters
+    o = 0.10868816
+    A = 0.3077416
+    k = 76.928215
+    b = 2.2291653
 
-        eff = mix_coeff * p_print                                 # [H,W]
+    # Main compositing loop: top to bottom
+    for layer_idx in range(max_layers - 1, -1, -1):
+        # layer_mat is the global material chosen for this layer (int32 scalar).
+        layer_mat = new_mats[layer_idx]  # shape []
 
-        lay_rgb = layer_rgb[l].view(1, 1, 3)
-        comp_rgb = comp_rgb * (1.0 - eff.unsqueeze(-1)) + lay_rgb * eff.unsqueeze(-1)
+        # Which pixels actually print on this layer?
+        # p_print = (discrete_layers > layer_idx)
+        p_print = discrete_layers.gt(layer_idx)  # bool
 
-        L_mean = _rgb_to_CIELab_L(comp_rgb).mean().item()
-        depth_acc += h
+        # ---------------------------------------------------------------------
+        # (A) "Finish" any existing segments that are now 'done'.
+        #
+        # A segment is done if:
+        #   1) cur_mat != -1, i.e. the pixel had an ongoing segment
+        #   2) EITHER
+        #       - the pixel does not print now (~p_print),
+        #       - OR the new layer material differs (cur_mat != layer_mat).
+        # ---------------------------------------------------------------------
+        mask_done = (cur_mat.ne(-1)) & ((~p_print) | (cur_mat.ne(layer_mat)))
 
-    return comp_rgb * 255.0
+        # Convert to float for multiplications
+        mask_done_f = mask_done.to(torch.float32)
 
+        # Gather thickness densities & colors for the old segment
+        # We'll clamp cur_mat so -1 becomes 0 (doesn't matter since we multiply by 0).
+        old_inds_clamped = torch.clamp(cur_mat, min=0)
+        td_vals = material_TDs[old_inds_clamped]  # [H, W]
+        col_vals = material_colors[old_inds_clamped]  # [H, W, 3]
+
+        # Compute alpha from accumulated thickness
+        thick_ratio = acc_thick / td_vals
+        opac_vals = o + (A * torch.log1p(k * thick_ratio) + b * thick_ratio)
+        opac_vals = torch.clamp(opac_vals, 0.0, 1.0)  # [H, W]
+
+        # Compositing the old segment:
+        #   comp += mask_done_f * remaining * opac_vals * col_vals
+        #   remaining *= (1 - mask_done_f * opac_vals) ...
+        # but we have to broadcast for color:
+        comp_add = (mask_done_f * remaining * opac_vals).unsqueeze(-1) * col_vals
+        comp = comp + comp_add
+        remaining = remaining - (mask_done_f * remaining * opac_vals)
+
+        # Reset old segment where mask_done is True
+        #   cur_mat = -1,  acc_thick = 0
+        # We'll do it by `torch.where(mask, val_if_true, val_if_false)`
+        cur_mat = torch.where(mask_done, torch.full_like(cur_mat, -1), cur_mat)
+        acc_thick = torch.where(mask_done, torch.zeros_like(acc_thick), acc_thick)
+
+        # ---------------------------------------------------------------------
+        # (B) For pixels that print this layer:
+        #     - Start a new segment if cur_mat == -1
+        #     - Accumulate thickness if cur_mat == layer_mat
+        # ---------------------------------------------------------------------
+        eff_thick = p_print.to(torch.float32) * h
+
+        # (B1) Start new segment where cur_mat == -1
+        mask_new = p_print & (cur_mat.eq(-1))
+        mask_new_f = mask_new.to(torch.float32)
+
+        # Set cur_mat to layer_mat if mask_new is True
+        # (layer_mat is shape [], so it will broadcast)
+        cur_mat = torch.where(mask_new, layer_mat, cur_mat)
+
+        # We add thickness:
+        acc_thick = acc_thick + mask_new_f * eff_thick
+
+        # (B2) Accumulate thickness where cur_mat == layer_mat
+        # We do this in a second mask to avoid confusion, but you can combine.
+        mask_same = p_print & (cur_mat.eq(layer_mat))
+        acc_thick = acc_thick + (mask_same.to(torch.float32) * eff_thick)
+
+    # -------------------------------------------------------------------------
+    # 5) After the loop, composite any remaining segments (cur_mat != -1).
+    # -------------------------------------------------------------------------
+    mask_remain = cur_mat.ne(-1)
+    mask_remain_f = mask_remain.to(torch.float32)
+
+    old_inds_clamped = torch.clamp(cur_mat, min=0)
+    td_vals = material_TDs[old_inds_clamped]
+    col_vals = material_colors[old_inds_clamped]
+
+    thick_ratio = acc_thick / td_vals
+    opac_vals = o + (A * torch.log1p(k * thick_ratio) + b * thick_ratio)
+    opac_vals = torch.clamp(opac_vals, 0.0, 1.0)
+
+    comp_add = (mask_remain_f * remaining * opac_vals).unsqueeze(-1) * col_vals
+    comp = comp + comp_add
+    remaining = remaining - (mask_remain_f * remaining * opac_vals)
+
+    # -------------------------------------------------------------------------
+    # 6) Composite background
+    # -------------------------------------------------------------------------
+    comp = comp + remaining.unsqueeze(-1) * background
+    return comp * 255.0
 
 
 @torch.jit.script

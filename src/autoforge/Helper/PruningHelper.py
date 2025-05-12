@@ -2,11 +2,15 @@ import math
 
 import torch
 from tqdm import tqdm
+from joblib import Parallel, delayed
+import threading
 
 from autoforge.Helper.OptimizerHelper import discretize_solution, composite_image_disc
 from autoforge.Loss.LossFunctions import compute_loss
 from autoforge.Modules.Optimizer import FilamentOptimizer
 
+# One global lock that serialises every call that needs GPU / VRAM
+_gpu_lock = threading.Lock()
 
 def disc_to_logits(
     dg: torch.Tensor, num_materials: int, big_pos: float = 1e5
@@ -30,80 +34,119 @@ def disc_to_logits(
     return logits
 
 
+
 def prune_num_colors(
     optimizer: FilamentOptimizer,
     max_colors_allowed: int,
-    tau_for_comp: float,
-    perception_loss_module: torch.nn.Module,
+    tau_for_comp: float,                # kept for API compatibility, not used here
+    perception_loss_module: torch.nn.Module,  # kept for API compatibility, not used here
+    n_jobs: int | None = -1,            # extra arg: how many workers joblib should start
 ) -> torch.Tensor:
     """
-    Iteratively merge materials until #distinct <= max_colors_allowed.
-    Using mode='discrete' on the composite_image, but with
-    artificially constructed logits from disc_global.
+    Iteratively merge materials until the number of distinct colors is
+    <= max_colors_allowed or until merging would worsen the loss.
+
+    Joblib parallelises the evaluation of all merge candidates in each
+    iteration, but every GPU call is protected by _gpu_lock so only one
+    of them is active at any moment.
     """
     num_materials = optimizer.material_colors.shape[0]
 
-    disc_global, pixel_height_logits = optimizer.get_discretized_solution(best=True)
+    # Start from the optimiser’s current best discrete solution
+    disc_global, _ = optimizer.get_discretized_solution(best=True)
 
-    def get_image_loss(dg_test):
-        # Turn discrete array [max_layers] into [max_layers, num_materials] "logits"
+    def score_color(
+            dg_base: torch.Tensor,
+            c_from: int,
+            c_to: int,
+            num_materials: int,
+            optimizer: FilamentOptimizer,
+    ) -> tuple[float, torch.Tensor]:
+        """
+        Helper that creates a merge candidate and returns its loss.
+        The VRAM-hungry part is wrapped with _gpu_lock so it never runs concurrently.
+        """
+        dg_test = merge_color(dg_base, c_from, c_to)
+
+        # Build logits for the discrete assignment
+        logits_for_disc = disc_to_logits(dg_test, num_materials=num_materials, big_pos=1e5)
+
+        # Only this block touches the GPU, so we protect it
+        with _gpu_lock:
+            with torch.no_grad():
+                out_im = optimizer.get_best_discretized_image(
+                    custom_global_logits=logits_for_disc
+                )
+                loss = compute_loss(comp=out_im, target=optimizer.target)
+
+        return loss, dg_test
+
+
+
+    # Convenience wrapper to compute the loss of the current best_dg
+    def get_image_loss(dg_test: torch.Tensor) -> float:
         logits_for_disc = disc_to_logits(
             dg_test, num_materials=num_materials, big_pos=1e5
         )
-
-        with torch.no_grad():
-            out_im = optimizer.get_best_discretized_image(
-                custom_global_logits=logits_for_disc
-            )
-            loss = compute_loss(
-                comp=out_im,
-                target=optimizer.target,
-            )
-
-        # For the loss, we pass the actual dg_test so that compute_loss() knows it’s a discrete assignment
+        with _gpu_lock:
+            with torch.no_grad():
+                out_im = optimizer.get_best_discretized_image(
+                    custom_global_logits=logits_for_disc
+                )
+                loss = compute_loss(comp=out_im, target=optimizer.target)
         return loss
 
     best_dg = disc_global.clone()
     best_loss = get_image_loss(best_dg)
 
-    distinct_mats = torch.unique(best_dg)
-    tbar = tqdm(
-        range(100),
-        desc=f"Pruning colors down to {max_colors_allowed} or until loss increases. Current colors: {len(distinct_mats)}, Loss: {best_loss:.4f}",
-    )
+    tbar = tqdm(total=100, leave=False)
     while True:
-        found_merge = False
-        best_merge_loss = None
-        best_merge_dg_candidate = None
-
         distinct_mats = torch.unique(best_dg)
         tbar.set_description(
-            f"Pruning colors down to {max_colors_allowed} or until loss increases. Current colors: {len(distinct_mats)}, Loss: {best_loss:.4f}",
+            f"Current colors: {len(distinct_mats)}  |  Best loss: {best_loss:.4f}"
         )
         tbar.update(1)
 
-        for c_from in distinct_mats:
-            for c_to in distinct_mats:
-                if c_to == c_from:
-                    continue
-                # Merge color c_from -> c_to
-                dg_test = merge_color(best_dg, c_from.item(), c_to.item())
-                test_loss = get_image_loss(dg_test)
-                if best_merge_loss is None or test_loss < best_merge_loss:
-                    best_merge_loss = test_loss
-                    best_merge_dg_candidate = dg_test
+        # Generate all possible one-to-one merges for the current palette
+        merge_pairs = [
+            (c_from.item(), c_to.item())
+            for c_from in distinct_mats
+            for c_to in distinct_mats
+            if c_from != c_to
+        ]
 
-        if best_merge_dg_candidate is not None:
-            if best_merge_loss < best_loss or len(distinct_mats) > max_colors_allowed:
-                best_dg = best_merge_dg_candidate
-                best_loss = best_merge_loss
-                found_merge = True
-
-        if not found_merge:
+        if not merge_pairs:  # nothing left to merge
             break
+
+        # Evaluate every merge candidate in parallel
+        cand_results = Parallel(
+            n_jobs=n_jobs,
+            backend="threading",       # threads let us share the lock easily
+            prefer="threads",
+        )(
+            delayed(score_color)(
+                best_dg, c_from, c_to, num_materials, optimizer
+            )
+            for c_from, c_to in merge_pairs
+        )
+
+        # Select the best candidate (lowest loss)
+        best_merge_loss, best_merge_dg_candidate = min(cand_results, key=lambda x: x[0])
+
+        # Accept the merge if it improves the loss
+        # or if we are still above the allowed color budget
+        if (
+            best_merge_loss < best_loss
+            or len(distinct_mats) > max_colors_allowed
+        ):
+            best_dg = best_merge_dg_candidate
+            best_loss = best_merge_loss
+        else:
+            break  # no further improvement and we are within the budget
+
     tbar.close()
 
-    # set the best solution in the optimizer
+    # Store result back in the optimiser so downstream code can pick it up
     optimizer.best_params["global_logits"] = disc_to_logits(
         best_dg, num_materials=num_materials, big_pos=1e5
     )
@@ -114,87 +157,110 @@ def prune_num_colors(
 def prune_num_swaps(
     optimizer: FilamentOptimizer,
     max_swaps_allowed: int,
-    tau_for_comp: float,
-    perception_loss_module: torch.nn.Module,
+    tau_for_comp: float,                       # kept for API compatibility
+    perception_loss_module: torch.nn.Module,   # kept for API compatibility
+    n_jobs: int | None = -1,                   # how many workers joblib should start
 ) -> torch.Tensor:
     """
-    Iteratively reduce the number of color boundaries until <= max_swaps_allowed,
-    using mode='discrete' compositing on the “fake logits.”
+    Reduce the number of color boundaries until it is below or equal to
+    max_swaps_allowed, stopping earlier if any further merge would worsen the loss.
+    Every candidate merge is scored in parallel but GPU work is serialised.
     """
     num_materials = optimizer.material_colors.shape[0]
-    disc_global, pixel_height_logits = optimizer.get_discretized_solution(best=True)
+    disc_global, _ = optimizer.get_discretized_solution(best=True)
 
-    def get_image_loss(dg_test):
+    # Helper for the current best_dg
+    def get_image_loss(dg_test: torch.Tensor) -> float:
         logits_for_disc = disc_to_logits(
             dg_test, num_materials=num_materials, big_pos=1e5
         )
-
-        with torch.no_grad():
-            out_im = optimizer.get_best_discretized_image(
-                custom_global_logits=logits_for_disc
-            )
-            loss = compute_loss(
-                comp=out_im,
-                target=optimizer.target,
-            )
-
-        # For the loss, we pass the actual dg_test so that compute_loss() knows it’s a discrete assignment
+        with _gpu_lock:
+            with torch.no_grad():
+                out_im = optimizer.get_best_discretized_image(
+                    custom_global_logits=logits_for_disc
+                )
+                loss = compute_loss(comp=out_im, target=optimizer.target)
         return loss
+
+    def score_swap(
+            dg_base: torch.Tensor,
+            band_a,
+            band_b,
+            direction: str,
+            num_materials: int,
+            optimizer: FilamentOptimizer,
+    ) -> tuple[float, torch.Tensor]:
+        """
+        Merge two neighbouring bands in the chosen direction and return (loss, dg_candidate).
+        The VRAM intensive part is wrapped by _gpu_lock so it runs one at a time.
+        """
+        dg_test = merge_bands(dg_base, band_a, band_b, direction=direction)
+        logits_for_disc = disc_to_logits(dg_test, num_materials=num_materials, big_pos=1e5)
+
+        with _gpu_lock:
+            with torch.no_grad():
+                out_im = optimizer.get_best_discretized_image(
+                    custom_global_logits=logits_for_disc
+                )
+                loss = compute_loss(comp=out_im, target=optimizer.target)
+
+        return loss, dg_test
 
     best_dg = disc_global.clone()
     best_loss = get_image_loss(best_dg)
-    tbar = tqdm(
-        range(100),
-        desc=f"Pruning swaps down to {max_swaps_allowed} or until loss increases. Current swaps: {len(find_color_bands(best_dg)) - 1}, Loss = {best_loss:.4f}",
-    )
+
+    tbar = tqdm(total=100, leave=False)
     while True:
         bands = find_color_bands(best_dg)
         num_swaps = len(bands) - 1
         tbar.set_description(
-            f"Pruning swaps down to {max_swaps_allowed} or until loss increases. Current swaps: {num_swaps}, Loss = {best_loss:.4f}",
+            f"Current swaps: {num_swaps}  |  Best loss: {best_loss:.4f}"
         )
         tbar.update(1)
 
-        best_merge_loss = None
-        best_merge_dg_candidate = None
+        if num_swaps == 0:
+            break
 
-        for i in range(num_swaps):
-            band_a = bands[i]
-            band_b = bands[i + 1]
-            if band_a[2] == band_b[2]:
-                continue
-            dg_fwd = merge_bands(best_dg, band_a, band_b, direction="forward")
-            loss_fwd = get_image_loss(dg_fwd)
-            dg_bwd = merge_bands(best_dg, band_a, band_b, direction="backward")
-            loss_bwd = get_image_loss(dg_bwd)
+        # Build all forward and backward merge candidates for the current arrangement
+        merge_specs = [
+            (bands[i], bands[i + 1], dirn)
+            for i in range(num_swaps)
+            for dirn in ("forward", "backward")
+            if bands[i][2] != bands[i + 1][2]   # skip if both bands already share a color
+        ]
 
-            if loss_fwd < loss_bwd:
-                candidate_loss = loss_fwd
-                candidate_dg = dg_fwd
-            else:
-                candidate_loss = loss_bwd
-                candidate_dg = dg_bwd
+        if not merge_specs:
+            break
 
-            if best_merge_loss is None or candidate_loss < best_merge_loss:
-                best_merge_loss = candidate_loss
-                best_merge_dg_candidate = candidate_dg
+        # Parallel evaluation of all candidates
+        cand_results = Parallel(
+            n_jobs=n_jobs,
+            backend="threading",
+            prefer="threads",
+        )(
+            delayed(score_swap)(
+                best_dg, band_a, band_b, direction, num_materials, optimizer
+            )
+            for band_a, band_b, direction in merge_specs
+        )
 
-        if best_merge_dg_candidate is not None and (
-            best_merge_loss < best_loss or num_swaps > max_swaps_allowed
-        ):
+        best_merge_loss, best_merge_dg_candidate = min(cand_results, key=lambda x: x[0])
+
+        # Accept if it improves loss or if still above the swap budget
+        if best_merge_loss < best_loss or num_swaps > max_swaps_allowed:
             best_dg = best_merge_dg_candidate
             best_loss = best_merge_loss
         else:
             break
+
     tbar.close()
 
-    # set the best solution in the optimizer
+    # Persist the result inside the optimiser
     optimizer.best_params["global_logits"] = disc_to_logits(
         best_dg, num_materials=num_materials, big_pos=1e5
     )
 
     return best_dg
-
 
 def merge_color(dg: torch.Tensor, c_from: int, c_to: int) -> torch.Tensor:
     """
@@ -307,123 +373,120 @@ def prune_redundant_layers(
     optimizer: FilamentOptimizer,
     perception_loss_module,
     pruning_min_layers: int = 0,
-    pruning_max_layers: int = 1e6,
-    tolerance: float = 0.10,
+    pruning_max_layers: int = int(1e6),
+    tolerance: float = 0.10,          # kept for API compatibility, still unused
+    n_jobs: int | None = -1,          # new: how many workers joblib should spawn
 ):
     """
-    Iteratively search for the best layer to remove.
-    At each iteration, evaluate removal of each layer, and choose the candidate that gives
-    the highest loss decrease (or, if no removal improves loss and the current number of layers
-    exceeds pruning_max_layers, the removal with the minimal loss increase within tolerance).
-    After a removal is accepted, the search restarts from the beginning.
-
-    Args:
-        params (dict): Dictionary with keys "global_logits" and "pixel_height_logits".
-        final_tau (float): Final tau (decay) value for discretization.
-        h (float): Layer height.
-        target (torch.Tensor): Target image tensor.
-        material_colors (torch.Tensor): Tensor of material colors.
-        material_TDs (torch.Tensor): Tensor of material transmission parameters.
-        background (torch.Tensor): Background color tensor.
-        rng_seed (int): Random seed for discretization.
-        perception_loss_module (torch.nn.Module): Perceptual loss module.
-        tolerance (float): Acceptable increase in loss.
-        pruning_min_layers (int): Minimum number of layers to keep.
-        pruning_max_layers (int): Maximum number of layers allowed after pruning.
-
-    Returns:
-        current_params (dict): Updated parameters with redundant layers removed.
-        best_loss (float): Loss corresponding to the pruned solution.
-        current_max_layers (int): New number of layers after pruning.
+    Iteratively drop layers until no removal improves the loss
+    (unless still above pruning_max_layers, in which case we accept the
+    least harmful removal).  All candidates in an iteration are scored
+    in parallel, but CUDA work is serialised by _gpu_lock.
     """
-
     current_max_layers = optimizer.max_layers
-    # Compute baseline composite and loss.
-    comp = optimizer.get_best_discretized_image()
 
-    best_loss = compute_loss(
-        comp,
-        optimizer.target,
-    ).item()
+    def score_layer(
+            layer_idx: int,
+            base_params: dict,
+            final_tau: float,
+            h: float,
+            current_max_layers: int,
+            best_seed: int,
+            optimizer: FilamentOptimizer,
+    ) -> tuple[float, dict, int]:
+        """
+        Remove layer `layer_idx`, composite the image, measure loss.
+        GPU work is wrapped with _gpu_lock so only one thread touches VRAM.
+        """
+        cand_params, cand_max_layers = remove_layer_from_solution(
+            base_params,
+            layer_idx,
+            final_tau,
+            h,
+            current_max_layers,
+            best_seed,
+        )
 
-    from tqdm import tqdm
+        with _gpu_lock:
+            with torch.no_grad():
+                cand_comp = composite_image_disc(
+                    cand_params["pixel_height_logits"],
+                    cand_params["global_logits"],
+                    final_tau,
+                    final_tau,
+                    h,
+                    cand_max_layers,
+                    optimizer.material_colors,
+                    optimizer.material_TDs,
+                    optimizer.background,
+                    rng_seed=best_seed,
+                )
+                cand_loss = compute_loss(cand_comp, optimizer.target).item()
+
+        return cand_loss, cand_params, cand_max_layers
+
+    # Baseline composite and loss
+    with _gpu_lock:
+        with torch.no_grad():
+            comp = optimizer.get_best_discretized_image()
+            best_loss = compute_loss(comp, optimizer.target).item()
 
     tbar = tqdm(
-        desc=f"Pruning redundant layers: Loss {best_loss:.4f}",
-        total=current_max_layers - 1,
+        desc=f"Pruning redundant layers  |  Loss {best_loss:.4f}",
+        total=max(current_max_layers - 1, 0),
+        leave=False,
     )
     removed_layers = 0
-
     improvement = True
-    # Continue iterating while we can still remove a layer.
-    # We stop if no candidate qualifies and we are not forced to prune by pruning_max_layers.
+
     while current_max_layers > pruning_min_layers and (
         improvement or current_max_layers > pruning_max_layers
     ):
         tbar.update(1)
         improvement = False
-        best_candidate = None
-        best_candidate_loss = 1e10
-        # For each layer candidate, compute the loss if that layer were removed.
-        for layer in range(current_max_layers):
-            candidate_params, candidate_max_layers = remove_layer_from_solution(
+
+        # Evaluate removal of every layer in parallel
+        cand_results = Parallel(
+            n_jobs=n_jobs,
+            backend="threading",
+            prefer="threads",
+        )(
+            delayed(score_layer)(
+                layer_idx,
                 optimizer.best_params,
-                layer,
                 optimizer.final_tau,
                 optimizer.h,
                 current_max_layers,
                 optimizer.best_seed,
+                optimizer,
             )
-            with torch.no_grad():
-                candidate_comp = composite_image_disc(
-                    candidate_params["pixel_height_logits"],
-                    candidate_params["global_logits"],
-                    optimizer.final_tau,
-                    optimizer.final_tau,
-                    optimizer.h,
-                    candidate_max_layers,
-                    optimizer.material_colors,
-                    optimizer.material_TDs,
-                    optimizer.background,
-                    rng_seed=optimizer.best_seed,
-                )
-                candidate_loss = compute_loss(
-                    candidate_comp,
-                    optimizer.target,
-                ).item()
+            for layer_idx in range(current_max_layers)
+        )
 
-            if candidate_loss <= best_candidate_loss:
-                best_candidate = candidate_params
-                best_candidate_loss = candidate_loss
+        # Select the candidate with the lowest loss
+        best_cand_loss, best_cand_params, best_cand_max_layers = min(
+            cand_results, key=lambda x: x[0]
+        )
 
-        # If we found a candidate, remove it and restart the search.
-        if best_candidate is not None:
-            if (
-                best_candidate_loss <= best_loss
-                or current_max_layers > pruning_max_layers
-            ):
-                removed_layers += 1
-                # Update the progress bar description.
-                tbar.set_description(
-                    f"Pruning redundant layers: Loss {best_candidate_loss:.4f}, Removed {removed_layers}, new max layers {current_max_layers - 1}"
-                )
-                current_params = best_candidate
-                current_max_layers = current_params["global_logits"].shape[0]
+        # Accept if it improves loss or if we are forced to prune further
+        if best_cand_loss <= best_loss or current_max_layers > pruning_max_layers:
+            removed_layers += 1
+            best_loss = best_cand_loss
+            current_max_layers = best_cand_max_layers
 
-                # set optimizer
-                optimizer.best_params = current_params
-                optimizer.max_layers = current_max_layers
+            # Persist the new best solution
+            optimizer.best_params = best_cand_params
+            optimizer.max_layers = current_max_layers
 
-                best_loss = best_candidate_loss
-                improvement = True
-            else:
-                break
+            tbar.set_description(
+                f"Pruning redundant layers  |  Loss {best_loss:.4f}  |  Removed {removed_layers}  |  Layers left {current_max_layers}"
+            )
+            improvement = True
         else:
-            # No candidate met the criteria.
             break
 
     tbar.close()
-
+    return optimizer.best_params, best_loss, current_max_layers
 
 def remove_outlier_pixels(
     height_logits: torch.Tensor, threshold: float
