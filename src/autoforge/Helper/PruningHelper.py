@@ -102,10 +102,7 @@ def prune_num_colors(
     tbar = tqdm(total=100, leave=False)
     while True:
         distinct_mats = torch.unique(best_dg)
-        tbar.set_description(
-            f"Current colors: {len(distinct_mats)}  |  Best loss: {best_loss:.4f}"
-        )
-        tbar.update(1)
+
 
         # Generate all possible one-to-one merges for the current palette
         merge_pairs = [
@@ -114,6 +111,11 @@ def prune_num_colors(
             for c_to in distinct_mats
             if c_from != c_to
         ]
+
+        tbar.set_description(
+            f"Current colors: {len(distinct_mats)}  |  Best loss: {best_loss:.4f} | Possible Merge Pairs: {len(merge_pairs)}"
+        )
+        tbar.update(1)
 
         if not merge_pairs:  # nothing left to merge
             break
@@ -213,10 +215,7 @@ def prune_num_swaps(
     while True:
         bands = find_color_bands(best_dg)
         num_swaps = len(bands) - 1
-        tbar.set_description(
-            f"Current swaps: {num_swaps}  |  Best loss: {best_loss:.4f}"
-        )
-        tbar.update(1)
+
 
         if num_swaps == 0:
             break
@@ -228,6 +227,11 @@ def prune_num_swaps(
             for dirn in ("forward", "backward")
             if bands[i][2] != bands[i + 1][2]   # skip if both bands already share a color
         ]
+
+        tbar.set_description(
+            f"Current swaps: {num_swaps}  |  Best loss: {best_loss:.4f} | Possible Merge Swaps: {len(merge_specs)}"
+        )
+        tbar.update(1)
 
         if not merge_specs:
             break
