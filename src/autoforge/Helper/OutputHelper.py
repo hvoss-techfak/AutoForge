@@ -98,12 +98,14 @@ def generate_project_file(
             "Color": mat[" Color"],
             "Name": mat[" Name"],
             # Convert Owned to a boolean (in case it is read as a string)
-            "Owned": str(mat[" Owned"]).strip().lower() == "true",
+            "Owned": str(mat[" Owned"]).strip().lower() == "true"
+            if " Owned" in mat
+            else False,
             "Transmissivity": float(mat[" TD"])
             if not float(mat[" TD"]).is_integer()
             else int(mat[" TD"]),
-            "Type": mat[" Type"],
-            "uuid": mat[" Uuid"],
+            "Type": mat[" Type"] if " Type" in mat else "PLA",
+            "uuid": mat[" Uuid"] if " Uuid" in mat else str(uuid.uuid4()),
         }
         filament_set.append(filament_entry)
 

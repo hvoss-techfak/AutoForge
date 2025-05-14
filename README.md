@@ -151,10 +151,29 @@ After running, the following files will be created in your specified output fold
 - **Hueforge Project File**: `project_file.hfp` 
 - **Swap Instructions**: `swap_instructions.txt`
 
+## Development
+
+To have a "nightly" version of the repository or have live updating changes during development please do the following: 
+
+```bash
+git clone https://github.com/hvoss-techfak/AutoForge.git
+cd AutoForge
+conda create -n forge python=3.11
+conda activate forge
+pip install -e .
+```
+
+If the installed pytorch version has no cuda support execute the following:
+
+```bash
+conda activate forge
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+```
+
+
 ## Known Bugs
 
 - The optimizer can sometimes get stuck in a local minimum. If this happens, try running the optimization again with different settings.
-- Hueforge can't open STL files under linux. This is a known bug in hueforge.
 
 ## License
 

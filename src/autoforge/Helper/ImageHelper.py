@@ -1,5 +1,21 @@
+import os
+from typing import Sequence
+
 import cv2
 import torch
+from cv2.typing import MatLike
+import numpy as np
+
+
+def imread(filename: str, flags: int = cv2.IMREAD_COLOR) -> MatLike:
+    return cv2.imdecode(np.fromfile(filename, dtype=np.uint8), flags)
+
+
+def imwrite(filename: str, img: MatLike, params: Sequence[int] = ()) -> None:
+    success, encoded_img = cv2.imencode(os.path.splitext(filename)[1], img, params)
+    if not success:
+        raise OSError(f"cv2 could not write to path {filename}")
+    encoded_img.tofile(filename)
 
 
 def resize_image(img, max_size):

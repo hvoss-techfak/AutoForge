@@ -15,7 +15,7 @@ from autoforge.Helper.Heightmaps.DepthEstimateHeightMap import (
     init_height_map_depth_color_adjusted,
 )
 
-from autoforge.Helper.ImageHelper import resize_image
+from autoforge.Helper.ImageHelper import resize_image, imread
 from autoforge.Helper.OutputHelper import (
     generate_stl,
     generate_swap_instructions,
@@ -242,7 +242,7 @@ def main():
     parser.add_argument(
         "--num_init_rounds",
         type=int,
-        default=64,
+        default=128,
         help="Number of rounds to choose the starting height map from.",
     )
     parser.add_argument(
@@ -302,7 +302,7 @@ def main():
     material_TDs = torch.tensor(material_TDs_np, dtype=torch.float32, device=device)
 
     # Read input image
-    img = cv2.imread(args.input_image, cv2.IMREAD_UNCHANGED)
+    img = imread(args.input_image, cv2.IMREAD_UNCHANGED)
     computed_output_size = int(round(args.stl_output_size * 2 / args.nozzle_diameter))
     print(f"Computed solving pixel size: {computed_output_size}")
     alpha = None

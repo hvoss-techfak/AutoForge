@@ -445,10 +445,11 @@ class FilamentOptimizer:
         self.diff_depth_map_ax.set_clim(-2.5, 2.5)
 
         self.fig.suptitle(
-            f"Step {self.num_steps_done}, Tau: {tau_g:.4f}, Loss: {self.loss:.4f}, Best Discrete Loss: {self.best_discrete_loss:.4f}"
+            f"Step {self.num_steps_done}/{self.args.iterations}, Tau: {tau_g:.4f}, Loss: {self.loss:.4f}, Best Discrete Loss: {self.best_discrete_loss:.4f}"
         )
 
         plt.pause(0.01)
+        plt.savefig(self.args.output_folder + "/vis_temp.png")
 
     def get_current_parameters(self):
         """
@@ -544,6 +545,7 @@ class FilamentOptimizer:
             prune_num_swaps,
             prune_redundant_layers,
         )
+
         if search_seed:
             self.rng_seed_search(self.best_discrete_loss, 1000, autoset_seed=True)
 
