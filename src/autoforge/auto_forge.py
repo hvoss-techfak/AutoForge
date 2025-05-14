@@ -1,3 +1,4 @@
+import argparse
 import sys
 import os
 import time
@@ -120,6 +121,7 @@ def main():
         type=bool,
         default=True,
         help="Enable visualization during optimization",
+        action=argparse.BooleanOptionalAction,
     )
 
     # Instead of an output_size parameter, we use stl_output_size and nozzle_diameter.
