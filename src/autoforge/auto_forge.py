@@ -149,12 +149,14 @@ def main():
         type=bool,
         default=True,
         help="Perform pruning after optimization",
+        action=argparse.BooleanOptionalAction,
     )
     parser.add_argument(
         "--fast_pruning",
         type=bool,
         default=True,
         help="Use fast pruning method",
+        action=argparse.BooleanOptionalAction,
     )
     parser.add_argument(
         "--fast_pruning_percent",
