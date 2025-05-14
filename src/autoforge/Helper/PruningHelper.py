@@ -13,6 +13,7 @@ from autoforge.Modules.Optimizer import FilamentOptimizer
 # One global lock that serialises every call that needs GPU / VRAM
 _gpu_lock = threading.Lock()
 
+
 def disc_to_logits(
     dg: torch.Tensor, num_materials: int, big_pos: float = 1e5
 ) -> torch.Tensor:
@@ -41,15 +42,15 @@ def _chunked(iterable, chunk_size):
         yield iterable[i : i + chunk_size]
 
 
-
 def prune_num_colors(
     optimizer: FilamentOptimizer,
     max_colors_allowed: int,
-    tau_for_comp: float,                # kept for API compatibility
+    tau_for_comp: float,  # kept for API compatibility
     perception_loss_module: torch.nn.Module,  # kept for API compatibility
-    n_jobs: int | None = -1,            # how many workers joblib should start
+    n_jobs: int | None = -1,  # how many workers joblib should start
     *,
-    fast: bool = True,                 # NEW: enable 10 percent incremental search
+    fast: bool = True,  # enable incremental search
+    chunking_percent=0.05,  # percentage of layers to process at once
 ) -> torch.Tensor:
     """Iteratively merge materials until the number of distinct colors is
     <= max_colors_allowed or until merging would worsen the loss.
@@ -62,18 +63,24 @@ def prune_num_colors(
     num_materials = optimizer.material_colors.shape[0]
     disc_global, _ = optimizer.get_discretized_solution(best=True)
 
-    def score_color(dg_base: torch.Tensor, c_from: int, c_to: int) -> tuple[float, torch.Tensor]:
+    def score_color(
+        dg_base: torch.Tensor, c_from: int, c_to: int
+    ) -> tuple[float, torch.Tensor]:
         dg_test = merge_color(dg_base, c_from, c_to)
         logits_for_disc = disc_to_logits(dg_test, num_materials, big_pos=1e5)
         with _gpu_lock, torch.no_grad():
-            out_im = optimizer.get_best_discretized_image(custom_global_logits=logits_for_disc)
+            out_im = optimizer.get_best_discretized_image(
+                custom_global_logits=logits_for_disc
+            )
             loss = compute_loss(comp=out_im, target=optimizer.target)
         return loss, dg_test
 
     def get_image_loss(dg_test: torch.Tensor) -> float:
         logits_for_disc = disc_to_logits(dg_test, num_materials, big_pos=1e5)
         with _gpu_lock, torch.no_grad():
-            out_im = optimizer.get_best_discretized_image(custom_global_logits=logits_for_disc)
+            out_im = optimizer.get_best_discretized_image(
+                custom_global_logits=logits_for_disc
+            )
             loss = compute_loss(comp=out_im, target=optimizer.target)
         return loss
 
@@ -83,10 +90,16 @@ def prune_num_colors(
     tbar = tqdm(total=100, leave=False)
     while True:
         distinct_mats = torch.unique(best_dg)
-        merge_pairs = [(c_from.item(), c_to.item())
-                       for c_from in distinct_mats for c_to in distinct_mats if c_from != c_to]
+        merge_pairs = [
+            (c_from.item(), c_to.item())
+            for c_from in distinct_mats
+            for c_to in distinct_mats
+            if c_from != c_to
+        ]
 
-        tbar.set_description(f"Colors {len(distinct_mats)} | Loss {best_loss:.4f} | Merge pairs {len(merge_pairs)}")
+        tbar.set_description(
+            f"Colors {len(distinct_mats)} | Loss {best_loss:.4f} | Merge pairs {len(merge_pairs)}"
+        )
         tbar.update(1)
 
         if not merge_pairs:
@@ -94,19 +107,41 @@ def prune_num_colors(
 
         if fast:
             random.shuffle(merge_pairs)
-            chunk_size = max(1, math.ceil(len(merge_pairs) * 0.1))
+            chunk_size = max(1, math.ceil(len(merge_pairs) * chunking_percent))
             improved = False
+            c_cand = None
+            c_loss = 1000
             for chunk in _chunked(merge_pairs, chunk_size):
-                cand_results = Parallel(n_jobs=n_jobs, backend="threading", prefer="threads")(delayed(score_color)(best_dg, *pair) for pair in chunk)
+                cand_results = Parallel(
+                    n_jobs=n_jobs, backend="threading", prefer="threads"
+                )(delayed(score_color)(best_dg, *pair) for pair in chunk)
                 merge_loss, merge_dg = min(cand_results, key=lambda x: x[0])
-                if merge_loss < best_loss or len(distinct_mats) > max_colors_allowed:
+                if merge_loss < best_loss:
                     best_dg, best_loss = merge_dg, merge_loss
                     improved = True
                     break  # move on to next outer iteration
+                else:
+                    if len(distinct_mats) > max_colors_allowed:
+                        if merge_loss < c_loss:
+                            c_cand = (merge_dg, merge_loss)
+                            c_loss = merge_loss
+            if c_cand is not None:
+                best_dg, best_loss = c_cand
+                distinct_mats = torch.unique(best_dg)
+                optimizer.best_params["global_logits"] = disc_to_logits(
+                    best_dg, num_materials=num_materials, big_pos=1e5
+                )
+                tbar.set_description(
+                    f"Colors {len(distinct_mats)} | Loss {best_loss:.4f} | Merge pairs {len(merge_pairs)}"
+                )
+                improved = True
+
             if not improved:
                 break  # no chunk provided improvement and we are within budget
         else:
-            cand_results = Parallel(n_jobs=n_jobs, backend="threading", prefer="threads")(delayed(score_color)(best_dg, *pair) for pair in merge_pairs)
+            cand_results = Parallel(
+                n_jobs=n_jobs, backend="threading", prefer="threads"
+            )(delayed(score_color)(best_dg, *pair) for pair in merge_pairs)
             merge_loss, merge_dg = min(cand_results, key=lambda x: x[0])
             if merge_loss < best_loss or len(distinct_mats) > max_colors_allowed:
                 best_dg, best_loss = merge_dg, merge_loss
@@ -114,17 +149,21 @@ def prune_num_colors(
                 break
 
     tbar.close()
-    optimizer.best_params["global_logits"] = disc_to_logits(best_dg, num_materials=num_materials, big_pos=1e5)
+    optimizer.best_params["global_logits"] = disc_to_logits(
+        best_dg, num_materials=num_materials, big_pos=1e5
+    )
     return best_dg
+
 
 def prune_num_swaps(
     optimizer: FilamentOptimizer,
     max_swaps_allowed: int,
-    tau_for_comp: float,                       # kept for API compatibility
-    perception_loss_module: torch.nn.Module,   # kept for API compatibility
-    n_jobs: int | None = -1,                   # how many workers joblib should start
+    tau_for_comp: float,  # kept for API compatibility
+    perception_loss_module: torch.nn.Module,  # kept for API compatibility
+    n_jobs: int | None = -1,  # how many workers joblib should start
     *,
-    fast: bool = True,                        # NEW: enable 10 percent incremental search
+    fast: bool = True,  # enable incremental search
+    chunking_percent=0.05,  # percentage of layers to process at once
 ) -> torch.Tensor:
     """Reduce the number of color boundaries until it is below or equal to
     *max_swaps_allowed*, stopping earlier if any further merge would worsen the
@@ -137,7 +176,9 @@ def prune_num_swaps(
     def get_image_loss(dg_test: torch.Tensor) -> float:
         logits_for_disc = disc_to_logits(dg_test, num_materials, big_pos=1e5)
         with _gpu_lock, torch.no_grad():
-            out_im = optimizer.get_best_discretized_image(custom_global_logits=logits_for_disc)
+            out_im = optimizer.get_best_discretized_image(
+                custom_global_logits=logits_for_disc
+            )
             loss = compute_loss(comp=out_im, target=optimizer.target)
         return loss
 
@@ -145,7 +186,9 @@ def prune_num_swaps(
         dg_test = merge_bands(dg_base, band_a, band_b, direction=direction)
         logits_for_disc = disc_to_logits(dg_test, num_materials, big_pos=1e5)
         with _gpu_lock, torch.no_grad():
-            out_im = optimizer.get_best_discretized_image(custom_global_logits=logits_for_disc)
+            out_im = optimizer.get_best_discretized_image(
+                custom_global_logits=logits_for_disc
+            )
             loss = compute_loss(comp=out_im, target=optimizer.target)
         return loss, dg_test
 
@@ -159,12 +202,16 @@ def prune_num_swaps(
         if num_swaps == 0:
             break
 
-        merge_specs = [(bands[i], bands[i + 1], dirn)
-                       for i in range(num_swaps)
-                       for dirn in ("forward", "backward")
-                       if bands[i][2] != bands[i + 1][2]]
+        merge_specs = [
+            (bands[i], bands[i + 1], dirn)
+            for i in range(num_swaps)
+            for dirn in ("forward", "backward")
+            if bands[i][2] != bands[i + 1][2]
+        ]
 
-        tbar.set_description(f"Swaps {num_swaps} | Loss {best_loss:.4f} | Merge swaps {len(merge_specs)}")
+        tbar.set_description(
+            f"Swaps {num_swaps} | Loss {best_loss:.4f} | Merge swaps {len(merge_specs)}"
+        )
         tbar.update(1)
 
         if not merge_specs:
@@ -172,19 +219,46 @@ def prune_num_swaps(
 
         if fast:
             random.shuffle(merge_specs)
-            chunk_size = max(1, math.ceil(len(merge_specs) * 0.1))
+            chunk_size = max(1, math.ceil(len(merge_specs) * chunking_percent))
             improved = False
+            c_cand = None
+            c_loss = 10000
             for chunk in _chunked(merge_specs, chunk_size):
-                cand_results = Parallel(n_jobs=n_jobs, backend="threading", prefer="threads")(delayed(score_swap)(best_dg, band_a, band_b, direction) for band_a, band_b, direction in chunk)
+                cand_results = Parallel(
+                    n_jobs=n_jobs, backend="threading", prefer="threads"
+                )(
+                    delayed(score_swap)(best_dg, band_a, band_b, direction)
+                    for band_a, band_b, direction in chunk
+                )
                 merge_loss, merge_dg = min(cand_results, key=lambda x: x[0])
-                if merge_loss < best_loss or num_swaps > max_swaps_allowed:
+                if merge_loss < best_loss:
                     best_dg, best_loss = merge_dg, merge_loss
                     improved = True
                     break
+                else:
+                    if num_swaps > max_swaps_allowed and merge_loss < c_loss:
+                        c_cand = (merge_dg, merge_loss)
+                        c_loss = merge_loss
+            if c_cand is not None:
+                best_dg, best_loss = c_cand
+                num_swaps = len(find_color_bands(best_dg)) - 1
+                optimizer.best_params["global_logits"] = disc_to_logits(
+                    best_dg, num_materials=num_materials, big_pos=1e5
+                )
+                tbar.set_description(
+                    f"Swaps {num_swaps} | Loss {best_loss:.4f} | Merge swaps {len(merge_specs)}"
+                )
+                improved = True
+
             if not improved:
                 break
         else:
-            cand_results = Parallel(n_jobs=n_jobs, backend="threading", prefer="threads")(delayed(score_swap)(best_dg, band_a, band_b, direction) for band_a, band_b, direction in merge_specs)
+            cand_results = Parallel(
+                n_jobs=n_jobs, backend="threading", prefer="threads"
+            )(
+                delayed(score_swap)(best_dg, band_a, band_b, direction)
+                for band_a, band_b, direction in merge_specs
+            )
             merge_loss, merge_dg = min(cand_results, key=lambda x: x[0])
             if merge_loss < best_loss or num_swaps > max_swaps_allowed:
                 best_dg, best_loss = merge_dg, merge_loss
@@ -192,8 +266,11 @@ def prune_num_swaps(
                 break
 
     tbar.close()
-    optimizer.best_params["global_logits"] = disc_to_logits(best_dg, num_materials=num_materials, big_pos=1e5)
+    optimizer.best_params["global_logits"] = disc_to_logits(
+        best_dg, num_materials=num_materials, big_pos=1e5
+    )
     return best_dg
+
 
 def merge_color(dg: torch.Tensor, c_from: int, c_to: int) -> torch.Tensor:
     """
@@ -276,7 +353,7 @@ def remove_layer_from_solution(
         ],
         dim=0,
     )
-    new_max_layers = current_max_layers - 1
+    new_max_layers = new_global_logits.shape[0]
 
     # Compute current effective height: height = (current_max_layers * h) * sigmoid(pixel_height_logits)
     current_height = (
@@ -304,22 +381,31 @@ def remove_layer_from_solution(
 
 def prune_redundant_layers(
     optimizer: FilamentOptimizer,
-    perception_loss_module,                    # kept for API compatibility
+    perception_loss_module,  # kept for API compatibility
     pruning_min_layers: int = 0,
     pruning_max_layers: int = int(1e6),
-    tolerance: float = 0.10,                   # kept for API compatibility
-    n_jobs: int | None = -1,                   # how many workers joblib should spawn
+    tolerance: float = 0.10,  # kept for API compatibility
+    n_jobs: int | None = -1,  # how many workers joblib should spawn
     *,
-    fast: bool = True,                        # NEW: enable 10 percent incremental search
+    fast: bool = True,  # NEW: enable 10 percent incremental search
+    chunking_percent=0.05,  # percentage of layers to process at once
 ):
     """Iteratively drop layers until the loss cannot be improved.
 
     When *fast* is True we evaluate candidate removals in 10 percent batches,
     stopping as soon as one batch yields an improvement.
     """
-    current_max_layers = optimizer.max_layers
+    current_max_layers = optimizer.best_params["global_logits"].shape[0]
+    optimizer.max_layers = current_max_layers
 
-    def score_layer(layer_idx: int, base_params: dict, final_tau: float, h: float, cur_max_layers: int, best_seed: int):
+    def score_layer(
+        layer_idx: int,
+        base_params: dict,
+        final_tau: float,
+        h: float,
+        cur_max_layers: int,
+        best_seed: int,
+    ):
         cand_params, cand_max_layers = remove_layer_from_solution(
             base_params, layer_idx, final_tau, h, cur_max_layers, best_seed
         )
@@ -343,42 +429,96 @@ def prune_redundant_layers(
         comp = optimizer.get_best_discretized_image()
         best_loss = compute_loss(comp, optimizer.target).item()
 
-    tbar = tqdm(desc=f"Layer pruning | Loss {best_loss:.4f}", total=max(current_max_layers - 1, 0), leave=False)
+    tbar = tqdm(
+        desc=f"Layer pruning | Loss {best_loss:.4f}",
+        total=max(current_max_layers - 1, 0),
+        leave=False,
+    )
     removed_layers = 0
     improvement = True
 
-    while current_max_layers > pruning_min_layers and (improvement or current_max_layers > pruning_max_layers):
+    while current_max_layers > pruning_min_layers and (
+        improvement or current_max_layers > pruning_max_layers
+    ):
         tbar.update(1)
         improvement = False
 
         layer_indices = list(range(current_max_layers))
         if fast:
             random.shuffle(layer_indices)
-            chunk_size = max(1, math.ceil(len(layer_indices) * 0.1))
+            chunk_size = max(1, math.ceil(len(layer_indices) * chunking_percent))
+            c_cand = None
+            c_loss = 1000
             for chunk in _chunked(layer_indices, chunk_size):
-                cand_results = Parallel(n_jobs=n_jobs, backend="threading", prefer="threads")(delayed(score_layer)(idx, optimizer.best_params, optimizer.final_tau, optimizer.h, current_max_layers, optimizer.best_seed) for idx in chunk)
-                cand_loss, cand_params, cand_max_layers = min(cand_results, key=lambda x: x[0])
-                if cand_loss <= best_loss or current_max_layers > pruning_max_layers:
+                cand_results = Parallel(
+                    n_jobs=n_jobs, backend="threading", prefer="threads"
+                )(
+                    delayed(score_layer)(
+                        idx,
+                        optimizer.best_params,
+                        optimizer.final_tau,
+                        optimizer.h,
+                        current_max_layers,
+                        optimizer.best_seed,
+                    )
+                    for idx in chunk
+                )
+                cand_loss, cand_params, cand_max_layers = min(
+                    cand_results, key=lambda x: x[0]
+                )
+                if cand_loss <= best_loss:
                     removed_layers += 1
                     best_loss = cand_loss
                     current_max_layers = cand_max_layers
                     optimizer.best_params = cand_params
                     optimizer.max_layers = current_max_layers
-                    tbar.set_description(f"Layer pruning | Loss {best_loss:.4f} | Removed {removed_layers} | Layers {current_max_layers}")
+                    tbar.set_description(
+                        f"Layer pruning | Loss {best_loss:.4f} | Removed {removed_layers} | Layers {current_max_layers}"
+                    )
                     improvement = True
                     break  # restart outer while loop with updated solution
+                else:
+                    if current_max_layers > pruning_max_layers and cand_loss < c_loss:
+                        c_cand = (cand_params, current_max_layers)
+            if c_cand is not None:
+                removed_layers += 1
+                best_loss = c_loss
+                current_max_layers = c_cand[1]
+                optimizer.best_params = c_cand[0]
+                optimizer.max_layers = current_max_layers
+                tbar.set_description(
+                    f"Layer pruning | Loss {best_loss:.4f} | Removed {removed_layers} | Layers {current_max_layers}"
+                )
+                improvement = True
+
             if not improvement:
                 break
         else:
-            cand_results = Parallel(n_jobs=n_jobs, backend="threading", prefer="threads")(delayed(score_layer)(idx, optimizer.best_params, optimizer.final_tau, optimizer.h, current_max_layers, optimizer.best_seed) for idx in layer_indices)
-            cand_loss, cand_params, cand_max_layers = min(cand_results, key=lambda x: x[0])
+            cand_results = Parallel(
+                n_jobs=n_jobs, backend="threading", prefer="threads"
+            )(
+                delayed(score_layer)(
+                    idx,
+                    optimizer.best_params,
+                    optimizer.final_tau,
+                    optimizer.h,
+                    current_max_layers,
+                    optimizer.best_seed,
+                )
+                for idx in layer_indices
+            )
+            cand_loss, cand_params, cand_max_layers = min(
+                cand_results, key=lambda x: x[0]
+            )
             if cand_loss <= best_loss or current_max_layers > pruning_max_layers:
                 removed_layers += 1
                 best_loss = cand_loss
                 current_max_layers = cand_max_layers
                 optimizer.best_params = cand_params
                 optimizer.max_layers = current_max_layers
-                tbar.set_description(f"Layer pruning | Loss {best_loss:.4f} | Removed {removed_layers} | Layers {current_max_layers}")
+                tbar.set_description(
+                    f"Layer pruning | Loss {best_loss:.4f} | Removed {removed_layers} | Layers {current_max_layers}"
+                )
                 improvement = True
             else:
                 break

@@ -115,7 +115,7 @@ class FilamentOptimizer:
 
         # Initialize optimizer
         self.optimizer = CAdamW(
-            [self.params["global_logits"]],#, self.params["pixel_height_logits"]],
+            [self.params["global_logits"]],  # , self.params["pixel_height_logits"]],
             lr=self.learning_rate,
         )
 
@@ -291,8 +291,8 @@ class FilamentOptimizer:
         loss.backward()
 
         # We scale the gradients for the height logits by a factor to only allow updates for very strong (wrong layer/color) gradients.
-        if (self.params["pixel_height_logits"].grad is not None):
-            self.params["pixel_height_logits"].grad.mul_(1e-10)
+        # if (self.params["pixel_height_logits"].grad is not None):
+        #    self.params["pixel_height_logits"].grad.mul_(1e-10)
 
         self.optimizer.step()
 
@@ -535,6 +535,8 @@ class FilamentOptimizer:
         min_layers_allowed: int,
         max_layers_allowed: int,
         search_seed: bool = True,
+        fast_pruning: bool = False,
+        fast_pruning_percent: float = 0.05,
     ):
         # Now run pruning
         from autoforge.Helper.PruningHelper import (
@@ -542,35 +544,35 @@ class FilamentOptimizer:
             prune_num_swaps,
             prune_redundant_layers,
         )
-
-        # self.best_params["pixel_height_logits"] = smooth_coplanar_faces(
-        #     self.best_params["pixel_height_logits"], 0.1
-        # )
-
-        # prune_fireflies(self)
+        if search_seed:
+            self.rng_seed_search(self.best_discrete_loss, 1000, autoset_seed=True)
 
         prune_num_colors(
             self,
             max_colors_allowed,
             self.final_tau,
             None,
+            fast=fast_pruning,
+            chunking_percent=fast_pruning_percent,
         )
-        if search_seed:
-            self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
+
         prune_num_swaps(
             self,
             max_swaps_allowed,
             self.final_tau,
             None,
+            fast=fast_pruning,
+            chunking_percent=fast_pruning_percent,
         )
-        if search_seed:
-            self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
 
-        # prune_fireflies(self)
-
-        prune_redundant_layers(self, None, min_layers_allowed, max_layers_allowed)
-        if search_seed:
-            self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
+        prune_redundant_layers(
+            self,
+            None,
+            min_layers_allowed,
+            max_layers_allowed,
+            fast=fast_pruning,
+            chunking_percent=fast_pruning_percent,
+        )
 
     def _maybe_update_best_discrete(self):
         """

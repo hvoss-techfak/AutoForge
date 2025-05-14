@@ -23,6 +23,14 @@ from autoforge.Helper.OutputHelper import (
 )
 from autoforge.Modules.Optimizer import FilamentOptimizer
 
+# check if we can use torch.set_float32_matmul_precision('high')
+if torch.__version__ >= "2.0.0":
+    try:
+        torch.set_float32_matmul_precision("high")
+    except Exception as e:
+        print("Warning: Could not set float32 matmul precision to high. Error:", e)
+        pass
+
 
 def main():
     parser = configargparse.ArgParser()
@@ -42,7 +50,7 @@ def main():
     )
 
     parser.add_argument(
-        "--iterations", type=int, default=5000, help="Number of optimization iterations"
+        "--iterations", type=int, default=2000, help="Number of optimization iterations"
     )
 
     parser.add_argument(
@@ -109,7 +117,8 @@ def main():
 
     parser.add_argument(
         "--visualize",
-        action="store_true",
+        type=bool,
+        default=True,
         help="Enable visualization during optimization",
     )
 
@@ -139,6 +148,19 @@ def main():
         default=True,
         help="Perform pruning after optimization",
     )
+    parser.add_argument(
+        "--fast_pruning",
+        type=bool,
+        default=True,
+        help="Use fast pruning method",
+    )
+    parser.add_argument(
+        "--fast_pruning_percent",
+        type=float,
+        default=0.05,
+        help="Percentage of increment search for fast pruning",
+    )
+
     parser.add_argument(
         "--pruning_max_colors",
         type=int,
@@ -354,26 +376,27 @@ def main():
     # Main optimization loop
     print("Starting optimization...")
     tbar = tqdm(range(args.iterations))
-    for i in tbar:
-        loss_val = optimizer.step(record_best=i % 8 == 0)
+    with torch.autocast(device.type, dtype=torch.bfloat16):
+        for i in tbar:
+            loss_val = optimizer.step(record_best=i % 8 == 0)
 
-        optimizer.visualize(interval=25)
-        optimizer.log_to_tensorboard(interval=100)
+            optimizer.visualize(interval=25)
+            optimizer.log_to_tensorboard(interval=100)
 
-        if (i + 1) % 100 == 0:
-            tbar.set_description(
-                f"Iteration {i + 1}, Loss = {loss_val:.4f}, best validation Loss = {optimizer.best_discrete_loss:.4f}"
-            )
-        if (
-            optimizer.best_step is not None
-            and optimizer.num_steps_done - optimizer.best_step > args.early_stopping
-        ):
-            print(
-                "Early stopping after",
-                args.early_stopping,
-                "steps without improvement.",
-            )
-            break
+            if (i + 1) % 100 == 0:
+                tbar.set_description(
+                    f"Iteration {i + 1}, Loss = {loss_val:.4f}, best validation Loss = {optimizer.best_discrete_loss:.4f}"
+                )
+            if (
+                optimizer.best_step is not None
+                and optimizer.num_steps_done - optimizer.best_step > args.early_stopping
+            ):
+                print(
+                    "Early stopping after",
+                    args.early_stopping,
+                    "steps without improvement.",
+                )
+                break
 
     post_opt_step = 0
 
@@ -387,7 +410,9 @@ def main():
             max_swaps_allowed=args.pruning_max_swaps,
             min_layers_allowed=args.min_layers,
             max_layers_allowed=args.pruning_max_layer,
-            search_seed=True if i == 0 else False,
+            search_seed=True,
+            fast_pruning=args.fast_pruning,
+            fast_pruning_percent=args.fast_pruning_percent,
         )
         optimizer.log_to_tensorboard(
             interval=1,

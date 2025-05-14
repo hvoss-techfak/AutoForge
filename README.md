@@ -90,7 +90,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--csv_file` **(Required)** Path to the CSV file containing material data. The CSV should include columns for the brand, name, color (hex code), and TD values.
 
 - `--output_folder` Folder where output files will be saved (default: `output`).
-- `--iterations` Number of optimization iterations (default: 5000).
+- `--iterations` Number of optimization iterations (default: 2000).
 - `--learning_rate` Learning rate for optimization (default: 0.015).
 - `--layer_height` Layer thickness in millimeters (default: 0.04).
 - `--max_layers` Maximum number of layers (default: 75).  
@@ -101,7 +101,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
   **Note:** The solver currently assumes that you have a solid color in the background, which means a color with a TD value of 4 or less (if you have a background height of 0.4).
 - `--init_tau` Initial tau value for Gumbel-Softmax (default: 1.0).
 - `--final_tau` Final tau value for the Gumbel-Softmax formulation (default: 0.01).
-- `--visualize` Flag to enable live visualization of the composite image during optimization.
+- `--visualize` enable live visualization of the composite image during optimization (default: True).
 - `--stl_output_size` Size of the longest dimension of the output STL file in millimeters (default: 150).
 - `--nozzle_diameter` Diameter of the printer nozzle in millimeters (default: 0.4).  
   **Note:** Details smaller than half this value will be ignored.
@@ -110,6 +110,8 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 
 - `--perform_pruning`  Perform pruning after optimization (default: True).  
   **Note:** This is highly recommended even if you don't have a color/color swap limit, as it actually increases the quality of the output.
+- `--fast_pruning`  Perform pruning in chunks. 10-15x speedup compared to accurate method (default: True).
+- `--fast_pruning_percent` Size of fast pruning chunks in percent (default: 0.05) (5%).
 - `--pruning_max_colors` Max number of colors allowed after pruning (default: 100).
 - `--pruning_max_swaps` Max number of swaps allowed after pruning (default: 100).
 - `--pruning_max_layer` Max number of layers allowed after pruning (default: 75).
