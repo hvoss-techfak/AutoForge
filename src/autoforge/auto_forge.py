@@ -255,6 +255,12 @@ def main():
         default=-1,
         help="Number of layers to cluster the image into.",
     )
+    parser.add_argument(
+        "--disable_visualization_for_gradio",
+        type=int,
+        default=0,
+        help="Simple switch to disable the matplotlib render window for gradio rendering.",
+    )
 
     args = parser.parse_args()
     if args.num_init_cluster_layers == -1:

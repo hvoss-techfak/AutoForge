@@ -171,7 +171,8 @@ class FilamentOptimizer:
 
         # If you want a figure for real-time visualization:
         if self.visualize_flag:
-            plt.ion()
+            if self.args.disable_visualization_for_gradio != 1:
+                plt.ion()
             self.fig, self.ax = plt.subplots(2, 3, figsize=(14, 6))
 
             self.target_im_ax = self.ax[0, 0].imshow(
@@ -188,7 +189,8 @@ class FilamentOptimizer:
                 np.zeros((self.H, self.W, 3), dtype=np.uint8)
             )
             self.ax[0, 2].set_title("Best Discrete Composite")
-            plt.pause(0.1)
+            if self.args.disable_visualization_for_gradio != 1:
+                plt.pause(0.1)
 
             self.depth_map_ax = self.ax[1, 0].imshow(
                 np.zeros((self.H, self.W), dtype=np.uint8), cmap="viridis"
@@ -447,8 +449,8 @@ class FilamentOptimizer:
         self.fig.suptitle(
             f"Step {self.num_steps_done}/{self.args.iterations}, Tau: {tau_g:.4f}, Loss: {self.loss:.4f}, Best Discrete Loss: {self.best_discrete_loss:.4f}"
         )
-
-        plt.pause(0.01)
+        if self.args.disable_visualization_for_gradio != 1:
+            plt.pause(0.01)
         plt.savefig(self.args.output_folder + "/vis_temp.png")
 
     def get_current_parameters(self):
