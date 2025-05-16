@@ -390,7 +390,7 @@ def main():
         for i in tbar:
             loss_val = optimizer.step(record_best=i % 8 == 0)
 
-            optimizer.visualize(interval=25)
+            optimizer.visualize(interval=100)
             optimizer.log_to_tensorboard(interval=100)
 
             if (i + 1) % 100 == 0:

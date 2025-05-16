@@ -5,12 +5,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
-from torchcam.methods import SmoothGradCAMpp
-from torchcam.utils import overlay_mask
-from torchvision import models
-from torchvision.models import ResNet18_Weights
-from torchvision.transforms._functional_tensor import resize, normalize
-from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
 
 from autoforge.Helper.CAdamW import CAdamW
@@ -606,9 +600,6 @@ class FilamentOptimizer:
                     rng_seed=seed,
                 )
 
-            # 3) Compute the "discrete" loss function
-            #    If you have a separate function for that, just call it.
-            #    Otherwise, reuse the standard compute_loss with add_penalty_loss=False, etc.
             current_disc_loss = compute_loss(
                 comp=comp_disc,
                 target=self.target,
