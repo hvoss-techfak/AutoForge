@@ -6,9 +6,10 @@ import time
 import shutil
 import sys
 from datetime import datetime
+import re
 
 # --- Configuration ---
-AUTFORGE_SCRIPT_PATH = "auto_forge.py"  # Make sure this points to your script
+#AUTFORGE_SCRIPT_PATH = "auto_forge.py"  # Make sure this points to your script
 DEFAULT_MATERIALS_CSV = "default_materials.csv"
 GRADIO_OUTPUT_BASE_DIR = "output"
 os.makedirs(GRADIO_OUTPUT_BASE_DIR, exist_ok=True)
@@ -48,7 +49,30 @@ def ensure_required_cols(df, *, in_display_space):
     return df_fixed[list(target_cols.values())]
 
 
-# --- Helper Functions --- (Keep your existing helper functions: hex_to_rgb_display, get_script_args_info)
+def rgba_to_hex(col: str) -> str:
+    """
+    Turn 'rgba(r, g, b, a)' or 'rgb(r, g, b)' into '#RRGGBB'.
+    If the input is already a hex code or anything unexpected,
+    return it unchanged.
+    """
+    if not isinstance(col, str):
+        return col
+    col = col.strip()
+    if col.startswith("#"):          # already fine
+        return col.upper()
+
+    m = re.match(
+        r"rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*[\d.]+)?\s*\)",
+        col,
+    )
+    if not m:
+        return col                   # not something we recognise
+
+    r, g, b = (int(float(x)) for x in m.groups()[:3])
+    return "#{:02X}{:02X}{:02X}".format(r, g, b)
+
+
+# --- Helper Functions ---
 def get_script_args_info(exclude_args=None):
     if exclude_args is None:
         exclude_args = []
@@ -60,6 +84,75 @@ def get_script_args_info(exclude_args=None):
             "type": "number",
             "default": 2000,
             "help": "Number of optimization iterations",
+        },
+        {
+            "name": "--layer_height",
+            "type": "number",
+            "default": 0.04,
+            "step": 0.01,
+            "help": "Layer thickness in mm",
+        },
+        {
+            "name": "--max_layers",
+            "type": "number",
+            "default": 75,
+            "precision": 0,
+            "help": "Maximum number of layers",
+        },
+        {
+            "name": "--learning_rate",
+            "type": "number",
+            "default": 0.015,
+            "step": 0.001,
+            "help": "Learning rate for optimization",
+        },
+        {
+            "name": "--background_height",
+            "type": "number",
+            "default": 0.4,
+            "step": 0.01,
+            "help": "Height of the background in mm",
+        },
+        {
+            "name": "--background_color",
+            "type": "colorpicker",
+            "default": "#000000",
+            "help": "Background color",
+        },
+        {
+            "name": "--stl_output_size",
+            "type": "number",
+            "default": 100,
+            "precision": 0,
+            "help": "Size of the longest dimension of the output STL file in mm",
+        },
+        {
+            "name": "--nozzle_diameter",
+            "type": "number",
+            "default": 0.4,
+            "step": 0.1,
+            "help": "Diameter of the printer nozzle in mm",
+        },
+        {
+            "name": "--pruning_max_colors",
+            "type": "number",
+            "default": 10,
+            "precision": 0,
+            "help": "Max number of colors allowed after pruning",
+        },
+        {
+            "name": "--pruning_max_swaps",
+            "type": "number",
+            "default": 20,
+            "precision": 0,
+            "help": "Max number of swaps allowed after pruning",
+        },
+        {
+            "name": "--pruning_max_layer",
+            "type": "number",
+            "default": 75,
+            "precision": 0,
+            "help": "Max number of layers allowed after pruning",
         },
         {
             "name": "--warmup_fraction",
@@ -92,59 +185,11 @@ def get_script_args_info(exclude_args=None):
             "help": "Final tau value for Gumbel-Softmax",
         },
         {
-            "name": "--learning_rate",
-            "type": "number",
-            "default": 0.015,
-            "step": 0.001,
-            "help": "Learning rate for optimization",
-        },
-        {
-            "name": "--layer_height",
-            "type": "number",
-            "default": 0.04,
-            "step": 0.01,
-            "help": "Layer thickness in mm",
-        },
-        {
-            "name": "--max_layers",
-            "type": "number",
-            "default": 75,
-            "precision": 0,
-            "help": "Maximum number of layers",
-        },
-        {
             "name": "--min_layers",
             "type": "number",
             "default": 0,
             "precision": 0,
             "help": "Minimum number of layers. Used for pruning.",
-        },
-        {
-            "name": "--background_height",
-            "type": "number",
-            "default": 0.4,
-            "step": 0.01,
-            "help": "Height of the background in mm",
-        },
-        {
-            "name": "--background_color",
-            "type": "colorpicker",
-            "default": "#000000",
-            "help": "Background color",
-        },
-        {
-            "name": "--stl_output_size",
-            "type": "number",
-            "default": 150,
-            "precision": 0,
-            "help": "Size of the longest dimension of the output STL file in mm",
-        },
-        {
-            "name": "--nozzle_diameter",
-            "type": "number",
-            "default": 0.4,
-            "step": 0.1,
-            "help": "Diameter of the printer nozzle in mm",
         },
         {
             "name": "--early_stopping",
@@ -154,27 +199,6 @@ def get_script_args_info(exclude_args=None):
             "help": "Number of steps without improvement before stopping",
         },
         {
-            "name": "--pruning_max_colors",
-            "type": "number",
-            "default": 100,
-            "precision": 0,
-            "help": "Max number of colors allowed after pruning",
-        },
-        {
-            "name": "--pruning_max_swaps",
-            "type": "number",
-            "default": 100,
-            "precision": 0,
-            "help": "Max number of swaps allowed after pruning",
-        },
-        {
-            "name": "--pruning_max_layer",
-            "type": "number",
-            "default": 75,
-            "precision": 0,
-            "help": "Max number of layers allowed after pruning",
-        },
-        {
             "name": "--random_seed",
             "type": "number",
             "default": 0,
@@ -182,96 +206,17 @@ def get_script_args_info(exclude_args=None):
             "help": "Specify the random seed, or use 0 for automatic generation",
         },
         {
-            "name": "--use_depth_anything_height_initialization",
-            "type": "checkbox",
-            "default": False,
-            "help": "Use Depth Anything v2 for height image initialization",
-        },
-        {
-            "name": "--depth_strength",
-            "type": "slider",
-            "default": 0.25,
-            "min": 0.0,
-            "max": 1.0,
-            "step": 0.01,
-            "help": "Weight (0 to 1) for blending even spacing with the cluster's average depth",
-        },
-        {
-            "name": "--depth_threshold",
-            "type": "slider",
-            "default": 0.05,
-            "min": 0.0,
-            "max": 1.0,
-            "step": 0.01,
-            "help": "Threshold for splitting two distinct colors based on depth",
-        },
-        {
-            "name": "--min_cluster_value",
-            "type": "slider",
-            "default": 0.1,
-            "min": 0.0,
-            "max": 1.0,
-            "step": 0.01,
-            "help": "Minimum normalized value for the lowest cluster (to avoid pure black)",
-        },
-        {
-            "name": "--w_depth",
-            "type": "slider",
-            "default": 0.5,
-            "min": 0.0,
-            "max": 2.0,
-            "step": 0.01,
-            "help": "Weight for depth difference in ordering_depth",
-        },
-        {
-            "name": "--w_lum",
-            "type": "slider",
-            "default": 1.0,
-            "min": 0.0,
-            "max": 2.0,
-            "step": 0.01,
-            "help": "Weight for luminance difference in ordering_depth",
-        },
-        {
-            "name": "--order_blend",
-            "type": "slider",
-            "default": 0.1,
-            "min": 0.0,
-            "max": 1.0,
-            "step": 0.01,
-            "help": "Slider (0 to 1) blending original luminance ordering (0) and depth-informed ordering (1).",
-        },
-        {
-            "name": "--mps",
-            "type": "checkbox",
-            "default": False,
-            "help": "Use the Metal Performance Shaders (MPS) backend, if available.",
-        },
-        {
-            "name": "--tensorboard",
-            "type": "checkbox",
-            "default": False,
-            "help": "Enable TensorBoard logging (logs will be in output folder)",
-        },
-        {
             "name": "--num_init_rounds",
             "type": "number",
-            "default": 128,
+            "default": 32,
             "precision": 0,
             "help": "Number of rounds to choose the starting height map from.",
-        },
-        {
-            "name": "--num_init_cluster_layers",
-            "type": "number",
-            "default": -1,
-            "precision": 0,
-            "help": "Number of layers to cluster the image into (-1 for max_layers // 2).",
         },
     ]
     return [arg for arg in all_args_info if arg["name"] not in exclude_args]
 
 
-# Initial filament data (same as before)
+# Initial filament data
 initial_filament_data = {
     "Brand": ["Generic", "Generic", "Generic"],
     " Name": ["PLA Black", "PLA Grey", "PLA White"],
@@ -302,7 +247,7 @@ def create_empty_error_outputs(log_message=""):
     return (
         log_message,  # progress_output
         None,  # final_image_preview
-        gr.update(visible=False, interactive=False),  # ### ZIP PATCH: download_zip
+        gr.update(visible=False, interactive=False),  # ### ZIP: download_zip
     )
 
 
@@ -315,7 +260,6 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
 
     with gr.Tabs():
         with gr.TabItem("Filament Management"):
-            # ... (Filament management UI code remains the same as your last version) ...
             gr.Markdown(
                 'Manage your filament list. This list will be saved as a CSV and used by the Autoforge process. \n To remove a filament simply rightclick on any of the fields and select "Delete Row"'
             )
@@ -355,21 +299,27 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
             )
 
             def update_filament_df_state_from_table(display_df):
-                # guarantee display columns
                 display_df = ensure_required_cols(display_df, in_display_space=True)
 
-                # translate to script space and store in state
+                # make sure every colour is hex
+                if "Color (Hex)" in display_df.columns:
+                    display_df["Color (Hex)"] = display_df["Color (Hex)"].apply(
+                        rgba_to_hex
+                    )
+
                 script_df = display_df.rename(
                     columns={"Name": " Name", "TD": " TD", "Color (Hex)": " Color"}
                 )
                 script_df = ensure_required_cols(script_df, in_display_space=False)
-
                 filament_df_state.value = script_df
 
             def add_filament_to_table(current_display_df, brand, name, td, color_hex):
                 if not brand or not name:
                     gr.Warning("Brand and Name cannot be empty.")
                     return current_display_df
+
+                color_hex = rgba_to_hex(color_hex)  # <-- new line
+
                 new_row = pd.DataFrame(
                     [{"Brand": brand, "Name": name, "TD": td, "Color (Hex)": color_hex}]
                 )
@@ -513,51 +463,65 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                     )
                 with gr.Column(scale=2):
                     gr.Markdown("### Autoforge Parameters")
-                    with gr.Accordion("Adjust Parameters", open=False):
-                        args_for_accordion = get_script_args_info(
-                            exclude_args=["--input_image"]
+                    with gr.Accordion("Progress & Output", open=True):
+                        final_image_preview = gr.Image(
+                            label="Final Model Preview",
+                            type="filepath",
+                            interactive=False,
                         )
-                        for arg in args_for_accordion:
-                            label, info, default_val = (
-                                f"{arg['name']}",
-                                arg["help"],
-                                arg.get("default"),
+            with gr.Row():
+                download_zip = gr.File(  # was visible=True
+                    label="Download all results (.zip)",
+                    interactive=True,
+                    visible=False,
+                )
+            with gr.Row():
+                with gr.Accordion("Adjust Parameters", open=False):
+                    args_for_accordion = get_script_args_info(
+                        exclude_args=["--input_image"]
+                    )
+
+                    for arg in args_for_accordion:
+                        label, info, default_val = (
+                            f"{arg['name']}",
+                            arg["help"],
+                            arg.get("default"),
+                        )
+                        if arg["type"] == "number":
+                            accordion_params_dict[arg["name"]] = gr.Number(
+                                label=label,
+                                value=default_val,
+                                info=info,
+                                minimum=arg.get("min"),
+                                maximum=arg.get("max"),
+                                step=arg.get(
+                                    "step",
+                                    0.001 if isinstance(default_val, float) else 1,
+                                ),
+                                precision=arg.get("precision", None),
                             )
-                            if arg["type"] == "number":
-                                accordion_params_dict[arg["name"]] = gr.Number(
-                                    label=label,
-                                    value=default_val,
-                                    info=info,
-                                    minimum=arg.get("min"),
-                                    maximum=arg.get("max"),
-                                    step=arg.get(
-                                        "step",
-                                        0.001 if isinstance(default_val, float) else 1,
-                                    ),
-                                    precision=arg.get("precision", None),
-                                )
-                            elif arg["type"] == "slider":
-                                accordion_params_dict[arg["name"]] = gr.Slider(
-                                    label=label,
-                                    value=default_val,
-                                    info=info,
-                                    minimum=arg.get("min", 0),
-                                    maximum=arg.get("max", 1),
-                                    step=arg.get("step", 0.01),
-                                )
-                            elif arg["type"] == "checkbox":
-                                accordion_params_dict[arg["name"]] = gr.Checkbox(
-                                    label=label, value=default_val, info=info
-                                )
-                            elif arg["type"] == "colorpicker":
-                                accordion_params_dict[arg["name"]] = gr.ColorPicker(
-                                    label=label, value=default_val, info=info
-                                )
-                            else:
-                                accordion_params_dict[arg["name"]] = gr.Textbox(
-                                    label=label, value=str(default_val), info=info
-                                )
-                            accordion_params_ordered_names.append(arg["name"])
+                        elif arg["type"] == "slider":
+                            accordion_params_dict[arg["name"]] = gr.Slider(
+                                label=label,
+                                value=default_val,
+                                info=info,
+                                minimum=arg.get("min", 0),
+                                maximum=arg.get("max", 1),
+                                step=arg.get("step", 0.01),
+                            )
+                        elif arg["type"] == "checkbox":
+                            accordion_params_dict[arg["name"]] = gr.Checkbox(
+                                label=label, value=default_val, info=info
+                            )
+                        elif arg["type"] == "colorpicker":
+                            accordion_params_dict[arg["name"]] = gr.ColorPicker(
+                                label=label, value=default_val, info=info
+                            )
+                        else:
+                            accordion_params_dict[arg["name"]] = gr.Textbox(
+                                label=label, value=str(default_val), info=info
+                            )
+                        accordion_params_ordered_names.append(arg["name"])
 
             run_button = gr.Button(
                 "Run Autoforge Process",
@@ -565,25 +529,13 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                 elem_id="run_button_full_width",
             )
 
-            with gr.Accordion("Progress & Output", open=True):
-                final_image_preview = gr.Image(
-                    label="Final Model Preview", type="filepath", interactive=False
-                )
-                download_zip = gr.File(  # ### ZIP PATCH: new widget
-                    label="Download all results (.zip)", interactive=True, visible=True
-                )
-                progress_output = gr.Textbox(
-                    label="Console Output",
-                    lines=15,
-                    autoscroll=True,
-                    show_copy_button=False,
-                )
 
-            # Hidden components for storing results to pass to the Results tab (or simplify if not needed)
-            result_png_hidden = gr.File(interactive=False, visible=False)
-            result_stl_hidden = gr.File(interactive=False, visible=False)
-            result_txt_hidden = gr.File(interactive=False, visible=False)
-            result_hfp_hidden = gr.File(interactive=False, visible=False)
+            progress_output = gr.Textbox(
+                label="Console Output",
+                lines=15,
+                autoscroll=True,
+                show_copy_button=False,
+            )
 
     # --- Backend Function for Running the Script ---
     def execute_autoforge_script(
@@ -595,23 +547,6 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         ):  # Covers None and empty string from gr.Image(type="filepath")
             gr.Error("Input Image is required! Please upload an image.")
             return create_empty_error_outputs("Error: Input Image is required!")
-
-        last_preview_mtime = 0  # <-- add this helper
-
-        def _fresh_preview(src_path, dst_dir):
-            """
-            If *src_path* exists, copy it to a unique file in *dst_dir*
-            so the browser gets a new URL each time. Returns new path or None.
-            """
-            if not os.path.exists(src_path):
-                return None
-            ts_name = f"preview_{int(time.time() * 1000)}.png"
-            dst_path = os.path.join(dst_dir, ts_name)
-            try:
-                shutil.copy(src_path, dst_path)
-                return dst_path
-            except Exception:
-                return None
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_output_dir_val = os.path.join(GRADIO_OUTPUT_BASE_DIR, f"run_{timestamp}")
@@ -645,9 +580,10 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
 
         # 2. Construct command
         python_executable = sys.executable or "python"
-        command = [python_executable, AUTFORGE_SCRIPT_PATH]
+        command = ["autoforge",]
         command.extend(["--csv_file", temp_filament_csv])
         command.extend(["--output_folder", run_output_dir_val])
+        command.extend(["--disable_visualization_for_gradio","1"])
 
         base_filename = os.path.basename(input_image_path)
         script_input_image_path = os.path.join(run_output_dir_val, base_filename)
@@ -795,7 +731,6 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
 
         if out_png is None:
             log_output += "\nWarning: final_model.png not found in output."
-        # ... (add other warnings if files not found) ...
 
         yield (
             log_output,  # progress_output
