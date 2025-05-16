@@ -7,6 +7,7 @@ import shutil
 import sys
 from datetime import datetime
 import re
+from PIL import Image
 
 # --- Configuration ---
 #AUTFORGE_SCRIPT_PATH = "auto_forge.py"  # Make sure this points to your script
@@ -172,25 +173,25 @@ def get_script_args_info(exclude_args=None):
             "step": 0.01,
             "help": "Fraction of iterations that the learning rate is increasing (warmup)",
         },
-        {
-            "name": "--init_tau",
-            "type": "number",
-            "default": 1.0,
-            "help": "Initial tau value for Gumbel-Softmax",
-        },
-        {
-            "name": "--final_tau",
-            "type": "number",
-            "default": 0.01,
-            "help": "Final tau value for Gumbel-Softmax",
-        },
-        {
-            "name": "--min_layers",
-            "type": "number",
-            "default": 0,
-            "precision": 0,
-            "help": "Minimum number of layers. Used for pruning.",
-        },
+        # {
+        #     "name": "--init_tau",
+        #     "type": "number",
+        #     "default": 1.0,
+        #     "help": "Initial tau value for Gumbel-Softmax",
+        # },
+        # {
+        #     "name": "--final_tau",
+        #     "type": "number",
+        #     "default": 0.01,
+        #     "help": "Final tau value for Gumbel-Softmax",
+        # },
+        # {
+        #     "name": "--min_layers",
+        #     "type": "number",
+        #     "default": 0,
+        #     "precision": 0,
+        #     "help": "Minimum number of layers. Used for pruning.",
+        # },
         {
             "name": "--early_stopping",
             "type": "number",
@@ -457,6 +458,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                     gr.Markdown("### Input Image (Required)")
                     input_image_component = gr.Image(
                         type="filepath",
+                        image_mode="RGBA",
                         label="Upload Image",
                         sources=["upload"],
                         interactive=True,
@@ -588,10 +590,28 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         base_filename = os.path.basename(input_image_path)
         script_input_image_path = os.path.join(run_output_dir_val, base_filename)
         try:
-            shutil.copy(input_image_path, script_input_image_path)
+            img = Image.open(input_image_path)
+            # decide where to store the image we pass to Autoforge
+            base_no_ext, _ = os.path.splitext(os.path.basename(input_image_path))
+            script_input_image_path = os.path.join(
+                run_output_dir_val, f"{base_no_ext}.png"
+            )
+
+            if img.mode in ("RGBA", "LA") or (
+                img.mode == "P" and "transparency" in img.info
+            ):
+                # the uploaded file has an alpha channel – save it as PNG
+                img.save(script_input_image_path, format="PNG")
+            else:
+                # no alpha present – just copy the file in whatever format it was
+                script_input_image_path = os.path.join(
+                    run_output_dir_val, os.path.basename(input_image_path)
+                )
+                shutil.copy(input_image_path, script_input_image_path)
+
             command.extend(["--input_image", script_input_image_path])
         except Exception as e:
-            err_msg = f"Error copying input image: {e}"
+            err_msg = f"Error handling input image: {e}"
             gr.Error(err_msg)
             return create_empty_error_outputs(err_msg)
 

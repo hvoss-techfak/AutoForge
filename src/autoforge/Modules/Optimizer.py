@@ -549,7 +549,7 @@ class FilamentOptimizer:
         )
 
         if search_seed:
-            self.rng_seed_search(self.best_discrete_loss, 1000, autoset_seed=True)
+            self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
 
         prune_num_colors(
             self,
