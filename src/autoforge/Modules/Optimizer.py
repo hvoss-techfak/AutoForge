@@ -119,48 +119,48 @@ class FilamentOptimizer:
             lr=self.learning_rate,
         )
 
-        # Setup the focus map component
-        # Load a state-of-the-art ResNet50 model with pretrained weights.
-        cam_model = models.resnet18(weights=ResNet18_Weights.DEFAULT).to(
-            self.target.device
-        )
-        cam_model.eval()
-        # Use ScoreCAM from torchcam on the 'layer4' block.
-        cam_extractor = SmoothGradCAMpp(cam_model, target_layer="layer4")
-        # Preprocess the target image for ResNet50.
-        target_preprocessed = normalize(
-            resize(self.target.permute(2, 0, 1), (224, 224)) / 255.0,
-            [0.485, 0.456, 0.406],
-            [0.229, 0.224, 0.225],
-        )
-        focus_maps = []
-        for _ in tqdm(range(1), desc="Creating loss function attention map..."):
-            out = cam_model(target_preprocessed.unsqueeze(0))
-            # ScoreCAM returns a dict with keys corresponding to layers.
-            focus_map = cam_extractor(out.squeeze(0).argmax().item(), out)[0]
-            # Normalize the focus map to [0, 1]
-            focus_map = (focus_map - focus_map.min()) / (
-                focus_map.max() - focus_map.min() + 1e-8
-            )
-            focus_maps.append(focus_map)
-        # get maximum over all maps
-        self.focus_map = torch.stack(focus_maps)
-        self.focus_map = self.focus_map.max(dim=0)[0]
-        # normalize again
-        self.focus_map = (self.focus_map - self.focus_map.min()) / (
-            self.focus_map.max() - self.focus_map.min() + 1e-8
-        )
-
-        # resize back to target size, current dim is [1,h,w]
-        self.focus_map = (
-            torch.nn.functional.interpolate(
-                self.focus_map.unsqueeze(0),
-                (self.H, self.W),
-                mode="bilinear",
-            )
-            .squeeze(0)
-            .squeeze(0)
-        )
+        # # Setup the focus map component
+        # # Load a state-of-the-art ResNet50 model with pretrained weights.
+        # cam_model = models.resnet18(weights=ResNet18_Weights.DEFAULT).to(
+        #     self.target.device
+        # )
+        # cam_model.eval()
+        # # Use ScoreCAM from torchcam on the 'layer4' block.
+        # cam_extractor = SmoothGradCAMpp(cam_model, target_layer="layer4")
+        # # Preprocess the target image for ResNet50.
+        # target_preprocessed = normalize(
+        #     resize(self.target.permute(2, 0, 1), (224, 224)) / 255.0,
+        #     [0.485, 0.456, 0.406],
+        #     [0.229, 0.224, 0.225],
+        # )
+        # focus_maps = []
+        # for _ in tqdm(range(1), desc="Creating loss function attention map..."):
+        #     out = cam_model(target_preprocessed.unsqueeze(0))
+        #     # ScoreCAM returns a dict with keys corresponding to layers.
+        #     focus_map = cam_extractor(out.squeeze(0).argmax().item(), out)[0]
+        #     # Normalize the focus map to [0, 1]
+        #     focus_map = (focus_map - focus_map.min()) / (
+        #         focus_map.max() - focus_map.min() + 1e-8
+        #     )
+        #     focus_maps.append(focus_map)
+        # # get maximum over all maps
+        # self.focus_map = torch.stack(focus_maps)
+        # self.focus_map = self.focus_map.max(dim=0)[0]
+        # # normalize again
+        # self.focus_map = (self.focus_map - self.focus_map.min()) / (
+        #     self.focus_map.max() - self.focus_map.min() + 1e-8
+        # )
+        #
+        # # resize back to target size, current dim is [1,h,w]
+        # self.focus_map = (
+        #     torch.nn.functional.interpolate(
+        #         self.focus_map.unsqueeze(0),
+        #         (self.H, self.W),
+        #         mode="bilinear",
+        #     )
+        #     .squeeze(0)
+        #     .squeeze(0)
+        # )
 
         # Setup best discrete solution tracking
         self.best_discrete_loss = float("inf")
@@ -202,17 +202,14 @@ class FilamentOptimizer:
             )
             self.ax[1, 1].set_title("Height Map Changes")
 
-            target_vis = self.target.cpu().detach().numpy()
-            focus_vis = self.focus_map.cpu().detach().numpy()
-
-            overlay = overlay_mask(
-                to_pil_image(target_vis),
-                to_pil_image(focus_vis, mode="F"),
-                alpha=0.5,
-            )
-
-            self.focus_map_ax = self.ax[1, 2].imshow(overlay)
-            self.ax[1, 2].set_title("Image Focus Map (currently unused)")
+            # target_vis = self.target.cpu().detach().numpy()
+            # focus_vis = self.focus_map.cpu().detach().numpy()
+            #
+            # overlay = overlay_mask(
+            #     to_pil_image(target_vis),
+            #     to_pil_image(focus_vis, mode="F"),
+            #     alpha=0.5,
+            # )
 
             # Compute and store the initial height map for later difference computation.
             with torch.no_grad():
@@ -286,7 +283,7 @@ class FilamentOptimizer:
             material_TDs=self.material_TDs,
             background=self.background,
             add_penalty_loss=10.0,
-            focus_map=self.focus_map,
+            focus_map=None,
             focus_strength=0.0,
         )
 
