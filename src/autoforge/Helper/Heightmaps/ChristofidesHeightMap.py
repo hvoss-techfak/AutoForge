@@ -532,9 +532,10 @@ def run_init_threads(
     cluster_layers=None,
     material_colors=None,
 ):
+    background_tuple = (np.asarray(background_tuple) * 255).tolist()
     if random_seed is None:
         random_seed = np.random.randint(1e6)
-    lab_space = False
+    lab_space = True
     tasks = [
         delayed(init_height_map)(
             target,

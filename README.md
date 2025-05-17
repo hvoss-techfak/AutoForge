@@ -8,7 +8,7 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 ## You can now run Autoforge for free in your browser thanks to [Huggingface space support](https://huggingface.co/spaces/hvoss-techfak/Autoforge).
 
 ## Example
-All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge, the background color is set to black.
+All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge 0.8.9, the background color is set to black.
 The pruning is set to a maximum of 8 color and 20 swaps, so each image uses at most 8 different colors and swaps the filament at most 20 times. 
 <div style="display: flex; justify-content: center; gap: 20px;">
   <div style="text-align: center;">
