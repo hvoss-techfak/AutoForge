@@ -51,6 +51,7 @@ def prune_num_colors(
     *,
     fast: bool = True,  # enable incremental search
     chunking_percent=0.05,  # percentage of layers to process at once
+    allowed_loss_increase_percent=0.005,  # percentage of loss increase allowed over best loss
 ) -> torch.Tensor:
     """Iteratively merge materials until the number of distinct colors is
     <= max_colors_allowed or until merging would worsen the loss.
@@ -116,7 +117,7 @@ def prune_num_colors(
                     n_jobs=n_jobs, backend="threading", prefer="threads"
                 )(delayed(score_color)(best_dg, *pair) for pair in chunk)
                 merge_loss, merge_dg = min(cand_results, key=lambda x: x[0])
-                if merge_loss < best_loss:
+                if merge_loss < best_loss * (1 + allowed_loss_increase_percent):
                     best_dg, best_loss = merge_dg, merge_loss
                     improved = True
                     break  # move on to next outer iteration
@@ -164,6 +165,7 @@ def prune_num_swaps(
     *,
     fast: bool = True,  # enable incremental search
     chunking_percent=0.05,  # percentage of layers to process at once
+    allowed_loss_increase_percent=0.005,  # percentage of loss increase allowed over best loss
 ) -> torch.Tensor:
     """Reduce the number of color boundaries until it is below or equal to
     *max_swaps_allowed*, stopping earlier if any further merge would worsen the
@@ -231,7 +233,7 @@ def prune_num_swaps(
                     for band_a, band_b, direction in chunk
                 )
                 merge_loss, merge_dg = min(cand_results, key=lambda x: x[0])
-                if merge_loss < best_loss:
+                if merge_loss < best_loss * (1 + allowed_loss_increase_percent):
                     best_dg, best_loss = merge_dg, merge_loss
                     improved = True
                     break
@@ -389,6 +391,7 @@ def prune_redundant_layers(
     *,
     fast: bool = True,  # NEW: enable 10 percent incremental search
     chunking_percent=0.05,  # percentage of layers to process at once
+    allowed_loss_increase_percent=0.005,  # percentage of loss increase allowed over best loss
 ):
     """Iteratively drop layers until the loss cannot be improved.
 
@@ -466,7 +469,7 @@ def prune_redundant_layers(
                 cand_loss, cand_params, cand_max_layers = min(
                     cand_results, key=lambda x: x[0]
                 )
-                if cand_loss <= best_loss:
+                if cand_loss <= best_loss * (1 + allowed_loss_increase_percent):
                     removed_layers += 1
                     best_loss = cand_loss
                     current_max_layers = cand_max_layers
