@@ -51,7 +51,7 @@ def prune_num_colors(
     *,
     fast: bool = True,  # enable incremental search
     chunking_percent=0.05,  # percentage of layers to process at once
-    allowed_loss_increase_percent=0.005,  # percentage of loss increase allowed over best loss
+    allowed_loss_increase_percent=0.00,  # percentage of loss increase allowed over best loss
 ) -> torch.Tensor:
     """Iteratively merge materials until the number of distinct colors is
     <= max_colors_allowed or until merging would worsen the loss.
@@ -165,7 +165,7 @@ def prune_num_swaps(
     *,
     fast: bool = True,  # enable incremental search
     chunking_percent=0.05,  # percentage of layers to process at once
-    allowed_loss_increase_percent=0.005,  # percentage of loss increase allowed over best loss
+    allowed_loss_increase_percent=0.000,  # percentage of loss increase allowed over best loss
 ) -> torch.Tensor:
     """Reduce the number of color boundaries until it is below or equal to
     *max_swaps_allowed*, stopping earlier if any further merge would worsen the
@@ -391,7 +391,7 @@ def prune_redundant_layers(
     *,
     fast: bool = True,  # NEW: enable 10 percent incremental search
     chunking_percent=0.05,  # percentage of layers to process at once
-    allowed_loss_increase_percent=0.005,  # percentage of loss increase allowed over best loss
+    allowed_loss_increase_percent=0.000,  # percentage of loss increase allowed over best loss
 ):
     """Iteratively drop layers until the loss cannot be improved.
 
