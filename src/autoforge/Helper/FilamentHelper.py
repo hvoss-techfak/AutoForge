@@ -21,7 +21,7 @@ def load_materials(csv_filename):
     """
     df = pd.read_csv(csv_filename)
     material_names = [
-        brand + " - " + name
+        str(brand) + " - " + str(name)
         for brand, name in zip(df["Brand"].tolist(), df[" Name"].tolist())
     ]
     material_TDs = (df[" TD"].astype(float)).to_numpy()
@@ -79,7 +79,7 @@ def extract_colors_from_swatches(swatch_data):
         out[(brand, name)] = (color, td)
 
     # convert to the same format as the hueforge csv files
-    material_names = [brand + " - " + name for (brand, name) in out.keys()]
+    material_names = [str(brand) + " - " + str(name) for (brand, name) in out.keys()]
     material_colors = np.array(
         [hex_to_rgb("#" + color) for color, _ in out.values()], dtype=np.float64
     )
