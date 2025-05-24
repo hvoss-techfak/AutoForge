@@ -1,6 +1,6 @@
 # AutoForge
 
-AutoForge is a Python tool for generating 3D printed layered models from an input image. Using a learned optimization strategy with a Gumbel softmax formulation, AutoForge assigns materials per layer and produces both a discretized composite image and a 3D-printable STL file. It also generates swap instructions to guide the printer through material changes during a multi-material print. \
+AutoForge is a Python tool for generating 3D printed layered models from an input image. Using a learned optimization strategy with a Gumbel softmax formulation, AutoForge assigns materials per layer and produces both a discretized composite image and a 3D-printable STL file. It also generates swap instructions to guide the printer through material changes during a multi-material print. 
 
 **TLDR:** It uses a picture to generate a 3D layer image that you can print with a 3d printer. Similar to [Hueforge](https://shop.thehueforge.com/), but without the manual work (and without the artistic control).
 
@@ -71,10 +71,15 @@ The script is run from the command line and accepts several arguments. Below is 
 > **Note:** You will need [Hueforge](https://shop.thehueforge.com/) installed to export your filament CSV.  
 > To get your CSV file, simply go to the "Filaments" menu in Hueforge, click the export button, select your filaments, and export them as a CSV file.
 
-
 ```bash
 autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv 
 ```
+
+We also support json files. If you want to use your personal Hueforge library (found in %APPDATA%\HueForge\Filaments\personal_library.json) you can run the command with:
+```bash
+autoforge --input_image path/to/input_image.jpg --json_file %APPDATA%\HueForge\Filaments\personal_library.json
+```
+
 
 > If you want to limit the amount of colors the program can use, you can set these as command line arguments. \
 > For Example: 8 colors and a maximum of 20 swaps:
@@ -90,7 +95,9 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 
 
 - `--input_image` **(Required)** Path to the input image.
-- `--csv_file` **(Required)** Path to the CSV file containing material data. The CSV should include columns for the brand, name, color (hex code), and TD values.
+- `--csv_file` Path to the CSV file containing material data. The CSV should include columns for the brand, name, color (hex code), and TD values.
+- `--json_file` Path to the json file containing material data. \
+ **Note:** Either a csv or json file has to be given.
 
 - `--output_folder` Folder where output files will be saved (default: `output`).
 - `--iterations` Number of optimization iterations (default: 2000).

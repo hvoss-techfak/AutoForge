@@ -1,11 +1,14 @@
+import sys
+import traceback
 import uuid
 
 import numpy as np
 import pandas as pd
 import torch
+import json
 
 
-def load_materials(csv_filename):
+def load_materials(args):
     """
     Load material data from a CSV file.
 
@@ -19,13 +22,13 @@ def load_materials(csv_filename):
             - material_names (list): List of material names.
             - colors_list (list): List of color hex strings.
     """
-    df = pd.read_csv(csv_filename)
+    df = load_materials_pandas(args)
     material_names = [
         str(brand) + " - " + str(name)
-        for brand, name in zip(df["Brand"].tolist(), df[" Name"].tolist())
+        for brand, name in zip(df["Brand"].tolist(), df["Name"].tolist())
     ]
-    material_TDs = (df[" TD"].astype(float)).to_numpy()
-    colors_list = df[" Color"].tolist()
+    material_TDs = (df["Transmissivity"].astype(float)).to_numpy()
+    colors_list = df["Color"].tolist()
     # Use float64 for material colors.
     material_colors = np.array(
         [hex_to_rgb(color) for color in colors_list], dtype=np.float64
@@ -33,8 +36,38 @@ def load_materials(csv_filename):
     material_TDs = np.array(material_TDs, dtype=np.float64)
     return material_colors, material_TDs, material_names, colors_list
 
+def load_materials_pandas(args):
+    csv_filename = args.csv_file
+    json_filename = args.json_file
 
-def load_materials_data(csv_filename):
+    if csv_filename != "":
+        try:
+            df = pd.read_csv(csv_filename)
+        except Exception as e:
+            traceback.print_exc()
+            print("Error reading filament CSV file:", e)
+            sys.exit(1)
+        # rename all columns that start with a whitespace
+        df.columns = [col.strip() for col in df.columns]
+        # if TD in columns rename to Transmissivity
+        if "TD" in df.columns:
+            df.rename(columns={"TD": "Transmissivity"}, inplace=True)
+    else:
+        # read json
+        with open(json_filename, "r") as f:
+            data = json.load(f)
+        if "Filaments" in data.keys():
+            data = data["Filaments"]
+        else:
+            print(
+                "Warning: No Filaments key found in JSON data. We can't use this json data."
+            )
+            sys.exit(1)
+        # list to dataframe
+        df = pd.DataFrame(data)
+    return df
+
+def load_materials_data(args):
     """
     Load the full material data from the CSV file.
 
@@ -45,7 +78,7 @@ def load_materials_data(csv_filename):
         list: A list of dictionaries (one per material) with keys such as
               "Brand", "Type", "Color", "Name", "TD", "Owned", and "Uuid".
     """
-    df = pd.read_csv(csv_filename)
+    df = load_materials_pandas(args)
     # Use a consistent key naming. For example, convert 'TD' to 'Transmissivity' and 'Uuid' to 'uuid'
     records = df.to_dict(orient="records")
     return records

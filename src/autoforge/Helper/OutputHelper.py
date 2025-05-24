@@ -81,7 +81,7 @@ def generate_project_file(
     background_layers = int(args.background_height / args.layer_height)
 
     # Load full material data from CSV
-    material_data = load_materials_data(csv_filename)
+    material_data = load_materials_data(args)
 
     # Extract the swap points from the discrete solution
     filament_indices, slider_values = extract_filament_swaps(
@@ -95,17 +95,17 @@ def generate_project_file(
         mat = material_data[idx]
         filament_entry = {
             "Brand": mat["Brand"],
-            "Color": mat[" Color"],
-            "Name": mat[" Name"],
+            "Color": mat["Color"],
+            "Name": mat["Name"],
             # Convert Owned to a boolean (in case it is read as a string)
-            "Owned": str(mat[" Owned"]).strip().lower() == "true"
-            if " Owned" in mat
+            "Owned": str(mat["Owned"]).strip().lower() == "true"
+            if "Owned" in mat
             else False,
-            "Transmissivity": float(mat[" TD"])
-            if not float(mat[" TD"]).is_integer()
-            else int(mat[" TD"]),
-            "Type": mat[" Type"] if " Type" in mat else "PLA",
-            "uuid": mat[" Uuid"] if " Uuid" in mat else str(uuid.uuid4()),
+            "Transmissivity": float(mat["Transmissivity"])
+            if not float(mat["Transmissivity"]).is_integer()
+            else int(mat["Transmissivity"]),
+            "Type": mat["Type"] if "Type" in mat else "PLA",
+            "uuid": mat["Uuid"] if "Uuid" in mat else str(uuid.uuid4()),
         }
         filament_set.append(filament_entry)
 

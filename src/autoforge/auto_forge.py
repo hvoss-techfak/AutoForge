@@ -8,6 +8,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 
+
 from autoforge.Helper.FilamentHelper import hex_to_rgb, load_materials
 from autoforge.Helper.Heightmaps.ChristofidesHeightMap import (
     run_init_threads,
@@ -43,8 +44,14 @@ def main():
     parser.add_argument(
         "--csv_file",
         type=str,
-        required=True,
+        default="",
         help="Path to CSV file with material data",
+    )
+    parser.add_argument(
+        "--json_file",
+        type=str,
+        default="",
+        help="Path to json file with material data",
     )
     parser.add_argument(
         "--output_folder", type=str, default="output", help="Folder to write outputs"
@@ -128,9 +135,17 @@ def main():
     parser.add_argument(
         "--stl_output_size",
         type=int,
-        default=150,
+        default=200,
         help="Size of the longest dimension of the output STL file in mm",
     )
+
+    parser.add_argument(
+        "--processing_size",
+        type=int,
+        default=100,
+        help="Internal image processing size in mm",
+    )
+
     parser.add_argument(
         "--nozzle_diameter",
         type=float,
@@ -266,6 +281,11 @@ def main():
     if args.num_init_cluster_layers == -1:
         args.num_init_cluster_layers = args.max_layers // 2
 
+    # check if csv or json is given
+    if args.csv_file == "" and args.json_file == "":
+        print("Error: No CSV or JSON file given. Please provide one of them.")
+        sys.exit(1)
+
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif args.mps and torch.backends.mps.is_available():
@@ -288,8 +308,11 @@ def main():
         print(f"Error: Input image '{args.input_image}' not found.", file=sys.stderr)
         sys.exit(1)
 
-    if not os.path.exists(args.csv_file):
+    if args.csv_file != "" and not os.path.exists(args.csv_file):
         print(f"Error: CSV file '{args.csv_file}' not found.", file=sys.stderr)
+        sys.exit(1)
+    if args.json_file != "" and not os.path.exists(args.json_file):
+        print(f"Error: Json file '{args.json_file}' not found.", file=sys.stderr)
         sys.exit(1)
 
     random_seed = args.random_seed
@@ -303,9 +326,7 @@ def main():
     background = torch.tensor(bgr_tuple, dtype=torch.float32, device=device)
 
     # Load materials
-    material_colors_np, material_TDs_np, material_names, _ = load_materials(
-        args.csv_file
-    )
+    material_colors_np, material_TDs_np, material_names, _ = load_materials(args)
     material_colors = torch.tensor(
         material_colors_np, dtype=torch.float32, device=device
     )
@@ -314,7 +335,10 @@ def main():
     # Read input image
     img = imread(args.input_image, cv2.IMREAD_UNCHANGED)
     computed_output_size = int(round(args.stl_output_size * 2 / args.nozzle_diameter))
-    print(f"Computed solving pixel size: {computed_output_size}")
+    computed_processing_size = int(
+        round(args.processing_size * 2 / args.nozzle_diameter)
+    )
+    print(f"Computed solving pixel size: {computed_processing_size}")
     alpha = None
     if img.shape[2] == 4:
         # Extract alpha channel
@@ -328,6 +352,8 @@ def main():
 
     # Convert image from BGR to RGB
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    processing_img_np = resize_image(img, computed_processing_size)
+    processing_img = torch.tensor(processing_img_np, dtype=torch.float32, device=device)
 
     # For the final resolution
     output_img_np = resize_image(img, computed_output_size)
@@ -366,6 +392,10 @@ def main():
     if alpha is not None:
         pixel_height_logits_init[alpha < 128] = -13.815512
 
+    # resize the pixel_height_logits to the processing_size
+    pixel_height_logits_process = resize_image(
+        np.expand_dims(pixel_height_logits_init, -1), computed_processing_size
+    )
     # VGG Perceptual Loss
     # We currently disable this as it is not used in the optimization.
     perception_loss_module = None  # MultiLayerVGGPerceptualLoss().to(device).eval()
@@ -373,8 +403,8 @@ def main():
     # Create an optimizer instance
     optimizer = FilamentOptimizer(
         args=args,
-        target=output_target,
-        pixel_height_logits_init=pixel_height_logits_init,
+        target=processing_img,
+        pixel_height_logits_init=pixel_height_logits_process,
         global_logits_init=global_logits_init,
         material_colors=material_colors,
         material_TDs=material_TDs,
@@ -410,82 +440,99 @@ def main():
 
     post_opt_step = 0
 
-    optimizer.log_to_tensorboard(
-        interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
-    )
-
-    if args.perform_pruning:
-        optimizer.prune(
-            max_colors_allowed=args.pruning_max_colors,
-            max_swaps_allowed=args.pruning_max_swaps,
-            min_layers_allowed=args.min_layers,
-            max_layers_allowed=args.pruning_max_layer,
-            search_seed=True,
-            fast_pruning=args.fast_pruning,
-            fast_pruning_percent=args.fast_pruning_percent,
-        )
-        optimizer.log_to_tensorboard(
-            interval=1,
-            namespace="post_opt",
-            step=(post_opt_step := post_opt_step + 1),
-        )
-
-    disc_global, disc_height_image = optimizer.get_discretized_solution(best=True)
-
-    print("Done. Saving outputs...")
-    # Save Image
-    comp_disc = optimizer.get_best_discretized_image()
-    args.max_layers = optimizer.max_layers
+    # change processing pixel heights to large output pixel heights
+    optimizer.pixel_height_logits = torch.from_numpy(pixel_height_logits_init)
+    optimizer.best_params["pixel_height_logits"] = torch.from_numpy(
+        pixel_height_logits_init
+    ).to(device)
+    optimizer.target = output_target
 
     optimizer.log_to_tensorboard(
         interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
     )
 
-    comp_disc_np = comp_disc.cpu().numpy().astype(np.uint8)
-    comp_disc_np = cv2.cvtColor(comp_disc_np, cv2.COLOR_RGB2BGR)
-    cv2.imwrite(os.path.join(args.output_folder, "final_model.png"), comp_disc_np)
+    with torch.no_grad():
+        with torch.autocast(device.type, dtype=torch.bfloat16):
+            if args.perform_pruning:
+                optimizer.prune(
+                    max_colors_allowed=args.pruning_max_colors,
+                    max_swaps_allowed=args.pruning_max_swaps,
+                    min_layers_allowed=args.min_layers,
+                    max_layers_allowed=args.pruning_max_layer,
+                    search_seed=True,
+                    fast_pruning=args.fast_pruning,
+                    fast_pruning_percent=args.fast_pruning_percent,
+                )
+                optimizer.log_to_tensorboard(
+                    interval=1,
+                    namespace="post_opt",
+                    step=(post_opt_step := post_opt_step + 1),
+                )
 
-    stl_filename = os.path.join(args.output_folder, "final_model.stl")
-    height_map_mm = (
-        disc_height_image.cpu().numpy().astype(np.float32)
-    ) * args.layer_height
-    generate_stl(
-        height_map_mm,
-        stl_filename,
-        args.background_height,
-        maximum_x_y_size=args.stl_output_size,
-        alpha_mask=alpha,
-    )
+            disc_global, disc_height_image = optimizer.get_discretized_solution(
+                best=True
+            )
 
-    # Swap instructions
-    background_layers = int(args.background_height // args.layer_height)
-    swap_instructions = generate_swap_instructions(
-        disc_global.cpu().numpy(),
-        disc_height_image.cpu().numpy(),
-        args.layer_height,
-        background_layers,
-        args.background_height,
-        material_names,
-    )
-    with open(os.path.join(args.output_folder, "swap_instructions.txt"), "w") as f:
-        for line in swap_instructions:
-            f.write(line + "\n")
+            print("Done. Saving outputs...")
+            # Save Image
+            comp_disc = optimizer.get_best_discretized_image()
+            args.max_layers = optimizer.max_layers
 
-    # Project file
-    project_filename = os.path.join(args.output_folder, "project_file.hfp")
-    generate_project_file(
-        project_filename,
-        args,
-        disc_global.cpu().numpy(),
-        disc_height_image.cpu().numpy(),
-        output_target.shape[1],
-        output_target.shape[0],
-        stl_filename,
-        args.csv_file,
-    )
+            optimizer.log_to_tensorboard(
+                interval=1,
+                namespace="post_opt",
+                step=(post_opt_step := post_opt_step + 1),
+            )
 
-    print("All done. Outputs in:", args.output_folder)
-    print("Happy Printing!")
+            comp_disc_np = comp_disc.cpu().numpy().astype(np.uint8)
+            comp_disc_np = cv2.cvtColor(comp_disc_np, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(
+                os.path.join(args.output_folder, "final_model.png"), comp_disc_np
+            )
+
+            stl_filename = os.path.join(args.output_folder, "final_model.stl")
+            height_map_mm = (
+                disc_height_image.cpu().numpy().astype(np.float32)
+            ) * args.layer_height
+            generate_stl(
+                height_map_mm,
+                stl_filename,
+                args.background_height,
+                maximum_x_y_size=args.stl_output_size,
+                alpha_mask=alpha,
+            )
+
+            # Swap instructions
+            background_layers = int(args.background_height // args.layer_height)
+            swap_instructions = generate_swap_instructions(
+                disc_global.cpu().numpy(),
+                disc_height_image.cpu().numpy(),
+                args.layer_height,
+                background_layers,
+                args.background_height,
+                material_names,
+            )
+            with open(
+                os.path.join(args.output_folder, "swap_instructions.txt"), "w"
+            ) as f:
+                for line in swap_instructions:
+                    f.write(line + "\n")
+
+            # Project file
+            project_filename = os.path.join(args.output_folder, "project_file.hfp")
+            generate_project_file(
+                project_filename,
+                args,
+                disc_global.cpu().numpy(),
+                disc_height_image.cpu().numpy(),
+                output_target.shape[1],
+                output_target.shape[0],
+                stl_filename,
+                args.csv_file,
+            )
+
+            print("All done. Outputs in:", args.output_folder)
+            print("Happy Printing!")
 
 
 if __name__ == "__main__":
