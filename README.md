@@ -6,6 +6,8 @@ AutoForge is a Python tool for generating 3D printed layered models from an inpu
 
 
 ## You can now run Autoforge for free in your browser thanks to [Huggingface space support](https://huggingface.co/spaces/hvoss-techfak/Autoforge).
+This includes the option to run it locally if you have a powerful pc and don't want to limit yourself to the Huggingface computing limits. \
+For this simply go to the [Huggingface](https://huggingface.co/spaces/hvoss-techfak/Autoforge) space and pull the docker container for this project (upper right corner -> three dots -> "run locally")
 
 ## Example
 All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge 0.8.9, the background color is set to black.
