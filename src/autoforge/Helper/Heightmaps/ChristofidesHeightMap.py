@@ -8,6 +8,7 @@ from joblib import Parallel, delayed
 from scipy.spatial.distance import cdist
 from skimage.color import rgb2lab
 from sklearn.cluster import MiniBatchKMeans
+from sklearn.metrics import silhouette_score
 
 
 def build_distance_matrix(labs, nodes):
@@ -18,6 +19,39 @@ def build_distance_matrix(labs, nodes):
     pts = labs[nodes]  # extract only the points corresponding to nodes
     # Use cdist for fast vectorized distance computation.
     return cdist(pts, pts, metric="euclidean")
+
+
+def sample_pixels_for_silhouette(labels, sample_size=5000, random_state=None):
+    """
+    Flatten the label map, draw at most sample_size random positions,
+    and return their (index, label) pairs ready for silhouette_score.
+    """
+    rng = np.random.default_rng(random_state)
+    flat = labels.reshape(-1)
+    n = flat.shape[0]
+
+    if n <= sample_size:
+        idx = np.arange(n)
+    else:
+        idx = rng.choice(n, size=sample_size, replace=False)
+
+    return idx, flat[idx]
+
+
+def segmentation_quality(
+    target_lab_reshaped, labels, sample_size=5000, random_state=None
+):
+    """
+    Compute the silhouette coefficient on a random pixel subset.
+    Works in Lab because `target_lab_reshaped` is already weighted Lab.
+    """
+    idx, lbl_subset = sample_pixels_for_silhouette(labels, sample_size, random_state)
+    X_subset = target_lab_reshaped[idx]
+    # In rare cases (k == 1) sklearn will raise; catch and return -1
+    try:
+        return silhouette_score(X_subset, lbl_subset, metric="euclidean")
+    except ValueError:
+        return -1.0
 
 
 def matrix_to_graph(matrix, nodes):
@@ -449,6 +483,21 @@ def init_height_map(
         # For subsequent ordering, we use the weighted Lab centers.
         labs = centers  # labs now holds weighted Lab values
 
+    if lab_space:
+        target_lab_for_quality = rgb2lab((target.astype(np.float32) / 255.0))
+        target_lab_for_quality[..., 0] *= lab_weights[0]
+        target_lab_for_quality[..., 1] *= lab_weights[1]
+        target_lab_for_quality[..., 2] *= lab_weights[2]
+    else:
+        target_lab_for_quality = target.astype(np.float32) / 255.0
+
+    sil_score = segmentation_quality(
+        target_lab_for_quality.reshape(-1, 3),
+        labels,
+        sample_size=5000,
+        random_state=random_seed,
+    )
+
     # Convert the background color to Lab and apply the same weighting.
     bg_rgb = np.array(background_tuple).astype(np.float32) / 255.0
     if lab_space:
@@ -482,6 +531,7 @@ def init_height_map(
 
     pixel_height_logits = np.log((new_labels + eps) / (1 - new_labels + eps))
     ordering_metric = compute_ordering_metric(final_ordering, labs)
+    ordering_metric /= cluster_layers
 
     global_logits_out = None
     if material_colors is not None:
@@ -517,7 +567,14 @@ def init_height_map(
         global_logits = sorted(global_logits, key=lambda x: x[0])
         global_logits_out = interpolate_arrays(global_logits, max_layers)
 
-    return pixel_height_logits, global_logits_out, ordering_metric
+    return (
+        pixel_height_logits,
+        global_logits_out,
+        ordering_metric,
+        cluster_layers,
+        sil_score,
+        new_labels * cluster_layers,
+    )
 
 
 def run_init_threads(
@@ -536,6 +593,7 @@ def run_init_threads(
     if random_seed is None:
         random_seed = np.random.randint(1e6)
     lab_space = True
+
     tasks = [
         delayed(init_height_map)(
             target,
@@ -555,7 +613,7 @@ def run_init_threads(
     # Execute tasks in parallel; adjust n_jobs to match your available cores
     results = Parallel(n_jobs=os.cpu_count(), verbose=10)(tasks)
 
-    metrics = [r[2] for r in results]
+    metrics = [(r[2] / r[3]) / (r[4] + 1e-6) for r in results]
     mean_metric = np.mean(metrics)
     std_metric = np.std(metrics)
     min_metric = np.min(metrics)
@@ -565,4 +623,5 @@ def run_init_threads(
     )
     print(f"Choosing best ordering with metric: {min_metric}")
     best_result = min(results, key=lambda x: x[2])
-    return best_result[0], best_result[1]
+    print(f"Best result number of cluster layers: {best_result[3]}")
+    return best_result[0], best_result[1], best_result[5]

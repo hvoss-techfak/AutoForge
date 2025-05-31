@@ -13,9 +13,6 @@ from autoforge.Helper.FilamentHelper import hex_to_rgb, load_materials
 from autoforge.Helper.Heightmaps.ChristofidesHeightMap import (
     run_init_threads,
 )
-from autoforge.Helper.Heightmaps.DepthEstimateHeightMap import (
-    init_height_map_depth_color_adjusted,
-)
 
 from autoforge.Helper.ImageHelper import resize_image, imread
 from autoforge.Helper.OutputHelper import (
@@ -64,7 +61,7 @@ def main():
     parser.add_argument(
         "--warmup_fraction",
         type=float,
-        default=1.0,
+        default=0.0,
         help="Fraction of iterations for keeping the tau at the initial value",
     )
     parser.add_argument(
@@ -169,7 +166,7 @@ def main():
     parser.add_argument(
         "--fast_pruning",
         type=bool,
-        default=True,
+        default=False,
         help="Use fast pruning method",
         action=argparse.BooleanOptionalAction,
     )
@@ -198,54 +195,11 @@ def main():
         default=75,
         help="Max number of layers allowed after pruning",
     )
-
     parser.add_argument(
         "--random_seed",
         type=int,
         default=0,
         help="Specify the random seed, or use 0 for automatic generation",
-    )
-
-    parser.add_argument(
-        "--use_depth_anything_height_initialization",
-        action="store_true",
-        help="Use Depth Anything v2 for height image initialization",
-    )
-    parser.add_argument(
-        "--depth_strength",
-        type=float,
-        default=0.25,
-        help="Weight (0 to 1) for blending even spacing with the cluster's average depth",
-    )
-    parser.add_argument(
-        "--depth_threshold",
-        type=float,
-        default=0.05,
-        help="Threshold for splitting two distinct colors based on depth",
-    )
-    parser.add_argument(
-        "--min_cluster_value",
-        type=float,
-        default=0.1,
-        help="Minimum normalized value for the lowest cluster (to avoid pure black)",
-    )
-    parser.add_argument(
-        "--w_depth",
-        type=float,
-        default=0.5,
-        help="Weight for depth difference in ordering_depth",
-    )
-    parser.add_argument(
-        "--w_lum",
-        type=float,
-        default=1.0,
-        help="Weight for luminance difference in ordering_depth",
-    )
-    parser.add_argument(
-        "--order_blend",
-        type=float,
-        default=0.1,
-        help="Slider (0 to 1) blending original luminance ordering (0) and depth-informed ordering (1).",
     )
     parser.add_argument(
         "--mps",
@@ -279,7 +233,7 @@ def main():
 
     args = parser.parse_args()
     if args.num_init_cluster_layers == -1:
-        args.num_init_cluster_layers = args.max_layers // 2
+        args.num_init_cluster_layers = args.max_layers * 4
 
     # check if csv or json is given
     if args.csv_file == "" and args.json_file == "":
@@ -352,30 +306,16 @@ def main():
 
     # Convert image from BGR to RGB
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    processing_img_np = resize_image(img, computed_processing_size)
-    processing_img = torch.tensor(processing_img_np, dtype=torch.float32, device=device)
-
     # For the final resolution
     output_img_np = resize_image(img, computed_output_size)
     output_target = torch.tensor(output_img_np, dtype=torch.float32, device=device)
 
     global_logits_init = None
     # Initialize pixel_height_logits from the large (final) image
-    if args.use_depth_anything_height_initialization:
-        pixel_height_logits_init = init_height_map_depth_color_adjusted(
-            output_img_np,
-            args.max_layers,
-            depth_strength=args.depth_strength,
-            depth_threshold=args.depth_threshold,
-            min_cluster_value=args.min_cluster_value,
-            w_depth=args.w_depth,
-            w_lum=args.w_lum,
-            order_blend=args.order_blend,
-        )
-    else:
-        print("Initalizing height map. This can take a moment...")
-        # Default initialization
-        pixel_height_logits_init, global_logits_init = run_init_threads(
+    print("Initalizing height map. This can take a moment...")
+    # Default initialization
+    pixel_height_logits_init, global_logits_init, pixel_height_labels = (
+        run_init_threads(
             output_img_np,
             args.max_layers,
             args.layer_height,
@@ -386,16 +326,13 @@ def main():
             cluster_layers=args.num_init_cluster_layers,
             material_colors=material_colors_np,
         )
+    )
 
     # if we have an alpha mask we set the height for those pixels to -13.815512 (the lowest init sigmoid value)
     # Now with unlocked height map we probably need to think about changing this somehow. TODO: Think about this.
     if alpha is not None:
         pixel_height_logits_init[alpha < 128] = -13.815512
 
-    # resize the pixel_height_logits to the processing_size
-    pixel_height_logits_process = resize_image(
-        np.expand_dims(pixel_height_logits_init, -1), computed_processing_size
-    )
     # VGG Perceptual Loss
     # We currently disable this as it is not used in the optimization.
     perception_loss_module = None  # MultiLayerVGGPerceptualLoss().to(device).eval()
@@ -403,8 +340,9 @@ def main():
     # Create an optimizer instance
     optimizer = FilamentOptimizer(
         args=args,
-        target=processing_img,
-        pixel_height_logits_init=pixel_height_logits_process,
+        target=output_target,
+        pixel_height_logits_init=pixel_height_logits_init,
+        pixel_height_labels=pixel_height_labels,
         global_logits_init=global_logits_init,
         material_colors=material_colors,
         material_TDs=material_TDs,
@@ -420,12 +358,12 @@ def main():
         for i in tbar:
             loss_val = optimizer.step(record_best=i % 8 == 0)
 
-            optimizer.visualize(interval=100)
+            optimizer.visualize(interval=50)
             optimizer.log_to_tensorboard(interval=100)
 
             if (i + 1) % 100 == 0:
                 tbar.set_description(
-                    f"Iteration {i + 1}, Loss = {loss_val:.4f}, best validation Loss = {optimizer.best_discrete_loss:.4f}"
+                    f"Iteration {i + 1}, Loss = {loss_val:.4f}, best validation Loss = {optimizer.best_discrete_loss:.4f}, learning_rate= {optimizer.current_learning_rate:.6f}"
                 )
             if (
                 optimizer.best_step is not None
@@ -439,13 +377,6 @@ def main():
                 break
 
     post_opt_step = 0
-
-    # change processing pixel heights to large output pixel heights
-    optimizer.pixel_height_logits = torch.from_numpy(pixel_height_logits_init)
-    optimizer.best_params["pixel_height_logits"] = torch.from_numpy(
-        pixel_height_logits_init
-    ).to(device)
-    optimizer.target = output_target
 
     optimizer.log_to_tensorboard(
         interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)

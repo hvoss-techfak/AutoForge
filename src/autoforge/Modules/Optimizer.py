@@ -22,6 +22,7 @@ class FilamentOptimizer:
         args: argparse.Namespace,
         target: torch.Tensor,
         pixel_height_logits_init: np.ndarray,
+        pixel_height_labels: np.ndarray,
         global_logits_init: np.ndarray,
         material_colors: torch.Tensor,
         material_TDs: torch.Tensor,
@@ -45,10 +46,26 @@ class FilamentOptimizer:
         self.args = args
         self.target = target  # smaller (solver) resolution, shape [H,W,3], float32
         self.H, self.W = target.shape[:2]
+        pixel_height_labels = np.round(pixel_height_labels)
+
+        # replace entire entries of pixel_height_logits with 0
+        # pixel_height_logits_init *= 0.1
+        # set pixel_height_logits where pixel_height_labels is 0 to -13.815512 (the lowest init sigmoid value)
+        # pixel_height_logits_init[pixel_height_labels == 0] = -13.815512
+
         self.pixel_height_logits = torch.tensor(
             pixel_height_logits_init, dtype=torch.float32, device=device
         )
         self.pixel_height_logits.requires_grad_(True)
+
+        self.cluster_layers = int(pixel_height_labels.flatten().max()) + 1
+        self.pixel_height_labels = torch.tensor(
+            pixel_height_labels, dtype=torch.int32, device=device
+        )
+
+        self.height_offsets = torch.nn.Parameter(
+            torch.zeros(self.cluster_layers, 1, device=device)
+        )  # Trainable
 
         # Basic hyper-params
         self.material_colors = material_colors
@@ -57,6 +74,7 @@ class FilamentOptimizer:
         self.max_layers = args.max_layers
         self.h = args.layer_height
         self.learning_rate = args.learning_rate
+        self.current_learning_rate = args.learning_rate
         self.final_tau = args.final_tau
         self.init_tau = args.init_tau
         self.device = device
@@ -109,52 +127,9 @@ class FilamentOptimizer:
 
         # Initialize optimizer
         self.optimizer = CAdamW(
-            [self.params["global_logits"]],  # , self.params["pixel_height_logits"]],
+            [self.params["global_logits"], self.height_offsets],
             lr=self.learning_rate,
         )
-
-        # # Setup the focus map component
-        # # Load a state-of-the-art ResNet50 model with pretrained weights.
-        # cam_model = models.resnet18(weights=ResNet18_Weights.DEFAULT).to(
-        #     self.target.device
-        # )
-        # cam_model.eval()
-        # # Use ScoreCAM from torchcam on the 'layer4' block.
-        # cam_extractor = SmoothGradCAMpp(cam_model, target_layer="layer4")
-        # # Preprocess the target image for ResNet50.
-        # target_preprocessed = normalize(
-        #     resize(self.target.permute(2, 0, 1), (224, 224)) / 255.0,
-        #     [0.485, 0.456, 0.406],
-        #     [0.229, 0.224, 0.225],
-        # )
-        # focus_maps = []
-        # for _ in tqdm(range(1), desc="Creating loss function attention map..."):
-        #     out = cam_model(target_preprocessed.unsqueeze(0))
-        #     # ScoreCAM returns a dict with keys corresponding to layers.
-        #     focus_map = cam_extractor(out.squeeze(0).argmax().item(), out)[0]
-        #     # Normalize the focus map to [0, 1]
-        #     focus_map = (focus_map - focus_map.min()) / (
-        #         focus_map.max() - focus_map.min() + 1e-8
-        #     )
-        #     focus_maps.append(focus_map)
-        # # get maximum over all maps
-        # self.focus_map = torch.stack(focus_maps)
-        # self.focus_map = self.focus_map.max(dim=0)[0]
-        # # normalize again
-        # self.focus_map = (self.focus_map - self.focus_map.min()) / (
-        #     self.focus_map.max() - self.focus_map.min() + 1e-8
-        # )
-        #
-        # # resize back to target size, current dim is [1,h,w]
-        # self.focus_map = (
-        #     torch.nn.functional.interpolate(
-        #         self.focus_map.unsqueeze(0),
-        #         (self.H, self.W),
-        #         mode="bilinear",
-        #     )
-        #     .squeeze(0)
-        #     .squeeze(0)
-        # )
 
         # Setup best discrete solution tracking
         self.best_discrete_loss = float("inf")
@@ -212,6 +187,19 @@ class FilamentOptimizer:
                 )
             self.initial_height_map = initial_height.cpu().detach().numpy()
 
+    def _apply_height_offset(self, pixel_logits=None, height_offsets=None):
+        if pixel_logits is None:
+            pixel_logits = self.pixel_height_logits
+        if height_offsets is None:
+            height_offsets = self.height_offsets
+
+        offsets = torch.zeros_like(pixel_logits)
+        nonzero_mask = self.pixel_height_labels != 0
+        offsets[nonzero_mask] = height_offsets[
+            self.pixel_height_labels[nonzero_mask]
+        ].squeeze(-1)
+        return pixel_logits + offsets
+
     def _get_tau(self):
         """
         Compute tau for height & global given how many steps we've done.
@@ -246,11 +234,14 @@ class FilamentOptimizer:
             self.args.iterations * self.args.learning_rate_warmup_fraction
         )
 
+        if self.num_steps_done < warmup_steps and warmup_steps > 0:
+            lr_scale = self.num_steps_done / warmup_steps
+            self.current_learning_rate = lr_scale * self.learning_rate
+        else:
+            self.current_learning_rate = self.learning_rate
+
         for g in self.optimizer.param_groups:
-            g["lr"] = min(
-                self.learning_rate,
-                max(1e-9, (warmup_steps * self.num_steps_done) * self.learning_rate),
-            )
+            g["lr"] = self.current_learning_rate
 
         tau_height, tau_global = self._get_tau()
 
@@ -266,8 +257,13 @@ class FilamentOptimizer:
         # else:
         #     scaling = 1.0
 
+        effective_logits = self._apply_height_offset()
+
         loss = loss_fn(
-            self.params,
+            {
+                "pixel_height_logits": effective_logits,
+                "global_logits": self.params["global_logits"],
+            },
             target=self.target,
             tau_height=tau_height,
             tau_global=tau_global,
@@ -282,6 +278,9 @@ class FilamentOptimizer:
         )
 
         loss.backward()
+
+        if self.pixel_height_logits.grad is not None:
+            self.pixel_height_logits.grad[self.pixel_height_labels == 0] = 0.0
 
         # We scale the gradients for the height logits by a factor to only allow updates for very strong (wrong layer/color) gradients.
         # if (self.params["pixel_height_logits"].grad is not None):
@@ -338,8 +337,9 @@ class FilamentOptimizer:
         # Log images periodically
         if (steps + 1) % interval == 0:
             with torch.no_grad():
+                effective_logits = self._apply_height_offset()
                 comp_img = composite_image_cont(
-                    self.params["pixel_height_logits"],
+                    effective_logits,
                     self.params["global_logits"],
                     tau_height,
                     tau_global,
@@ -371,8 +371,9 @@ class FilamentOptimizer:
 
         with torch.no_grad():
             tau_h, tau_g = self._get_tau()
+            effective_logits = self._apply_height_offset()
             comp = composite_image_cont(
-                self.params["pixel_height_logits"],
+                effective_logits,
                 self.params["global_logits"],
                 tau_h,
                 tau_g,
@@ -388,8 +389,12 @@ class FilamentOptimizer:
         if self.best_params is not None:
             # Update the depth map correctly.
             with torch.no_grad():
-                best_comp = composite_image_disc(
+                effective_best_logits = self._apply_height_offset(
                     self.best_params["pixel_height_logits"],
+                    self.best_params["height_offsets"],
+                )
+                best_comp = composite_image_disc(
+                    effective_best_logits,
                     self.best_params["global_logits"],
                     self.final_tau,
                     self.final_tau,
@@ -407,9 +412,8 @@ class FilamentOptimizer:
 
         # Update the depth map correctly.
         with torch.no_grad():
-            height_map = (self.max_layers * self.h) * torch.sigmoid(
-                self.params["pixel_height_logits"]
-            )
+            effective_logits = self._apply_height_offset()
+            height_map = (self.max_layers * self.h) * torch.sigmoid(effective_logits)
             height_map = height_map.cpu().detach().numpy()
 
         # Normalize safely, checking for a constant image.
@@ -452,8 +456,9 @@ class FilamentOptimizer:
             Dict[str, torch.Tensor]: Current parameters.
         """
         return {
-            "pixel_height_logits": self.params["pixel_height_logits"].detach().clone(),
+            "pixel_height_logits": self.pixel_height_logits.detach().clone(),
             "global_logits": self.params["global_logits"].detach().clone(),
+            "height_offsets": self.height_offsets.detach().clone(),
         }
 
     def get_discretized_solution(
@@ -473,11 +478,18 @@ class FilamentOptimizer:
         if best and self.best_params is None:
             return None, None
 
-        current_params = self.best_params if best else self.params
+        current_params = self.best_params.copy() if best else self.params
         if custom_height_logits is not None:
-            current_params["pixel_height_logits"] = custom_height_logits
+            current_params["pixel_height_logits"] = self._apply_height_offset(
+                custom_height_logits
+            )
 
         if best:
+            effective_logits = self._apply_height_offset(
+                self.best_params["pixel_height_logits"],
+                self.best_params["height_offsets"],
+            )
+            current_params["pixel_height_logits"] = effective_logits
             disc_global, disc_height_image = discretize_solution(
                 current_params,
                 self.final_tau,
@@ -504,10 +516,14 @@ class FilamentOptimizer:
         custom_global_logits: torch.Tensor = None,
     ):
         with torch.no_grad():
+            effective_logits = self._apply_height_offset(
+                self.best_params["pixel_height_logits"],
+                self.best_params["height_offsets"],
+            )
             best_comp = composite_image_disc(
-                self.best_params["pixel_height_logits"]
+                effective_logits
                 if custom_height_logits is None
-                else custom_height_logits,
+                else self._apply_height_offset(custom_height_logits),
                 self.best_params["global_logits"]
                 if custom_global_logits is None
                 else custom_global_logits,
@@ -530,7 +546,7 @@ class FilamentOptimizer:
         max_layers_allowed: int,
         search_seed: bool = True,
         fast_pruning: bool = False,
-        fast_pruning_percent: float = 0.05,
+        fast_pruning_percent: float = 0.20,
     ):
         # Now run pruning
         from autoforge.Helper.PruningHelper import (
@@ -581,8 +597,13 @@ class FilamentOptimizer:
 
             # 1) Discretize
             tau_h, tau_g = self.final_tau, self.final_tau
+            effective_logits = self._apply_height_offset()
+            params_with_offset = {
+                "pixel_height_logits": effective_logits,
+                "global_logits": self.params["global_logits"],
+            }
             disc_global, disc_height_image = discretize_solution(
-                self.params, tau_g, self.h, self.max_layers, rng_seed=seed
+                params_with_offset, tau_g, self.h, self.max_layers, rng_seed=seed
             )
 
             # 2) Compute discrete-mode composite
