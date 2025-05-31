@@ -61,7 +61,7 @@ def main():
     parser.add_argument(
         "--warmup_fraction",
         type=float,
-        default=0.0,
+        default=1.0,
         help="Fraction of iterations for keeping the tau at the initial value",
     )
     parser.add_argument(
@@ -233,7 +233,7 @@ def main():
 
     args = parser.parse_args()
     if args.num_init_cluster_layers == -1:
-        args.num_init_cluster_layers = args.max_layers * 4
+        args.num_init_cluster_layers = args.max_layers
 
     # check if csv or json is given
     if args.csv_file == "" and args.json_file == "":
@@ -289,10 +289,7 @@ def main():
     # Read input image
     img = imread(args.input_image, cv2.IMREAD_UNCHANGED)
     computed_output_size = int(round(args.stl_output_size * 2 / args.nozzle_diameter))
-    computed_processing_size = int(
-        round(args.processing_size * 2 / args.nozzle_diameter)
-    )
-    print(f"Computed solving pixel size: {computed_processing_size}")
+    print(f"Computed solving pixel size: {computed_output_size}")
     alpha = None
     if img.shape[2] == 4:
         # Extract alpha channel

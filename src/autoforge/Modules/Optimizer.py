@@ -49,7 +49,7 @@ class FilamentOptimizer:
         pixel_height_labels = np.round(pixel_height_labels)
 
         # replace entire entries of pixel_height_logits with 0
-        # pixel_height_logits_init *= 0.1
+        # pixel_height_logits_init *= 1.0
         # set pixel_height_logits where pixel_height_labels is 0 to -13.815512 (the lowest init sigmoid value)
         # pixel_height_logits_init[pixel_height_labels == 0] = -13.815512
 
@@ -228,6 +228,9 @@ class FilamentOptimizer:
         Returns:
             float: The loss value of the current step.
         """
+        if self.pixel_height_logits.grad is not None:
+            self.pixel_height_logits.grad = None
+
         self.optimizer.zero_grad()
 
         warmup_steps = int(
@@ -293,6 +296,7 @@ class FilamentOptimizer:
         # Optionally track the best "discrete" solution after a certain iteration
         if record_best:
             self._maybe_update_best_discrete()
+        # torch.cuda.empty_cache()
         loss = loss.item()
         self.loss = loss
 
@@ -309,51 +313,52 @@ class FilamentOptimizer:
             namespace (str, optional): Namespace prefix for logs. If provided, logs will be prefixed with this value. Defaults to "".
             step (int, optional): Optional override for the step number to log. Defaults to None.
         """
-        if not self.log_to_tensorboard or self.writer is None:
-            return
+        with torch.no_grad():
+            if not self.log_to_tensorboard or self.writer is None:
+                return
 
-        # Prepare namespace prefix
-        prefix = f"{namespace}/" if namespace else ""
+            # Prepare namespace prefix
+            prefix = f"{namespace}/" if namespace else ""
 
-        steps = step if step is not None else self.num_steps_done
+            steps = step if step is not None else self.num_steps_done
 
-        # Log metrics
-        self.writer.add_scalar(
-            f"Loss/{prefix}best_discrete", self.best_discrete_loss, steps
-        )
-        self.writer.add_scalar(f"Loss/{prefix}best_swaps", self.best_swaps, steps)
-
-        tau_height, tau_global = self._get_tau()
-
-        # Metrics that are only relevant for the main optimization loop
-        if not prefix:
-            self.writer.add_scalar("Params/tau_height", tau_height, steps)
-            self.writer.add_scalar("Params/tau_global", tau_global, steps)
+            # Log metrics
             self.writer.add_scalar(
-                "Params/lr", self.optimizer.param_groups[0]["lr"], steps
+                f"Loss/{prefix}best_discrete", self.best_discrete_loss, steps
             )
-            self.writer.add_scalar("Loss/train", self.loss, steps)
+            self.writer.add_scalar(f"Loss/{prefix}best_swaps", self.best_swaps, steps)
 
-        # Log images periodically
-        if (steps + 1) % interval == 0:
-            with torch.no_grad():
-                effective_logits = self._apply_height_offset()
-                comp_img = composite_image_cont(
-                    effective_logits,
-                    self.params["global_logits"],
-                    tau_height,
-                    tau_global,
-                    self.h,
-                    self.max_layers,
-                    self.material_colors,
-                    self.material_TDs,
-                    self.background,
+            tau_height, tau_global = self._get_tau()
+
+            # Metrics that are only relevant for the main optimization loop
+            if not prefix:
+                self.writer.add_scalar("Params/tau_height", tau_height, steps)
+                self.writer.add_scalar("Params/tau_global", tau_global, steps)
+                self.writer.add_scalar(
+                    "Params/lr", self.optimizer.param_groups[0]["lr"], steps
                 )
-                self.writer.add_images(
-                    f"Current Output/{prefix}composite",
-                    comp_img.permute(2, 0, 1).unsqueeze(0) / 255.0,
-                    steps,
-                )
+                self.writer.add_scalar("Loss/train", self.loss, steps)
+
+            # Log images periodically
+            if (steps + 1) % interval == 0:
+                with torch.no_grad():
+                    effective_logits = self._apply_height_offset()
+                    comp_img = composite_image_cont(
+                        effective_logits,
+                        self.params["global_logits"],
+                        tau_height,
+                        tau_global,
+                        self.h,
+                        self.max_layers,
+                        self.material_colors,
+                        self.material_TDs,
+                        self.background,
+                    )
+                    self.writer.add_images(
+                        f"Current Output/{prefix}composite",
+                        comp_img.permute(2, 0, 1).unsqueeze(0) / 255.0,
+                        steps,
+                    )
 
     def visualize(self, interval: int = 25):
         """
@@ -383,12 +388,11 @@ class FilamentOptimizer:
                 self.material_TDs,
                 self.background,
             )
-        comp_np = np.clip(comp.cpu().detach().numpy(), 0, 255).astype(np.uint8)
-        self.current_comp_ax.set_data(comp_np)
+            comp_np = np.clip(comp.cpu().detach().numpy(), 0, 255).astype(np.uint8)
+            self.current_comp_ax.set_data(comp_np)
 
-        if self.best_params is not None:
-            # Update the depth map correctly.
-            with torch.no_grad():
+            if self.best_params is not None:
+                # Update the depth map correctly.
                 effective_best_logits = self._apply_height_offset(
                     self.best_params["pixel_height_logits"],
                     self.best_params["height_offsets"],
@@ -405,48 +409,47 @@ class FilamentOptimizer:
                     self.background,
                     rng_seed=self.best_seed,
                 )
-            best_comp_np = np.clip(best_comp.cpu().detach().numpy(), 0, 255).astype(
-                np.uint8
-            )
-            self.best_comp_ax.set_data(best_comp_np)
+                best_comp_np = np.clip(best_comp.cpu().detach().numpy(), 0, 255).astype(
+                    np.uint8
+                )
+                self.best_comp_ax.set_data(best_comp_np)
 
-        # Update the depth map correctly.
-        with torch.no_grad():
+            # Update the depth map correctly.
             effective_logits = self._apply_height_offset()
             height_map = (self.max_layers * self.h) * torch.sigmoid(effective_logits)
             height_map = height_map.cpu().detach().numpy()
 
-        # Normalize safely, checking for a constant image.
-        if np.allclose(height_map.max(), height_map.min()):
-            height_map_norm = np.zeros_like(height_map)
-        else:
-            height_map_norm = (height_map - height_map.min()) / (
-                height_map.max() - height_map.min()
+            # Normalize safely, checking for a constant image.
+            if np.allclose(height_map.max(), height_map.min()):
+                height_map_norm = np.zeros_like(height_map)
+            else:
+                height_map_norm = (height_map - height_map.min()) / (
+                    height_map.max() - height_map.min()
+                )
+
+            height_map_uint8 = (height_map_norm * 255).astype(np.uint8)
+            self.depth_map_ax.set_data(height_map_uint8)
+            self.depth_map_ax.set_clim(0, 255)
+
+            # Compute and update the difference depth map (current - initial)
+            diff_map = height_map - self.initial_height_map
+            # print(diff_map.min(), diff_map.max())
+            # Normalize the difference map safely.
+            # if np.allclose(diff_map.max(), diff_map.min()):
+            #     diff_map_norm = np.zeros_like(diff_map)
+            # else:
+            #     diff_map_norm = (diff_map - diff_map.min()) / (
+            #         diff_map.max() - diff_map.min()
+            #     )
+            self.diff_depth_map_ax.set_data(diff_map)
+            self.diff_depth_map_ax.set_clim(-2.5, 2.5)
+
+            self.fig.suptitle(
+                f"Step {self.num_steps_done}/{self.args.iterations}, Tau: {tau_g:.4f}, Loss: {self.loss:.4f}, Best Discrete Loss: {self.best_discrete_loss:.4f}"
             )
-
-        height_map_uint8 = (height_map_norm * 255).astype(np.uint8)
-        self.depth_map_ax.set_data(height_map_uint8)
-        self.depth_map_ax.set_clim(0, 255)
-
-        # Compute and update the difference depth map (current - initial)
-        diff_map = height_map - self.initial_height_map
-        # print(diff_map.min(), diff_map.max())
-        # Normalize the difference map safely.
-        # if np.allclose(diff_map.max(), diff_map.min()):
-        #     diff_map_norm = np.zeros_like(diff_map)
-        # else:
-        #     diff_map_norm = (diff_map - diff_map.min()) / (
-        #         diff_map.max() - diff_map.min()
-        #     )
-        self.diff_depth_map_ax.set_data(diff_map)
-        self.diff_depth_map_ax.set_clim(-2.5, 2.5)
-
-        self.fig.suptitle(
-            f"Step {self.num_steps_done}/{self.args.iterations}, Tau: {tau_g:.4f}, Loss: {self.loss:.4f}, Best Discrete Loss: {self.best_discrete_loss:.4f}"
-        )
-        if self.args.disable_visualization_for_gradio != 1:
-            plt.pause(0.01)
-        plt.savefig(self.args.output_folder + "/vis_temp.png")
+            if self.args.disable_visualization_for_gradio != 1:
+                plt.pause(0.01)
+            plt.savefig(self.args.output_folder + "/vis_temp.png")
 
     def get_current_parameters(self):
         """
@@ -597,44 +600,45 @@ class FilamentOptimizer:
 
             # 1) Discretize
             tau_h, tau_g = self.final_tau, self.final_tau
-            effective_logits = self._apply_height_offset()
-            params_with_offset = {
-                "pixel_height_logits": effective_logits,
-                "global_logits": self.params["global_logits"],
-            }
-            disc_global, disc_height_image = discretize_solution(
-                params_with_offset, tau_g, self.h, self.max_layers, rng_seed=seed
-            )
-
-            # 2) Compute discrete-mode composite
             with torch.no_grad():
-                comp_disc = composite_image_disc(
-                    self.params["pixel_height_logits"],
-                    self.params["global_logits"],
-                    self.final_tau,
-                    self.final_tau,
-                    self.h,
-                    self.max_layers,
-                    self.material_colors,
-                    self.material_TDs,
-                    self.background,
-                    rng_seed=seed,
+                effective_logits = self._apply_height_offset()
+                params_with_offset = {
+                    "pixel_height_logits": effective_logits,
+                    "global_logits": self.params["global_logits"],
+                }
+                disc_global, disc_height_image = discretize_solution(
+                    params_with_offset, tau_g, self.h, self.max_layers, rng_seed=seed
                 )
 
-            current_disc_loss = compute_loss(
-                comp=comp_disc,
-                target=self.target,
-            ).item()
-            from autoforge.Helper.PruningHelper import find_color_bands
+                # 2) Compute discrete-mode composite
+                with torch.no_grad():
+                    comp_disc = composite_image_disc(
+                        self.params["pixel_height_logits"],
+                        self.params["global_logits"],
+                        self.final_tau,
+                        self.final_tau,
+                        self.h,
+                        self.max_layers,
+                        self.material_colors,
+                        self.material_TDs,
+                        self.background,
+                        rng_seed=seed,
+                    )
 
-            # 4) Update if better
-            if current_disc_loss < self.best_discrete_loss:
-                self.best_discrete_loss = current_disc_loss
-                self.best_params = self.get_current_parameters()
-                self.best_tau = tau_g
-                self.best_seed = seed
-                self.best_swaps = len(find_color_bands(disc_global)) - 1
-                self.best_step = self.num_steps_done
+                current_disc_loss = compute_loss(
+                    comp=comp_disc,
+                    target=self.target,
+                ).item()
+                from autoforge.Helper.PruningHelper import find_color_bands
+
+                # 4) Update if better
+                if current_disc_loss < self.best_discrete_loss:
+                    self.best_discrete_loss = current_disc_loss
+                    self.best_params = self.get_current_parameters()
+                    self.best_tau = tau_g
+                    self.best_seed = seed
+                    self.best_swaps = len(find_color_bands(disc_global)) - 1
+                    self.best_step = self.num_steps_done
 
     def rng_seed_search(
         self, start_loss: float, num_seeds: int, autoset_seed: bool = False
