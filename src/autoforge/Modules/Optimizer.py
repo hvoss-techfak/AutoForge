@@ -9,9 +9,9 @@ from tqdm import tqdm
 
 from autoforge.Helper.CAdamW import CAdamW
 from autoforge.Helper.OptimizerHelper import (
-    discretize_solution,
     composite_image_cont,
     composite_image_disc,
+    deterministic_gumbel_softmax,
 )
 from autoforge.Loss.LossFunctions import loss_fn, compute_loss
 
@@ -115,6 +115,7 @@ class FilamentOptimizer:
         self.params = {
             "pixel_height_logits": self.pixel_height_logits,
             "global_logits": global_logits_init,
+            "height_offsets": self.height_offsets,
         }
 
         # Tau schedule
@@ -303,6 +304,50 @@ class FilamentOptimizer:
 
         return loss
 
+    def discretize_solution(
+        self,
+        params: dict,
+        tau_global: float,
+        h: float,
+        max_layers: int,
+        rng_seed: int = -1,
+    ):
+        """
+        Convert continuous logs to discrete layer counts and discrete color IDs.
+
+        Args:
+            params (dict): Dictionary containing the parameters 'pixel_height_logits' and 'global_logits'.
+            tau_global (float): Temperature parameter for global material assignment.
+            h (float): Height of each layer.
+            max_layers (int): Maximum number of layers.
+            rng_seed (int, optional): Random seed for deterministic sampling. Defaults to -1.
+
+        Returns:
+            tuple: A tuple containing:
+                - torch.Tensor: Discrete global material assignments, shape [max_layers].
+                - torch.Tensor: Discrete height image, shape [H, W].
+        """
+        pixel_logits = params["pixel_height_logits"]
+        pixel_offset = params["height_offsets"]
+        effective_logits = self._apply_height_offset(
+            pixel_logits=pixel_logits, height_offsets=pixel_offset
+        )
+
+        global_logits = params["global_logits"]
+        pixel_heights = (max_layers * h) * torch.sigmoid(effective_logits)
+        discrete_height_image = torch.round(pixel_heights / h).to(torch.int32)
+        discrete_height_image = torch.clamp(discrete_height_image, 0, max_layers)
+
+        num_layers = global_logits.shape[0]
+        discrete_global_vals = []
+        for j in range(num_layers):
+            p = deterministic_gumbel_softmax(
+                global_logits[j], tau_global, hard=True, rng_seed=rng_seed + j
+            )
+            discrete_global_vals.append(torch.argmax(p))
+        discrete_global = torch.stack(discrete_global_vals, dim=0)
+        return discrete_global, discrete_height_image
+
     def log_to_tensorboard(
         self, interval: int = 100, namespace: str = "", step: int = None
     ):
@@ -489,13 +534,8 @@ class FilamentOptimizer:
             )
 
         if best:
-            effective_logits = self._apply_height_offset(
-                self.best_params["pixel_height_logits"],
-                self.best_params["height_offsets"],
-            )
-            current_params["pixel_height_logits"] = effective_logits
-            disc_global, disc_height_image = discretize_solution(
-                current_params,
+            disc_global, disc_height_image = self.discretize_solution(
+                self.best_params,
                 self.vis_tau,
                 self.h,
                 self.max_layers,
@@ -505,7 +545,7 @@ class FilamentOptimizer:
         else:
             tau_height, tau_global = self._get_tau()
             with torch.no_grad():
-                disc_global, disc_height_image = discretize_solution(
+                disc_global, disc_height_image = self.discretize_solution(
                     current_params,
                     tau_height,
                     self.h,
@@ -603,18 +643,14 @@ class FilamentOptimizer:
             tau_h, tau_g = self.vis_tau, self.vis_tau
             with torch.no_grad():
                 effective_logits = self._apply_height_offset()
-                params_with_offset = {
-                    "pixel_height_logits": effective_logits,
-                    "global_logits": self.params["global_logits"],
-                }
-                disc_global, disc_height_image = discretize_solution(
-                    params_with_offset, tau_g, self.h, self.max_layers, rng_seed=seed
+                disc_global, disc_height_image = self.discretize_solution(
+                    self.params, tau_g, self.h, self.max_layers, rng_seed=seed
                 )
 
                 # 2) Compute discrete-mode composite
                 with torch.no_grad():
                     comp_disc = composite_image_disc(
-                        self.params["pixel_height_logits"],
+                        effective_logits,
                         self.params["global_logits"],
                         self.vis_tau,
                         self.vis_tau,
@@ -659,8 +695,12 @@ class FilamentOptimizer:
         best_loss = start_loss
         for i in tqdm(range(num_seeds), desc="Searching for new best seed"):
             seed = np.random.randint(0, 1000000)
-            comp_disc = composite_image_disc(
+            effective_logits = self._apply_height_offset(
                 self.best_params["pixel_height_logits"],
+                self.best_params["height_offsets"],
+            )
+            comp_disc = composite_image_disc(
+                effective_logits,
                 self.best_params["global_logits"],
                 self.vis_tau,
                 self.vis_tau,

@@ -6,7 +6,7 @@ from tqdm import tqdm
 from joblib import Parallel, delayed
 import threading
 
-from autoforge.Helper.OptimizerHelper import discretize_solution, composite_image_disc
+from autoforge.Helper.OptimizerHelper import composite_image_disc
 from autoforge.Loss.LossFunctions import compute_loss
 from autoforge.Modules.Optimizer import FilamentOptimizer
 
@@ -349,16 +349,11 @@ def remove_layer_from_solution(
         new_max_layers (int): Updated number of layers.
     """
     # Get the current discrete height image (used to decide which pixels need adjusting)
-
     effective_logits = optimizer._apply_height_offset(
         params["pixel_height_logits"], params["height_offsets"]
     )
-
-    _, disc_height = discretize_solution(
-        {
-            "pixel_height_logits": effective_logits,
-            "global_logits": params["global_logits"],
-        },
+    _, disc_height = optimizer.discretize_solution(
+        params,
         final_tau,
         h,
         current_max_layers,

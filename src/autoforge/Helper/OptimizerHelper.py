@@ -277,38 +277,3 @@ def composite_image_disc(
     comp = comp + rem_after.unsqueeze(-1) * background  # [H,W,3]
 
     return comp * 255.0
-
-
-def discretize_solution(
-    params: dict, tau_global: float, h: float, max_layers: int, rng_seed: int = -1
-):
-    """
-    Convert continuous logs to discrete layer counts and discrete color IDs.
-
-    Args:
-        params (dict): Dictionary containing the parameters 'pixel_height_logits' and 'global_logits'.
-        tau_global (float): Temperature parameter for global material assignment.
-        h (float): Height of each layer.
-        max_layers (int): Maximum number of layers.
-        rng_seed (int, optional): Random seed for deterministic sampling. Defaults to -1.
-
-    Returns:
-        tuple: A tuple containing:
-            - torch.Tensor: Discrete global material assignments, shape [max_layers].
-            - torch.Tensor: Discrete height image, shape [H, W].
-    """
-    pixel_height_logits = params["pixel_height_logits"]
-    global_logits = params["global_logits"]
-    pixel_heights = (max_layers * h) * torch.sigmoid(pixel_height_logits)
-    discrete_height_image = torch.round(pixel_heights / h).to(torch.int32)
-    discrete_height_image = torch.clamp(discrete_height_image, 0, max_layers)
-
-    num_layers = global_logits.shape[0]
-    discrete_global_vals = []
-    for j in range(num_layers):
-        p = deterministic_gumbel_softmax(
-            global_logits[j], tau_global, hard=True, rng_seed=rng_seed + j
-        )
-        discrete_global_vals.append(torch.argmax(p))
-    discrete_global = torch.stack(discrete_global_vals, dim=0)
-    return discrete_global, discrete_height_image
