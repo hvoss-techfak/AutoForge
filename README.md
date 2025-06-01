@@ -74,7 +74,6 @@ autoforge --input_image path/to/input_image.jpg --json_file %APPDATA%\HueForge\F
 autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv --pruning_max_colors 8 --pruning_max_swaps 20
 ```
 
-
 ### Command Line Arguments
 
 - `--config` *(Optional)* Path to a configuration file with the settings.
