@@ -2,13 +2,72 @@ import os
 import random
 
 import numpy as np
-from PIL import Image
-from PIL.Image import Quantize
 from joblib import Parallel, delayed
 from scipy.spatial.distance import cdist
 from skimage.color import rgb2lab
-from sklearn.cluster import MiniBatchKMeans
+from sklearn.cluster import MiniBatchKMeans, KMeans
 from sklearn.metrics import silhouette_score
+
+
+def _compute_distinctiveness(centroids: np.ndarray) -> np.ndarray:
+    """Return the minimum inter‑centroid distance for every centroid."""
+    dmat = cdist(centroids, centroids, metric="euclidean")
+    np.fill_diagonal(dmat, np.inf)
+    return dmat.min(axis=1)
+
+
+def two_stage_weighted_kmeans(
+    target_lab: np.ndarray,
+    H: int,
+    W: int,
+    overcluster_k: int = 200,
+    final_k: int = 16,
+    beta_distinct: float = 1.0,
+    random_state: int | None = None,
+):
+    """Segment *target_lab* (reshaped (N,3)) into *final_k* clusters using a
+    two‑stage weighted K‑Means.  Returns (final_centroids, final_labels).
+
+    The pixel‑level data are *only* used in stage‑1; stage‑2 runs on the much
+    smaller set of stage‑1 centroids which makes this fast and memory‑friendly.
+    """
+
+    # Stage 1: heavy over‑segmentation so that even tiny colour modes appear.
+    kmeans1 = MiniBatchKMeans(
+        n_clusters=overcluster_k,
+        random_state=random_state,
+        max_iter=300,
+    )
+    labels1 = kmeans1.fit_predict(target_lab)
+    centroids1 = kmeans1.cluster_centers_
+    counts1 = np.bincount(labels1, minlength=overcluster_k).astype(np.float64)
+
+    # Stage 2 weighting: size * (1 + beta * normalised distinctiveness)
+    distinct = _compute_distinctiveness(centroids1)
+    if distinct.max() > 0:
+        distinct /= distinct.max()
+    weights = counts1 * (1.0 + beta_distinct * distinct)
+
+    # Weighted K‑Means on the centroid set.
+    kmeans2 = KMeans(
+        n_clusters=final_k,
+        random_state=random_state,
+        n_init="auto",
+    )
+    kmeans2.fit(centroids1, sample_weight=weights)
+    centroids_final = kmeans2.cluster_centers_
+
+    # Assign every pixel to its nearest final centroid.
+    # Use chunks to keep memory bounded for very large images.
+    chunk = 2**18  # about 256k pixels ≈ 768 kB of float32 per chunk
+    labels_final = np.empty(target_lab.shape[0], dtype=np.int32)
+    for start in range(0, target_lab.shape[0], chunk):
+        end = start + chunk
+        d = cdist(target_lab[start:end], centroids_final, metric="euclidean")
+        labels_final[start:end] = np.argmin(d, axis=1)
+
+    labels_final = labels_final.reshape(H, W)
+    return centroids_final, labels_final
 
 
 def build_distance_matrix(labs, nodes):
@@ -410,78 +469,24 @@ def init_height_map(
 
     H, W, _ = target.shape
 
-    if init_method.startswith("quantize"):
-        method = (
-            Quantize.MAXCOVERAGE
-            if init_method == "quantize_maxcoverage"
-            else Quantize.MEDIANCUT
-            if init_method == "quantize_median"
-            else Quantize.FASTOCTREE
-        )
-        # Convert target (assumed in [0,255]) to a PIL Image.
-        pil_im = Image.fromarray(target.astype(np.uint8))
-        # Quantize image into max_layers colors.
-        quantized_im = pil_im.quantize(
-            colors=min(
-                256, cluster_layers if cluster_layers is not None else max_layers
-            ),
-            method=method,
-        )
-        # Retrieve per-pixel labels (indices into the palette).
-        labels = np.array(quantized_im)
-
-        # Get the full palette and reshape it into (-1, 3)
-        full_palette = quantized_im.getpalette()
-        palette_arr = np.array(full_palette, dtype=np.uint8).reshape(-1, 3)
-
-        # Get only the palette indices actually used in the quantized image.
-        unique_palette_indices = sorted(np.unique(labels))
-        # Create the labs array from the used palette colors.
-        labs_rgb = palette_arr[unique_palette_indices].astype(np.float32) / 255.0
-
-        if lab_space:
-            # Convert RGB values (0-255) to Lab space.
-            labs = rgb2lab(labs_rgb)
-            # Apply the weighting to each Lab channel.
-            labs[:, 0] *= lab_weights[0]
-            labs[:, 1] *= lab_weights[1]
-            labs[:, 2] *= lab_weights[2]
-        else:
-            labs = labs_rgb
-
-        # Remap the labels in the image to a compact index range.
-        palette_map = {old: new for new, old in enumerate(unique_palette_indices)}
-        labels = np.vectorize(lambda x: palette_map[x])(labels)
-
+    target_np = target.astype(np.float32) / 255.0
+    if lab_space:
+        target_lab_full = rgb2lab(target_np)
+        target_lab_full[..., 0] *= lab_weights[0]
+        target_lab_full[..., 1] *= lab_weights[1]
+        target_lab_full[..., 2] *= lab_weights[2]
     else:
-        # kmeans init
-        target_np = np.asarray(target).reshape(H, W, 3).astype(np.float32) / 255.0
-
-        if lab_space:
-            # Convert the image to Lab space and apply weights.
-            target_lab = rgb2lab(target_np)
-            # Apply weights: scale L channel by lab_weights[0], a by lab_weights[1], b by lab_weights[2]
-            target_lab[..., 0] *= lab_weights[0]
-            target_lab[..., 1] *= lab_weights[1]
-            target_lab[..., 2] *= lab_weights[2]
-        else:
-            target_lab = target_np
-
-        # Reshape for clustering.
-        target_lab_reshaped = target_lab.reshape(-1, 3)
-
-        # Cluster pixels using MiniBatchKMeans in the weighted Lab space.
-        kmeans = MiniBatchKMeans(
-            n_clusters=cluster_layers if cluster_layers is not None else max_layers,
-            random_state=random_seed,
-            max_iter=300,
-        )
-        kmeans.fit(target_lab_reshaped)
-        centers = kmeans.cluster_centers_
-        labels = kmeans.predict(target_lab_reshaped).reshape(H, W)
-
-        # For subsequent ordering, we use the weighted Lab centers.
-        labs = centers  # labs now holds weighted Lab values
+        target_lab_full = target_np
+    target_lab_reshaped = target_lab_full.reshape(-1, 3)
+    labs, labels = two_stage_weighted_kmeans(
+        target_lab_reshaped,
+        H,
+        W,
+        overcluster_k=150,
+        final_k=cluster_layers,
+        beta_distinct=4.0,
+        random_state=random_seed,
+    )
 
     if lab_space:
         target_lab_for_quality = rgb2lab((target.astype(np.float32) / 255.0))
