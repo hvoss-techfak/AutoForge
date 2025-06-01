@@ -325,7 +325,13 @@ def merge_bands(
 
 
 def remove_layer_from_solution(
-    params, layer_to_remove, final_tau, h, current_max_layers, rng_seed
+    optimizer,
+    params,
+    layer_to_remove,
+    final_tau,
+    h,
+    current_max_layers,
+    rng_seed,
 ):
     """
     Remove one layer from the solution.
@@ -343,8 +349,20 @@ def remove_layer_from_solution(
         new_max_layers (int): Updated number of layers.
     """
     # Get the current discrete height image (used to decide which pixels need adjusting)
+
+    effective_logits = optimizer._apply_height_offset(
+        params["pixel_height_logits"], params["height_offsets"]
+    )
+
     _, disc_height = discretize_solution(
-        params, final_tau, h, current_max_layers, rng_seed
+        {
+            "pixel_height_logits": effective_logits,
+            "global_logits": params["global_logits"],
+        },
+        final_tau,
+        h,
+        current_max_layers,
+        rng_seed,
     )
 
     # Remove the candidate layer from the global (color) assignment.
@@ -358,25 +376,24 @@ def remove_layer_from_solution(
     new_max_layers = new_global_logits.shape[0]
 
     # Compute current effective height: height = (current_max_layers * h) * sigmoid(pixel_height_logits)
-    current_height = (
-        current_max_layers * h * torch.sigmoid(params["pixel_height_logits"])
-    )
-
-    # For pixels where the discrete height is at or above the removed layer, subtract h.
+    current_height = current_max_layers * h * torch.sigmoid(effective_logits)
     new_height = current_height.clone()
-    mask = disc_height >= layer_to_remove  # <-- Changed from > to >= here
+    mask = disc_height >= layer_to_remove
     new_height[mask] = new_height[mask] - h
 
     # Invert the sigmoid mapping:
     # We need new_pixel_height_logits such that:
     #    sigmoid(new_pixel_height_logits) = new_height / (new_max_layers * h)
     eps = 1e-6
-    new_ratio = torch.clamp(new_height / (new_max_layers * h), eps, 1 - eps)
-    new_pixel_height_logits = torch.log(new_ratio) - torch.log(1 - new_ratio)
-
+    ratio = torch.clamp(new_height / (new_max_layers * h), eps, 1.0 - eps)
+    new_effective_logits = torch.log(ratio) - torch.log1p(-ratio)
+    new_pixel_height_logits = new_effective_logits - (
+        effective_logits - params["pixel_height_logits"]
+    )
     new_params = {
         "global_logits": new_global_logits,
         "pixel_height_logits": new_pixel_height_logits,
+        "height_offsets": params["height_offsets"],
     }
     return new_params, new_max_layers
 
@@ -399,38 +416,27 @@ def prune_redundant_layers(
     stopping as soon as one batch yields an improvement.
     """
     current_max_layers = optimizer.best_params["global_logits"].shape[0]
-    optimizer.max_layers = current_max_layers
+    optimizer.max_layers = current_max_layers  # keep optimiser in sync
 
-    def score_layer(
-        layer_idx: int,
-        base_params: dict,
-        final_tau: float,
-        h: float,
-        cur_max_layers: int,
-        best_seed: int,
-    ):
-        cand_params, cand_max_layers = remove_layer_from_solution(
-            base_params, layer_idx, final_tau, h, cur_max_layers, best_seed
-        )
-        with _gpu_lock, torch.no_grad():
-            cand_comp = composite_image_disc(
-                cand_params["pixel_height_logits"],
-                cand_params["global_logits"],
-                final_tau,
-                final_tau,
-                h,
-                cand_max_layers,
-                optimizer.material_colors,
-                optimizer.material_TDs,
-                optimizer.background,
-                rng_seed=best_seed,
-            )
-            cand_loss = compute_loss(cand_comp, optimizer.target).item()
-        return cand_loss, cand_params, cand_max_layers
-
+    # Baseline loss with current best parameters
     with _gpu_lock, torch.no_grad():
-        comp = optimizer.get_best_discretized_image()
-        best_loss = compute_loss(comp, optimizer.target).item()
+        eff_logits = optimizer._apply_height_offset(
+            optimizer.best_params["pixel_height_logits"],
+            optimizer.best_params["height_offsets"],
+        )
+        ref_comp = composite_image_disc(
+            eff_logits,
+            optimizer.best_params["global_logits"],
+            optimizer.vis_tau,
+            optimizer.vis_tau,
+            optimizer.h,
+            current_max_layers,
+            optimizer.material_colors,
+            optimizer.material_TDs,
+            optimizer.background,
+            rng_seed=optimizer.best_seed,
+        )
+        best_loss = compute_loss(ref_comp, optimizer.target).item()
 
     tbar = tqdm(
         desc=f"Layer pruning | Loss {best_loss:.4f}",
@@ -440,88 +446,127 @@ def prune_redundant_layers(
     removed_layers = 0
     improvement = True
 
+    # ----------------------------------------------------------
+    # Inner helper: evaluate the effect of removing layer idx
+    # ----------------------------------------------------------
+    def score_layer(idx: int) -> tuple[float, dict, int]:
+        cand_params, cand_max_layers = remove_layer_from_solution(
+            optimizer,
+            optimizer.best_params,
+            idx,
+            optimizer.vis_tau,
+            optimizer.h,
+            current_max_layers,
+            optimizer.best_seed,
+        )
+        eff_logits = optimizer._apply_height_offset(
+            cand_params["pixel_height_logits"], cand_params["height_offsets"]
+        )
+        with _gpu_lock, torch.no_grad():
+            cand_comp = composite_image_disc(
+                eff_logits,
+                cand_params["global_logits"],
+                optimizer.vis_tau,
+                optimizer.vis_tau,
+                optimizer.h,
+                cand_max_layers,
+                optimizer.material_colors,
+                optimizer.material_TDs,
+                optimizer.background,
+                rng_seed=optimizer.best_seed,
+            )
+            cand_loss = compute_loss(cand_comp, optimizer.target).item()
+        return cand_loss, cand_params, cand_max_layers
+
+    # ----------------------------------------------------------
+    # Main pruning loop
+    # ----------------------------------------------------------
     while current_max_layers > pruning_min_layers and (
         improvement or current_max_layers > pruning_max_layers
     ):
         tbar.update(1)
         improvement = False
-
         layer_indices = list(range(current_max_layers))
+
         if fast:
             random.shuffle(layer_indices)
             chunk_size = max(1, math.ceil(len(layer_indices) * chunking_percent))
-            c_cand = None
-            c_loss = 1000
+            best_candidate = None
+            best_cand_loss = float("inf")
+
             for chunk in _chunked(layer_indices, chunk_size):
                 cand_results = Parallel(
                     n_jobs=n_jobs, backend="threading", prefer="threads"
-                )(
-                    delayed(score_layer)(
-                        idx,
-                        optimizer.best_params,
-                        optimizer.vis_tau,
-                        optimizer.h,
-                        current_max_layers,
-                        optimizer.best_seed,
-                    )
-                    for idx in chunk
-                )
+                )(delayed(score_layer)(idx) for idx in chunk)
+
                 cand_loss, cand_params, cand_max_layers = min(
                     cand_results, key=lambda x: x[0]
                 )
+
                 if cand_loss <= best_loss * (1 + allowed_loss_increase_percent):
+                    # Accept immediately and restart outer loop
                     removed_layers += 1
                     best_loss = cand_loss
                     current_max_layers = cand_max_layers
                     optimizer.best_params = cand_params
                     optimizer.max_layers = current_max_layers
                     tbar.set_description(
-                        f"Layer pruning | Loss {best_loss:.4f} | Removed {removed_layers} | Layers {current_max_layers}"
+                        f"Layer pruning | Loss {best_loss:.4f} | "
+                        f"Removed {removed_layers} | Layers {current_max_layers}"
                     )
                     improvement = True
-                    break  # restart outer while loop with updated solution
-                else:
-                    if current_max_layers > pruning_max_layers and cand_loss < c_loss:
-                        c_cand = (cand_params, current_max_layers)
-            if c_cand is not None:
+                    break
+
+                # Track the best candidate in case we must enforce a hard limit
+                if cand_loss < best_cand_loss:
+                    best_cand_loss = cand_loss
+                    best_candidate = (cand_params, cand_max_layers)
+
+            # Forced removal to meet pruning_max_layers
+            if (
+                not improvement
+                and current_max_layers > pruning_max_layers
+                and best_candidate is not None
+            ):
+                cand_params, cand_max_layers = best_candidate
                 removed_layers += 1
-                best_loss = c_loss
-                current_max_layers = c_cand[1]
-                optimizer.best_params = c_cand[0]
+                best_loss = best_cand_loss
+                current_max_layers = cand_max_layers
+                optimizer.best_params = cand_params
                 optimizer.max_layers = current_max_layers
                 tbar.set_description(
-                    f"Layer pruning | Loss {best_loss:.4f} | Removed {removed_layers} | Layers {current_max_layers}"
+                    f"Layer pruning | Loss {best_loss:.4f} | "
+                    f"Removed {removed_layers} | Layers {current_max_layers}"
                 )
                 improvement = True
 
             if not improvement:
-                break
+                break  # no chunk helped and layer count is within budget
         else:
+            # Exhaustive search
             cand_results = Parallel(
                 n_jobs=n_jobs, backend="threading", prefer="threads"
-            )(
-                delayed(score_layer)(
-                    idx,
-                    optimizer.best_params,
-                    optimizer.vis_tau,
-                    optimizer.h,
-                    current_max_layers,
-                    optimizer.best_seed,
-                )
-                for idx in layer_indices
-            )
+            )(delayed(score_layer)(idx) for idx in layer_indices)
+
             cand_loss, cand_params, cand_max_layers = min(
                 cand_results, key=lambda x: x[0]
             )
-            if cand_loss <= best_loss or current_max_layers > pruning_max_layers:
+
+            tbar.set_description(
+                f"Layer pruning | Current Candidate Loss: {cand_loss:.4f} | Best Loss {best_loss:.4f} | "
+                f"Removed {removed_layers} | Layers {current_max_layers}"
+            )
+
+            if (
+                cand_loss <= best_loss * (1 + allowed_loss_increase_percent)
+                or current_max_layers > pruning_max_layers
+            ):
                 removed_layers += 1
                 best_loss = cand_loss
                 current_max_layers = cand_max_layers
                 optimizer.best_params = cand_params
                 optimizer.max_layers = current_max_layers
-                tbar.set_description(
-                    f"Layer pruning | Loss {best_loss:.4f} | Removed {removed_layers} | Layers {current_max_layers}"
-                )
+
                 improvement = True
             else:
                 break
