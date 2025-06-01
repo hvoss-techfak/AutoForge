@@ -110,16 +110,19 @@ def composite_image_cont(
     # 1. per-pixel continuous layer index
     pixel_height = (max_layers * h) * torch.sigmoid(pixel_height_logits)  # [H,W]
     continuous_z = pixel_height / h  # [H,W]
+    continuous_z = adaptive_round(continuous_z, tau_height, 1.0, 0.0, 0.1)
 
     # 2. global material weights with Gumbel-Softmax
-    hard_flag = tau_global < 1e-3
-    p_mat = F.gumbel_softmax(global_logits, tau_global, hard=hard_flag, dim=1)  # [L,M]
+    p_mat = F.gumbel_softmax(global_logits, tau_global, hard=False, dim=1)  # [L,M]
 
     layer_colors = p_mat @ material_colors  # [L,3]
     layer_TDs = (p_mat @ material_TDs).clamp(1e-8, 1e8)  # [L]
 
     # 3. soft print mask for all layers (layer 0 = bottom, layer L-1 = top)
-    scale = 10.0 * tau_height
+    #    Small τ  -> large scale (steep transition)
+    #    Large τ  -> small scale (smooth transition)
+    eps = 1e-8
+    scale = 10.0 / (tau_height + eps)
     layer_idx = torch.arange(
         max_layers, dtype=torch.float32, device=pixel_height.device
     ).view(-1, 1, 1)  # [L,1,1]
@@ -195,75 +198,84 @@ def composite_image_disc(
     background: torch.Tensor,  # [3]
     rng_seed: int = -1,
 ) -> torch.Tensor:
-    # 1. discrete layer counts per pixel (with adaptive rounding)
-    pixel_height = (max_layers * h) * torch.sigmoid(pixel_height_logits)
-    continuous_z = pixel_height / h
-    adaptive_layers = adaptive_round(
-        continuous_z, tau_height, high_tau=0.1, low_tau=0.01, temp=0.1
+    """
+    Discrete counterpart of `composite_image_cont`.
+
+    * Heights are snapped to whole layers with `adaptive_round`.
+    * Each layer gets exactly one material chosen with
+      `deterministic_gumbel_softmax`, making the result pixel-wise
+      discrete in both height and color while gradients still flow
+      through the soft procedures when temperatures are >0.
+    """
+    eps: float = 1e-8
+
+    # 1. Discretise per-pixel heights (top of printed stack in units of h).
+    pixel_height: torch.Tensor = (float(max_layers) * h) * torch.sigmoid(
+        pixel_height_logits
     )
-    discrete_temp = torch.round(continuous_z)
-    discrete_layers = (discrete_temp + (adaptive_layers - discrete_temp).detach()).to(
-        torch.int32
-    )  # [H,W]
+    z_cont: torch.Tensor = pixel_height / h
+    #   Adaptive rounding: low_tau=0 means perfectly hard when tau_height→0,
+    #   high_tau=1 gives fully soft when tau_height→1.  temp=0.1 sets the
+    #   sharpness of the sigmoid used inside adaptive_round.
+    z_disc: torch.Tensor = adaptive_round(z_cont, tau_height, 1.0, 0.0, 0.1)
+    z_disc = torch.clamp(z_disc, 0.0, float(max_layers))
+    z_int: torch.Tensor = torch.round(z_disc).to(torch.int64)  # [H, W]
 
-    # 2. one material per physical layer
-    if rng_seed >= 0:
-        mats = []
-        for i in range(max_layers):
-            p_i = deterministic_gumbel_softmax(
-                global_logits[i], tau_global, hard=True, rng_seed=rng_seed + i
-            )
-            mats.append(torch.argmax(p_i).to(torch.int32))
-        new_mats = torch.stack(mats, dim=0)  # [L]
-    else:
-        probs = F.gumbel_softmax(global_logits, tau_global, hard=True, dim=1)  # [L,M]
-        new_mats = torch.argmax(probs, dim=1).to(torch.int32)  # [L]
+    # 2. Pick one material for every layer with a deterministic Gumbel-Softmax.
+    L: int = int(global_logits.shape[0])
+    n_mat: int = int(global_logits.shape[1])
 
-    # 3. flip to top→bottom order and collect material runs
-    new_mats_top = torch.flip(new_mats, dims=[0])  # index 0 = top
-    run_starts, run_ends, run_m = _runs_from_materials(new_mats_top)  # R runs
+    layer_colors: torch.Tensor = torch.empty(
+        (L, 3), dtype=material_colors.dtype, device=material_colors.device
+    )
+    layer_TDs: torch.Tensor = torch.empty(
+        (L,), dtype=material_TDs.dtype, device=material_TDs.device
+    )
 
-    R = int(run_starts.shape[0])
-    H, W = pixel_height.shape
-    device = pixel_height.device
-    dtype_f = torch.float32
+    seed_base: int = rng_seed if rng_seed >= 0 else 0
+    hard_flag: bool = True  # always one-hot
+    for j in range(L):
+        seed_j: int = seed_base + j
+        one_hot: torch.Tensor = deterministic_gumbel_softmax(
+            global_logits[j], tau_global, hard_flag, seed_j
+        )  # [n_materials]
+        idx: int = int(torch.argmax(one_hot).item())
+        layer_colors[j] = material_colors[idx]
+        layer_TDs[j] = material_TDs[idx].clamp(1e-8, 1e8)
 
-    # 4. printed layers per run (vectorised)  –  same logic as the loop
-    #    top 'D_no_print' layers stay empty
-    D_no_print = (max_layers - discrete_layers).to(torch.int32)  # [H,W]
-    run_s = run_starts.view(R, 1, 1)
-    run_e = run_ends.view(R, 1, 1)
-    printed_L = torch.clamp(
-        run_e - torch.maximum(run_s, D_no_print.unsqueeze(0)), min=0
-    )  # [R,H,W]
+    # 3. Binary print mask: a layer is present iff its index < z_int.
+    layer_idx: torch.Tensor = torch.arange(
+        max_layers, dtype=torch.int64, device=pixel_height.device
+    ).view(-1, 1, 1)  # [L,1,1]
+    p_print: torch.Tensor = (layer_idx < z_int.unsqueeze(0)).to(
+        pixel_height.dtype
+    )  # [L,H,W]
 
-    # *** FIX ***
-    # add one extra layer thickness where at least one layer is printed
-    extra_layer = (printed_L > 0).to(dtype_f)  # [R,H,W]
-    thickness_r = (printed_L.to(dtype_f) + extra_layer) * h  # [R,H,W]
+    # 4. Thickness, opacity and the rest exactly as in the continuous version.
+    eff_thick: torch.Tensor = p_print * h  # [L,H,W]
+    thick_ratio: torch.Tensor = eff_thick / layer_TDs.view(-1, 1, 1)  # [L,H,W]
 
-    # 5. opacity for every run
-    TD_r = material_TDs[run_m].view(R, 1, 1)  # [R,1,1]
-    thick_ratio = thickness_r / TD_r  # [R,H,W]
+    o, A, k, b = -1.2416557e-02, 9.6407950e-01, 3.4103447e01, -4.1554203e00
+    opac: torch.Tensor = o + (A * torch.log1p(k * thick_ratio) + b * thick_ratio)
+    opac = torch.clamp(opac, 0.0, 1.0)  # [L,H,W]
 
-    o, A, k, b = 0.10868816, 0.3077416, 76.928215, 2.2291653
-    opac_r = o + (A * torch.log1p(k * thick_ratio) + b * thick_ratio)
-    opac_r = torch.clamp(opac_r, 0.0, 1.0) * (printed_L > 0).to(
-        dtype_f
-    )  # zero when nothing printed
+    # 5. Top-to-bottom compositing (same flipping trick as before).
+    opac_fb = torch.flip(opac, dims=[0])  # [L,H,W]
+    colors_fb = torch.flip(layer_colors, dims=[0])  # [L,3]
 
-    # 6. front-to-back compositing run by run
-    trans_r = 1.0 - opac_r
-    trans_shift = torch.cat([torch.ones_like(trans_r[:1]), trans_r[:-1]], dim=0)
-    remain_r = torch.cumprod(trans_shift, dim=0)  # remaining light before run
+    trans_fb = 1.0 - opac_fb  # [L,H,W]
+    trans_prev = torch.cat([torch.ones_like(trans_fb[:1]), trans_fb[:-1]], dim=0)
+    remain_fb = torch.cumprod(trans_prev, dim=0)  # [L,H,W]
 
-    colors_r = material_colors[run_m].view(R, 1, 1, 3)  # [R,1,1,3]
-    comp_runs = (remain_r * opac_r).unsqueeze(-1) * colors_r  # [R,H,W,3]
-    comp = comp_runs.sum(dim=0)  # [H,W,3]
+    comp_layers = (remain_fb * opac_fb).unsqueeze(-1) * colors_fb.view(
+        -1, 1, 1, 3
+    )  # [L,H,W,3]
+    comp = comp_layers.sum(dim=0)  # [H,W,3]
 
-    # 7. background
-    rem_after = remain_r[-1] * trans_r[-1]
-    comp = comp + rem_after.unsqueeze(-1) * background
+    # 6. Background
+    rem_after = remain_fb[-1] * trans_fb[-1]
+    comp = comp + rem_after.unsqueeze(-1) * background  # [H,W,3]
+
     return comp * 255.0
 
 

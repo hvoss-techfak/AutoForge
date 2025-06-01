@@ -459,7 +459,7 @@ def prune_redundant_layers(
                     delayed(score_layer)(
                         idx,
                         optimizer.best_params,
-                        optimizer.final_tau,
+                        optimizer.vis_tau,
                         optimizer.h,
                         current_max_layers,
                         optimizer.best_seed,
@@ -503,7 +503,7 @@ def prune_redundant_layers(
                 delayed(score_layer)(
                     idx,
                     optimizer.best_params,
-                    optimizer.final_tau,
+                    optimizer.vis_tau,
                     optimizer.h,
                     current_max_layers,
                     optimizer.best_seed,

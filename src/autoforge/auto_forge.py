@@ -61,7 +61,7 @@ def main():
     parser.add_argument(
         "--warmup_fraction",
         type=float,
-        default=1.0,
+        default=0.25,
         help="Fraction of iterations for keeping the tau at the initial value",
     )
     parser.add_argument(
@@ -70,14 +70,6 @@ def main():
         default=0.25,
         help="Fraction of iterations that the learning rate is increasing (warmup)",
     )
-    #
-    # parser.add_argument(
-    #     "--height_logits_learning_start_fraction", type=float, default=0.75, help="Fraction of iterations at which we start to learn the height map"
-    # )
-    #
-    # parser.add_argument(
-    #     "--height_logits_learning_full_fraction", type=float, default=1.0, help="Fraction of iterations at which the height map learning is fully enabled"
-    # )
 
     parser.add_argument(
         "--init_tau",
@@ -135,14 +127,6 @@ def main():
         default=200,
         help="Size of the longest dimension of the output STL file in mm",
     )
-
-    parser.add_argument(
-        "--processing_size",
-        type=int,
-        default=100,
-        help="Internal image processing size in mm",
-    )
-
     parser.add_argument(
         "--nozzle_diameter",
         type=float,
@@ -152,7 +136,7 @@ def main():
     parser.add_argument(
         "--early_stopping",
         type=int,
-        default=1500,
+        default=10000,
         help="Number of steps without improvement before stopping",
     )
 
@@ -166,14 +150,14 @@ def main():
     parser.add_argument(
         "--fast_pruning",
         type=bool,
-        default=False,
+        default=True,
         help="Use fast pruning method",
         action=argparse.BooleanOptionalAction,
     )
     parser.add_argument(
         "--fast_pruning_percent",
         type=float,
-        default=0.05,
+        default=0.2,
         help="Percentage of increment search for fast pruning",
     )
 

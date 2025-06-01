@@ -76,6 +76,7 @@ class FilamentOptimizer:
         self.learning_rate = args.learning_rate
         self.current_learning_rate = args.learning_rate
         self.final_tau = args.final_tau
+        self.vis_tau = args.final_tau
         self.init_tau = args.init_tau
         self.device = device
         self.best_swaps = 0
@@ -400,8 +401,8 @@ class FilamentOptimizer:
                 best_comp = composite_image_disc(
                     effective_best_logits,
                     self.best_params["global_logits"],
-                    self.final_tau,
-                    self.final_tau,
+                    self.vis_tau,
+                    self.vis_tau,
                     self.h,
                     self.max_layers,
                     self.material_colors,
@@ -495,7 +496,7 @@ class FilamentOptimizer:
             current_params["pixel_height_logits"] = effective_logits
             disc_global, disc_height_image = discretize_solution(
                 current_params,
-                self.final_tau,
+                self.vis_tau,
                 self.h,
                 self.max_layers,
                 rng_seed=self.best_seed,
@@ -530,8 +531,8 @@ class FilamentOptimizer:
                 self.best_params["global_logits"]
                 if custom_global_logits is None
                 else custom_global_logits,
-                self.final_tau,
-                self.final_tau,
+                self.vis_tau,
+                self.vis_tau,
                 self.h,
                 self.max_layers,
                 self.material_colors,
@@ -564,7 +565,7 @@ class FilamentOptimizer:
         prune_num_colors(
             self,
             max_colors_allowed,
-            self.final_tau,
+            self.vis_tau,
             None,
             fast=fast_pruning,
             chunking_percent=fast_pruning_percent,
@@ -573,7 +574,7 @@ class FilamentOptimizer:
         prune_num_swaps(
             self,
             max_swaps_allowed,
-            self.final_tau,
+            self.vis_tau,
             None,
             fast=fast_pruning,
             chunking_percent=fast_pruning_percent,
@@ -599,7 +600,7 @@ class FilamentOptimizer:
             seed = np.random.randint(0, 1000000)
 
             # 1) Discretize
-            tau_h, tau_g = self.final_tau, self.final_tau
+            tau_h, tau_g = self.vis_tau, self.vis_tau
             with torch.no_grad():
                 effective_logits = self._apply_height_offset()
                 params_with_offset = {
@@ -615,8 +616,8 @@ class FilamentOptimizer:
                     comp_disc = composite_image_disc(
                         self.params["pixel_height_logits"],
                         self.params["global_logits"],
-                        self.final_tau,
-                        self.final_tau,
+                        self.vis_tau,
+                        self.vis_tau,
                         self.h,
                         self.max_layers,
                         self.material_colors,
@@ -661,8 +662,8 @@ class FilamentOptimizer:
             comp_disc = composite_image_disc(
                 self.best_params["pixel_height_logits"],
                 self.best_params["global_logits"],
-                self.final_tau,
-                self.final_tau,
+                self.vis_tau,
+                self.vis_tau,
                 self.h,
                 self.max_layers,
                 self.material_colors,

@@ -10,7 +10,7 @@ This includes the option to run it locally if you have a powerful pc and don't w
 For this simply go to the [Huggingface](https://huggingface.co/spaces/hvoss-techfak/Autoforge) space and pull the docker container for this project (upper right corner -> three dots -> "run locally")
 
 ## Example
-All examples use only the 13 BambuLab Basic filaments, currently available in Hueforge 0.8.9, the background color is set to black.
+All examples use only the 27 BambuLab Basic PLA filaments, currently available in Hueforge 0.9.0, the background color is set to black.
 The pruning is set to a maximum of 8 color and 20 swaps, so each image uses at most 8 different colors and swaps the filament at most 20 times. 
 <div style="display: flex; justify-content: center; gap: 20px;">
   <div style="text-align: center;">
@@ -95,63 +95,47 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 
 - `--config` *(Optional)* Path to a configuration file with the settings.
 
-
 - `--input_image` **(Required)** Path to the input image.
 - `--csv_file` Path to the CSV file containing material data. The CSV should include columns for the brand, name, color (hex code), and TD values.
-- `--json_file` Path to the json file containing material data. \
- **Note:** Either a csv or json file has to be given.
+- `--json_file` Path to the json file containing material data.  
+  **Note:** Either a csv or json file has to be given.
 
 - `--output_folder` Folder where output files will be saved (default: `output`).
 - `--iterations` Number of optimization iterations (default: 2000).
+- `--warmup_fraction` Fraction of iterations for keeping the tau at the initial value (default: 0.25).
+- `--learning_rate_warmup_fraction` Fraction of iterations that the learning rate is increasing (warmup) (default: 0.25).
+- `--init_tau` Initial tau value for Gumbel-Softmax (default: 1.0).
+- `--final_tau` Final tau value for the Gumbel-Softmax formulation (default: 0.01).
 - `--learning_rate` Learning rate for optimization (default: 0.015).
 - `--layer_height` Layer thickness in millimeters (default: 0.04).
 - `--max_layers` Maximum number of layers (default: 75).  
   **Note:** This is about 3mm + the background height
+- `--min_layers`  Minimum number of layers (default: 0). Used to limit height of pruning.
 - `--background_height` Height of the background in millimeters (default: 0.4).  
   **Note:** The background height must be divisible by the layer height.
 - `--background_color` Background color in hexadecimal format (default: `#000000` aka Black).  
   **Note:** The solver currently assumes that you have a solid color in the background, which means a color with a TD value of 4 or less (if you have a background height of 0.4).
-- `--init_tau` Initial tau value for Gumbel-Softmax (default: 1.0).
-- `--final_tau` Final tau value for the Gumbel-Softmax formulation (default: 0.01).
 - `--visualize` enable live visualization of the composite image during optimization (default: True).
-- `--stl_output_size` Size of the longest dimension of the output STL file in millimeters (default: 150).
+- `--stl_output_size` Size of the longest dimension of the output STL file in millimeters (default: 200).
 - `--nozzle_diameter` Diameter of the printer nozzle in millimeters (default: 0.4).  
   **Note:** Details smaller than half this value will be ignored.
-- `--early_stopping` Number of steps without improvement before stopping (default: 1500).
-- 
+- `--early_stopping` Number of steps without improvement before stopping (default: 10000).
 
 - `--perform_pruning`  Perform pruning after optimization (default: True).  
   **Note:** This is highly recommended even if you don't have a color/color swap limit, as it actually increases the quality of the output.
-- `--fast_pruning`  Perform pruning in chunks. 10-15x speedup compared to accurate method (default: True).
-- `--fast_pruning_percent` Size of fast pruning chunks in percent (default: 0.05) (5%).
+- `--fast_pruning`  Perform pruning in chunks. 10-15x speedup compared to accurate method (default: False).
+- `--fast_pruning_percent` Size of fast pruning chunks in percent (default: 0.2) (20%).
 - `--pruning_max_colors` Max number of colors allowed after pruning (default: 100).
 - `--pruning_max_swaps` Max number of swaps allowed after pruning (default: 100).
 - `--pruning_max_layer` Max number of layers allowed after pruning (default: 75).
-- `--min_layers`  Minimum number of layers (default: 0). Used to limit height of pruning.
 - `--random_seed` Random seed for reproducibility (default: 0 (disabled)).
 - `--mps` Flag to use the Metal Performance Shaders (MPS) backend if available.
 
-
 - `--tensorboard` Flag to enable TensorBoard logging.
 - `--run_name` *(Optional)* Name of the run used for TensorBoard logging.
-
-
-
-### Experimental Deph Anything V2 parameters
-I got a request to add an initializing function that takes the original depth of the image into account when initializing. \
-In theory this should give you a nice background/foreground separation, but in practice it can degrade the quality of the output. \
-In addition you need the VRAM to run the depth model. \
-I currently don't recommend it as the output is not as good as without it, but I will leave it in for now. \
-
-- `--use_depth_anything`: Use a depth anything v2 model to initialize the height map (default: False).
-  **Note:** This will give you a nice background/foreground separation, but will could degrade quality in some cases.
-  **Note:** In addition you need the VRAM to run the depth model.
-- `--depth_strength`: Weight for blending even spacing with the cluster’s average depth when using depth initialization. (default: 0.25)
-- `--depth_threshold`: Threshold for splitting two distinct colors based on depth. (default: 0.05)
-- `--min_cluster_value`: Minimum normalized value for the lowest cluster (to avoid pure black). (default: 0.1)
-- `--w_depth`: Weight for depth difference in ordering. (default: 0.5)
-- `--w_lum`: Weight for luminance difference in ordering. (default: 1.0)
-- `--order_blend`: Blending factor between original luminance ordering (0) and depth-informed ordering (1). (default: 0.1)
+- `--num_init_rounds` Number of rounds to choose the starting height map from (default: 128).
+- `--num_init_cluster_layers` Number of layers to cluster the image into (default: -1).
+- `--disable_visualization_for_gradio` Simple switch to disable the matplotlib render window for gradio rendering (default: 0).
 
 
 ## Outputs
