@@ -40,22 +40,6 @@ The pruning is set to a maximum of 8 color and 20 swaps, so each image uses at m
 - **Live Visualization**: (Optional) Displays live composite images during the optimization process.
 - **Hueforge export**: Outputs a project file that can be opened with hueforge.
 
-## [Google Colab Notebook](https://colab.research.google.com/drive/13sWCss9-ew2xnoJl4c4SSpComSNi-1ih)
-
-If you're new to Google Colab, follow these simple steps to run autoforge and get your output:
-
-1. **Open the Notebook:**  
-   Click [here](https://colab.research.google.com/drive/13sWCss9-ew2xnoJl4c4SSpComSNi-1ih) to open the notebook in Google Colab.
-
-2. **Select GPU Runtime:**  
-   In Colab, go to the menu and click **Runtime → Change runtime type**. Under **Hardware accelerator**, choose **T4 GPU** (or any other available GPU type).
-
-3. **Run All Cells:**  
-   Once the notebook loads, click **Runtime → Run all** to execute the cells in sequence. Follow the on-screen prompts to configure the materials CSV, upload your image, and run Autoforge.
-
-4. **Review and Download:**  
-   After the process completes, you'll see a preview of the output image. Finally, the notebook will zip the output folder for you to download.
-
 ## Manual Installation
 
 To install AutoForge, simply install the current version from PyPI:
