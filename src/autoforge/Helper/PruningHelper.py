@@ -414,24 +414,7 @@ def prune_redundant_layers(
     optimizer.max_layers = current_max_layers  # keep optimiser in sync
 
     # Baseline loss with current best parameters
-    with _gpu_lock, torch.no_grad():
-        eff_logits = optimizer._apply_height_offset(
-            optimizer.best_params["pixel_height_logits"],
-            optimizer.best_params["height_offsets"],
-        )
-        ref_comp = composite_image_disc(
-            eff_logits,
-            optimizer.best_params["global_logits"],
-            optimizer.vis_tau,
-            optimizer.vis_tau,
-            optimizer.h,
-            current_max_layers,
-            optimizer.material_colors,
-            optimizer.material_TDs,
-            optimizer.background,
-            rng_seed=optimizer.best_seed,
-        )
-        best_loss = compute_loss(ref_comp, optimizer.target).item()
+    best_loss = get_initial_loss(current_max_layers, optimizer)
 
     tbar = tqdm(
         desc=f"Layer pruning | Loss {best_loss:.4f}",
@@ -568,6 +551,28 @@ def prune_redundant_layers(
 
     tbar.close()
     return optimizer.best_params, best_loss, current_max_layers
+
+
+def get_initial_loss(current_max_layers, optimizer):
+    with _gpu_lock, torch.no_grad():
+        eff_logits = optimizer._apply_height_offset(
+            optimizer.best_params["pixel_height_logits"],
+            optimizer.best_params["height_offsets"],
+        )
+        ref_comp = composite_image_disc(
+            eff_logits,
+            optimizer.best_params["global_logits"],
+            optimizer.vis_tau,
+            optimizer.vis_tau,
+            optimizer.h,
+            current_max_layers,
+            optimizer.material_colors,
+            optimizer.material_TDs,
+            optimizer.background,
+            rng_seed=optimizer.best_seed,
+        )
+        best_loss = compute_loss(ref_comp, optimizer.target).item()
+    return best_loss
 
 
 def remove_outlier_pixels(

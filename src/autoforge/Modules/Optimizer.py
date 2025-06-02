@@ -57,12 +57,11 @@ class FilamentOptimizer:
             pixel_height_logits_init, dtype=torch.float32, device=device
         )
         self.pixel_height_logits.requires_grad_(True)
-
+        print("layers", int(pixel_height_labels.flatten().max()))
         self.cluster_layers = int(pixel_height_labels.flatten().max()) + 1
         self.pixel_height_labels = torch.tensor(
             pixel_height_labels, dtype=torch.int32, device=device
         )
-
         self.height_offsets = torch.nn.Parameter(
             torch.zeros(self.cluster_layers, 1, device=device)
         )  # Trainable
@@ -82,6 +81,7 @@ class FilamentOptimizer:
         self.best_swaps = 0
         self.perception_loss_module = perception_loss_module
         self.visualize_flag = args.visualize
+        self.offset_lr_strength = args.offset_lr_strength
 
         # Initialize TensorBoard writer
         if args.tensorboard:
@@ -288,8 +288,8 @@ class FilamentOptimizer:
             self.pixel_height_logits.grad[self.pixel_height_labels == 0] = 0.0
 
         # We scale the gradients for the height logits by a factor to only allow updates for very strong (wrong layer/color) gradients.
-        # if (self.params["pixel_height_logits"].grad is not None):
-        #    self.params["pixel_height_logits"].grad.mul_(1e-10)
+        if self.params["height_offsets"].grad is not None:
+            self.params["height_offsets"].grad.mul_(self.offset_lr_strength)
 
         self.optimizer.step()
 

@@ -8,7 +8,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 
-
+from autoforge.Helper import PruningHelper
 from autoforge.Helper.FilamentHelper import hex_to_rgb, load_materials
 from autoforge.Helper.Heightmaps.ChristofidesHeightMap import (
     run_init_threads,
@@ -209,6 +209,12 @@ def main():
         help="Number of layers to cluster the image into.",
     )
     parser.add_argument(
+        "--offset_lr_strength",
+        type=int,
+        default=-10,
+        help="Learning rate multiplier for the height offset.",
+    )
+    parser.add_argument(
         "--disable_visualization_for_gradio",
         type=int,
         default=0,
@@ -384,6 +390,11 @@ def main():
             disc_global, disc_height_image = optimizer.get_discretized_solution(
                 best=True
             )
+
+            final_loss = PruningHelper.get_initial_loss(optimizer.best_params["global_logits"].shape[0],optimizer)
+            #write to text file
+            with open(os.path.join(args.output_folder, "final_loss.txt"), "w") as f:
+                f.write(f"{final_loss}")
 
             print("Done. Saving outputs...")
             # Save Image

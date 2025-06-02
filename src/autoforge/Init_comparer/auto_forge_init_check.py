@@ -1,264 +1,122 @@
-import concurrent
+#!/usr/bin/env python3
+"""
+Grid-runner for autoforge.py
+
+Usage example (inline defaults):
+    python run_autoforge_grid.py
+"""
+
+import json
+import subprocess
 import sys
-import os
-import time
-import traceback
-from concurrent.futures.process import ProcessPoolExecutor
-from contextlib import redirect_stdout, redirect_stderr
-from random import shuffle
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from itertools import product
+from pathlib import Path
+from time import strftime
 
-import cv2
-import torch
-import numpy as np
-from tqdm import tqdm
+# ---------- editable section ---------- #
+# Any CLI flag accepted by autoforge.py can be placed here.
+DEFAULT_ARGS: dict[str, object] = {
+    "--csv_file": "bambulab.csv",
+    "--iterations": 2000,
+    "--stl_output_size": 50,
+    "--visualize": False,
+}
 
-from autoforge.Helper.FilamentHelper import hex_to_rgb, load_materials
-from autoforge.Helper.Heightmaps.ChristofidesHeightMap import run_init_threads
-from autoforge.Helper.ImageHelper import resize_image
-from autoforge.Modules.Optimizer import FilamentOptimizer
+SWEEP_PARAM = "--offset_lr_strength"  # param to overwrite per run
+SWEEP_VALUES = [0.01, 0.1, 1, 10]
 
-
-class Config:
-    # Update these file paths as needed!
-    input_image = "default_input.png"  # Path to input image
-    csv_file = "default_materials.csv"  # Path to CSV file with material data
-    output_folder = "output"
-    iterations = 2000
-    learning_rate = 0.015
-
-    warmup_fraction = 0.1 #[0.0, 1.0]
-    height_logits_learning_start_fraction = 0.1 #[0.0, 1.0] but should be less than height_logits_learning_full_fraction
-    height_logits_learning_full_fraction = 0.5 # [0.0, 1.0] but should be more than height_logits_learning_start_fraction
-    init_tau = 1.0 # [0.0, 1.0] needs to be more than final_tau
-    final_tau = 0.01 # [0.0, 1.0] needs to be less than init_tau
-
-    layer_height = 0.04
-    max_layers = 75
-    min_layers = 0
-    background_height = 0.4
-    background_color = "#000000"
-    output_size = 128
-    visualize = False
-    stl_output_size = 200
-    perform_pruning = True
-    pruning_max_colors = 100
-    pruning_max_swaps = 100
-    pruning_max_layer = 75
-    random_seed = 0
-    use_depth_anything_height_initialization = False
-    depth_strength = 0.25
-    depth_threshold = 0.05
-    min_cluster_value = 0.1
-    w_depth = 0.5
-    w_lum = 1.0
-    order_blend = 0.1
-    mps = False
-    run_name = None
-    tensorboard = False
+IMAGES_DIR = Path("images/test_images")
+BASE_OUTPUT_DIR = Path("output_grid")  # all run folders are created inside here
+MAX_WORKERS = 2  # parallel jobs
+# ---------- end editable section ------ #
 
 
-def main(input_image, csv_file, warmup, h_start, h_full, tau_init, tau_final):
-    # Create config object using default values and override with given hyperparameters.
-    args = Config()
-    args.input_image = input_image
-    args.csv_file = csv_file
+def make_cmd(image_path: Path, param_value, run_dir: Path) -> list[str]:
+    """Assemble the command line for one run."""
+    cmd: list[str] = [
+        sys.executable,
+        "autoforge.py",
+        "--input_image",
+        str(image_path),
+        "--output_folder",
+        str(run_dir),
+    ]
 
-    # Set the hyperparameters for the grid search.
-    args.warmup_fraction = warmup
-    args.height_logits_learning_start_fraction = h_start
-    args.height_logits_learning_full_fraction = h_full
-    args.init_tau = tau_init
-    args.final_tau = tau_final
+    # default args
+    for flag, val in DEFAULT_ARGS.items():
+        if isinstance(val, bool):
+            if val:  # store_true flag
+                cmd.append(flag)
+        else:
+            cmd.extend([flag, str(val)])
 
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif args.mps and torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-    print("Using device:", device)
+    # swept parameter
+    cmd.extend([SWEEP_PARAM, str(param_value)])
+    return cmd
 
-    os.makedirs(args.output_folder, exist_ok=True)
 
-    # Basic checks
-    if not (args.background_height / args.layer_height).is_integer():
-        print(
-            "Error: Background height must be a multiple of layer height.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    if not os.path.exists(args.input_image):
-        print(f"Error: Input image '{args.input_image}' not found.", file=sys.stderr)
-        sys.exit(1)
-
-    if not os.path.exists(args.csv_file):
-        print(f"Error: CSV file '{args.csv_file}' not found.", file=sys.stderr)
-        sys.exit(1)
-
-    random_seed = args.random_seed
-    if random_seed == 0:
-        random_seed = int(time.time() * 1000) % 1000000
-    np.random.seed(random_seed)
-    torch.manual_seed(random_seed)
-
-    # Prepare background color
-    bgr_tuple = hex_to_rgb(args.background_color)
-    background = torch.tensor(bgr_tuple, dtype=torch.float32, device=device)
-
-    # Load materials
-    material_colors_np, material_TDs_np, material_names, _ = load_materials(
-        args.csv_file
+def run_single(image_path: Path, param_value) -> dict:
+    """Worker: launch subprocess, parse loss, return result dict."""
+    run_dir = BASE_OUTPUT_DIR / (
+        f"{image_path.stem}_{SWEEP_PARAM.lstrip('-')}={param_value}"
     )
-    material_colors = torch.tensor(
-        material_colors_np, dtype=torch.float32, device=device
-    )
-    material_TDs = torch.tensor(material_TDs_np, dtype=torch.float32, device=device)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
-    # Read input image
-    img = cv2.imread(args.input_image, cv2.IMREAD_UNCHANGED)
+    cmd = make_cmd(image_path, param_value, run_dir)
 
-    alpha = None
-    # Check for alpha mask
-    if img.shape[2] == 4:
-        # Extract the alpha channel
-        alpha = img[:, :, 3]
-        alpha = alpha[..., None]
-        alpha = resize_image(alpha, args.output_size)
-        # Convert the image from BGRA to BGR
-        img = img[:, :, :3]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
 
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    loss_file = run_dir / "final_loss.txt"
+    loss = None
+    if loss_file.exists():
+        try:
+            loss = float(loss_file.read_text().strip())
+        except ValueError:
+            pass
 
-    # Create final resolution target image
-    output_img_np = resize_image(img, args.output_size)
-    output_target = torch.tensor(output_img_np, dtype=torch.float32, device=device)
+    return {
+        "image": str(image_path),
+        "param_value": param_value,
+        "loss": loss,
+        "output_folder": str(run_dir),
+        "returncode": proc.returncode,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+    }
 
-    pixel_height_logits_init = run_init_threads(
-        output_img_np,
-        args.max_layers,
-        args.layer_height,
-        bgr_tuple,
-        random_seed=random_seed,
-        init_method="kmeans",
-        cluster_layers=20,
-        lab_space=False,
-        num_threads=8,
-    )
 
-    # Set initial height for transparent areas if an alpha mask exists
-    if alpha is not None:
-        pixel_height_logits_init[alpha < 128] = -13.815512
+def main():
+    values = SWEEP_VALUES
 
-    # VGG Perceptual Loss (disabled in this example)
-    perception_loss_module = None
+    images = [
+        p for p in IMAGES_DIR.iterdir() if p.suffix.lower() in {".png", ".jpg", ".jpeg"}
+    ]
 
-    # Create an optimizer instance
-    optimizer = FilamentOptimizer(
-        args=args,
-        target=output_target,
-        pixel_height_logits_init=pixel_height_logits_init,
-        material_colors=material_colors,
-        material_TDs=material_TDs,
-        background=background,
-        device=device,
-        perception_loss_module=perception_loss_module,
-    )
+    BASE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Main optimization loop
-    print("Starting optimization...")
-    tbar = tqdm(range(args.iterations))
-    for i in tbar:
-        loss_val = optimizer.step(record_best=i % 10 == 0)
-
-        optimizer.visualize(interval=25)
-        optimizer.log_to_tensorboard(interval=100)
-
-        if (i + 1) % 100 == 0:
-            tbar.set_description(
-                f"Iteration {i + 1}, Loss = {loss_val:.4f}, best validation Loss = {optimizer.best_discrete_loss:.4f}"
+    # run grid
+    results = []
+    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {
+            pool.submit(run_single, img, val): (img, val)
+            for img, val in product(images, values)
+        }
+        for fut in as_completed(futures):
+            res = fut.result()
+            results.append(res)
+            print(
+                f"✓ finished {Path(res['image']).name} "
+                f"{SWEEP_PARAM}={res['param_value']} loss={res['loss']}"
             )
 
-    optimizer.prune(
-        max_colors_allowed=args.pruning_max_colors,
-        max_swaps_allowed=args.pruning_max_swaps,
-        min_layers_allowed=args.min_layers,
-        max_layers_allowed=args.pruning_max_layer,
-    )
-
-    print("Done. Saving outputs...")
-    # Save Image
-    comp_disc = optimizer.get_best_discretized_image()
-    args.max_layers = optimizer.max_layers
-
-    comp_disc = comp_disc.detach()
-
-    # Compute and print the MSE loss between the target and final output
-    mse_loss = torch.nn.functional.mse_loss(output_target, comp_disc)
-    return mse_loss.item()
-
-
-def main_suppressed(input_image, csv_file, warmup, h_start, h_full, tau_init, tau_final):
-    with open(os.devnull, "w") as fnull:
-        with redirect_stdout(fnull), redirect_stderr(fnull):
-            result = main(input_image, csv_file, warmup, h_start, h_full, tau_init, tau_final)
-    return result
+    # write summary
+    ts = strftime("%Y%m%d_%H%M%S")
+    out_path = BASE_OUTPUT_DIR / f"out_dict_{ts}.json"
+    with open(out_path, "w") as fp:
+        json.dump(results, fp, indent=2)
+    print(f"Results saved to {out_path}")
 
 
 if __name__ == "__main__":
-    folder = "../../../images/test_images/"
-    csv_file = "../../../bambulab.csv"
-    images = [os.path.join(folder, img) for img in os.listdir(folder) if img.endswith(".jpg")]
-    fixed_lr = 1e-1
-    parallel_limit = 10
-
-    # Define grid search parameters
-    warmup_values = np.linspace(0, 1, 5)  # 5 values for warmup_fraction
-    height_values = np.linspace(0, 1, 5)  # 5 values for height fractions
-    tau_values = np.linspace(0, 1, 5)     # 5 values for tau
-
-    # Build valid pairs for height fractions (start < full)
-    height_pairs = [(hs, hf) for hs in height_values for hf in height_values if hs < hf]
-    # Build valid pairs for tau (init_tau > final_tau)
-    tau_pairs = [(ti, tf) for ti in tau_values for tf in tau_values if ti > tf]
-
-    # Create grid: warmup x height_pairs x tau_pairs = 5 * 10 * 10 = 500 combinations
-    from itertools import product
-    hyperparam_grid = list(product(warmup_values, height_pairs, tau_pairs))
-    print(f"Total hyperparameter combinations: {len(hyperparam_grid)}")
-
-    out_dict = {}
-    # Loop over each hyperparameter combination
-    for idx, (warmup, (h_start, h_full), (tau_init, tau_final)) in enumerate(hyperparam_grid):
-        try:
-            out_dict_str = f"w={warmup}_height_start={h_start}_height_full={h_full}_tau_init={tau_init}_tau_final={tau_final}"
-            print(f"Running {idx+1}/{len(hyperparam_grid)}: {out_dict_str}")
-            exec = ProcessPoolExecutor(max_workers=parallel_limit)
-            tlist = []
-            for img in images:
-                for i in range(1):
-                    tlist.append(
-                        exec.submit(
-                            main_suppressed,
-                            img,
-                            csv_file,
-                            warmup,
-                            h_start,
-                            h_full,
-                            tau_init,
-                            tau_final,
-                        )
-                    )
-            for t in tqdm(concurrent.futures.as_completed(tlist), total=len(tlist)):
-                result_list = out_dict.get(out_dict_str, [])
-                result_list.append(t.result())
-                out_dict[out_dict_str] = result_list
-
-            exec.shutdown()
-            # save out_dict as json
-            import json
-
-            with open("out_dict.json", "w") as f:
-                json.dump(out_dict, f)
-        except Exception:
-            traceback.print_exc()
+    main()
