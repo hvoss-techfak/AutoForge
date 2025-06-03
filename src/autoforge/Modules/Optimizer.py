@@ -11,7 +11,7 @@ from autoforge.Helper.CAdamW import CAdamW
 from autoforge.Helper.OptimizerHelper import (
     composite_image_cont,
     composite_image_disc,
-    deterministic_gumbel_softmax,
+    deterministic_gumbel_softmax, PrecisionManager,
 )
 from autoforge.Loss.LossFunctions import loss_fn, compute_loss
 
@@ -46,6 +46,9 @@ class FilamentOptimizer:
         self.args = args
         self.target = target  # smaller (solver) resolution, shape [H,W,3], float32
         self.H, self.W = target.shape[:2]
+
+        self.precision = PrecisionManager(device)
+
         pixel_height_labels = np.round(pixel_height_labels)
 
         # replace entire entries of pixel_height_logits with 0
@@ -56,7 +59,8 @@ class FilamentOptimizer:
         self.pixel_height_logits = torch.tensor(
             pixel_height_logits_init, dtype=torch.float32, device=device
         )
-        self.pixel_height_logits.requires_grad_(True)
+        self.pixel_height_logits.requires_grad_(False)
+
         print("layers", int(pixel_height_labels.flatten().max()))
         self.cluster_layers = int(pixel_height_labels.flatten().max()) + 1
         self.pixel_height_labels = torch.tensor(
@@ -81,7 +85,6 @@ class FilamentOptimizer:
         self.best_swaps = 0
         self.perception_loss_module = perception_loss_module
         self.visualize_flag = args.visualize
-        self.offset_lr_strength = args.offset_lr_strength
 
         # Initialize TensorBoard writer
         if args.tensorboard:
@@ -282,16 +285,7 @@ class FilamentOptimizer:
             focus_strength=0.0,
         )
 
-        loss.backward()
-
-        if self.pixel_height_logits.grad is not None:
-            self.pixel_height_logits.grad[self.pixel_height_labels == 0] = 0.0
-
-        # We scale the gradients for the height logits by a factor to only allow updates for very strong (wrong layer/color) gradients.
-        if self.params["height_offsets"].grad is not None:
-            self.params["height_offsets"].grad.mul_(self.offset_lr_strength)
-
-        self.optimizer.step()
+        self.precision.backward_and_step(loss, self.optimizer)
 
         self.num_steps_done += 1
 

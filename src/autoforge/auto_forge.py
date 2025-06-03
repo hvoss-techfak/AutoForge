@@ -55,7 +55,7 @@ def main():
     )
 
     parser.add_argument(
-        "--iterations", type=int, default=2000, help="Number of optimization iterations"
+        "--iterations", type=int, default=4000, help="Number of optimization iterations"
     )
 
     parser.add_argument(
@@ -208,12 +208,7 @@ def main():
         default=-1,
         help="Number of layers to cluster the image into.",
     )
-    parser.add_argument(
-        "--offset_lr_strength",
-        type=float,
-        default=1,
-        help="Learning rate multiplier for the height offset.",
-    )
+
     parser.add_argument(
         "--disable_visualization_for_gradio",
         type=int,

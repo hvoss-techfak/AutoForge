@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import torch
 import torch.nn.functional as F
 
@@ -277,3 +279,60 @@ def composite_image_disc(
     comp = comp + rem_after.unsqueeze(-1) * background  # [H,W,3]
 
     return comp * 255.0
+
+
+def _gpu_capability(device):
+    major, minor = torch.cuda.get_device_capability(device)
+    return major * 10 + minor             # 80, 61, …
+
+def _has_fp16(device):
+    return _gpu_capability(device) >= 53  # CC 5.3 or newer
+
+class PrecisionManager:
+    """
+    Usage
+    -----
+    prec = PrecisionManager(device)
+    with prec.autocast():
+        loss = model(...)
+    prec.backward_and_step(loss, optimizer)
+    """
+    def __init__(self, device):
+        self.device = device
+        self.scaler = None
+        self.autocast_dtype = None
+        self.enabled = False
+
+        if device.type == "cuda":
+            if torch.cuda.is_bf16_supported():
+                print("Using bfloat16 autocast for CUDA.")
+                self.autocast_dtype = torch.bfloat16          # fastest if available
+                self.scaler = torch.cuda.amp.GradScaler()
+                self.enabled = True
+            elif _has_fp16(device):
+                print("Using float16 autocast for CUDA.")
+                self.autocast_dtype = torch.float16
+                self.scaler = torch.cuda.amp.GradScaler()
+                self.enabled = True
+            else:
+                print("Using float32 autocast for CUDA.")
+                # TF32 fallback for very old GPUs
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32  = True
+
+    @contextmanager
+    def autocast(self):
+        if self.enabled:
+            with torch.cuda.amp.autocast(dtype=self.autocast_dtype):
+                yield
+        else:
+            yield                                        # FP32 path
+
+    def backward_and_step(self, loss, optimizer):
+        if self.scaler is not None:                     # FP16 path
+            self.scaler.scale(loss).backward()
+            self.scaler.step(optimizer)
+            self.scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
