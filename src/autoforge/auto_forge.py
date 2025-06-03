@@ -199,7 +199,7 @@ def main():
     parser.add_argument(
         "--num_init_rounds",
         type=int,
-        default=128,
+        default=8,
         help="Number of rounds to choose the starting height map from.",
     )
     parser.add_argument(
