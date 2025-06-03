@@ -14,21 +14,24 @@ from itertools import product
 from pathlib import Path
 from time import strftime
 
+from tqdm import tqdm
+
 # ---------- editable section ---------- #
 # Any CLI flag accepted by autoforge.py can be placed here.
 DEFAULT_ARGS: dict[str, object] = {
-    "--csv_file": "bambulab.csv",
-    "--iterations": 2000,
+    "--csv_file": "../../../bambulab.csv",
+    "--iterations": 4000,
     "--stl_output_size": 50,
-    "--visualize": False,
+    "--disable_visualization_for_gradio": 1,
+    #"--num_init_rounds": 1,
 }
 
 SWEEP_PARAM = "--offset_lr_strength"  # param to overwrite per run
-SWEEP_VALUES = [0.01, 0.1, 1, 10]
+SWEEP_VALUES = [0, 0.01, 0.1, 1, 10, 100]
 
-IMAGES_DIR = Path("images/test_images")
+IMAGES_DIR = Path("/home/scsadmin/AutoForge/images/test_images")
 BASE_OUTPUT_DIR = Path("output_grid")  # all run folders are created inside here
-MAX_WORKERS = 2  # parallel jobs
+MAX_WORKERS = 8  # parallel jobs
 # ---------- end editable section ------ #
 
 
@@ -36,7 +39,7 @@ def make_cmd(image_path: Path, param_value, run_dir: Path) -> list[str]:
     """Assemble the command line for one run."""
     cmd: list[str] = [
         sys.executable,
-        "autoforge.py",
+        "../auto_forge.py",
         "--input_image",
         str(image_path),
         "--output_folder",
@@ -94,15 +97,15 @@ def main():
     ]
 
     BASE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
+    ts = strftime("%Y%m%d_%H%M%S")
     # run grid
     results = []
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {
             pool.submit(run_single, img, val): (img, val)
-            for img, val in product(images, values)
+            for img, val in product(images, values) for _ in range(2)
         }
-        for fut in as_completed(futures):
+        for fut in tqdm(as_completed(futures),total=len(futures), desc="Running grid"):
             res = fut.result()
             results.append(res)
             print(
@@ -110,11 +113,11 @@ def main():
                 f"{SWEEP_PARAM}={res['param_value']} loss={res['loss']}"
             )
 
-    # write summary
-    ts = strftime("%Y%m%d_%H%M%S")
-    out_path = BASE_OUTPUT_DIR / f"out_dict_{ts}.json"
-    with open(out_path, "w") as fp:
-        json.dump(results, fp, indent=2)
+            # write summary
+
+            out_path = BASE_OUTPUT_DIR / f"out_dict_{ts}.json"
+            with open(out_path, "w") as fp:
+                json.dump(results, fp, indent=2)
     print(f"Results saved to {out_path}")
 
 

@@ -210,8 +210,8 @@ def main():
     )
     parser.add_argument(
         "--offset_lr_strength",
-        type=int,
-        default=-10,
+        type=float,
+        default=1,
         help="Learning rate multiplier for the height offset.",
     )
     parser.add_argument(
