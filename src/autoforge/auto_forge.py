@@ -67,7 +67,7 @@ def main():
     parser.add_argument(
         "--learning_rate_warmup_fraction",
         type=float,
-        default=0.25,
+        default=0.01,
         help="Fraction of iterations that the learning rate is increasing (warmup)",
     )
 
