@@ -23,15 +23,14 @@ DEFAULT_ARGS: dict[str, object] = {
     "--iterations": 4000,
     "--stl_output_size": 50,
     "--disable_visualization_for_gradio": 1,
-    #"--num_init_rounds": 1,
 }
 
-SWEEP_PARAM = "--offset_lr_strength"  # param to overwrite per run
-SWEEP_VALUES = [0, 0.01, 0.1, 1, 10, 100]
+SWEEP_PARAM = "--num_init_rounds"  # param to overwrite per run
+SWEEP_VALUES = [1,4,8,16,32,64]
 
 IMAGES_DIR = Path("/home/scsadmin/AutoForge/images/test_images")
 BASE_OUTPUT_DIR = Path("output_grid")  # all run folders are created inside here
-MAX_WORKERS = 8  # parallel jobs
+MAX_WORKERS = 4  # parallel jobs
 # ---------- end editable section ------ #
 
 
@@ -69,6 +68,12 @@ def run_single(image_path: Path, param_value) -> dict:
     cmd = make_cmd(image_path, param_value, run_dir)
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
+    #print output
+    if proc.returncode != 0:
+        print(f"Running: {' '.join(cmd)}")
+        print(f"Return code: {proc.returncode}")
+        print(f"Stdout: {proc.stdout.strip()}")
+        print(f"Stderr: {proc.stderr.strip()}")
 
     loss_file = run_dir / "final_loss.txt"
     loss = None
@@ -103,7 +108,7 @@ def main():
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {
             pool.submit(run_single, img, val): (img, val)
-            for img, val in product(images, values) for _ in range(2)
+            for img, val in product(images, values) for _ in range(1)
         }
         for fut in tqdm(as_completed(futures),total=len(futures), desc="Running grid"):
             res = fut.result()
