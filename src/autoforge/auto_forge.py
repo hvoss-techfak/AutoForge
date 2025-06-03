@@ -61,7 +61,7 @@ def main():
     parser.add_argument(
         "--warmup_fraction",
         type=float,
-        default=0.25,
+        default=1.0,
         help="Fraction of iterations for keeping the tau at the initial value",
     )
     parser.add_argument(
