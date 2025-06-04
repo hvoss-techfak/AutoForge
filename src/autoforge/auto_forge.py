@@ -55,7 +55,7 @@ def main():
     )
 
     parser.add_argument(
-        "--iterations", type=int, default=4000, help="Number of optimization iterations"
+        "--iterations", type=int, default=8000, help="Number of optimization iterations"
     )
 
     parser.add_argument(
@@ -64,6 +64,7 @@ def main():
         default=1.0,
         help="Fraction of iterations for keeping the tau at the initial value",
     )
+
     parser.add_argument(
         "--learning_rate_warmup_fraction",
         type=float,
@@ -77,6 +78,7 @@ def main():
         default=1.0,
         help="Initial tau value for Gumbel-Softmax",
     )
+
     parser.add_argument(
         "--final_tau",
         type=float,
@@ -90,24 +92,29 @@ def main():
         default=0.015,
         help="Learning rate for optimization",
     )
+
     parser.add_argument(
         "--layer_height", type=float, default=0.04, help="Layer thickness in mm"
     )
+
     parser.add_argument(
         "--max_layers", type=int, default=75, help="Maximum number of layers"
     )
+
     parser.add_argument(
         "--min_layers",
         type=int,
         default=0,
         help="Minimum number of layers. Used for pruning.",
     )
+
     parser.add_argument(
         "--background_height",
         type=float,
         default=0.4,
         help="Height of the background in mm",
     )
+
     parser.add_argument(
         "--background_color", type=str, default="#000000", help="Background color"
     )
@@ -127,12 +134,14 @@ def main():
         default=200,
         help="Size of the longest dimension of the output STL file in mm",
     )
+
     parser.add_argument(
         "--nozzle_diameter",
         type=float,
         default=0.4,
         help="Diameter of the printer nozzle in mm (details smaller than half this value will be ignored)",
     )
+
     parser.add_argument(
         "--early_stopping",
         type=int,
@@ -147,6 +156,7 @@ def main():
         help="Perform pruning after optimization",
         action=argparse.BooleanOptionalAction,
     )
+
     parser.add_argument(
         "--fast_pruning",
         type=bool,
@@ -173,35 +183,42 @@ def main():
         default=100,
         help="Max number of swaps allowed after pruning",
     )
+
     parser.add_argument(
         "--pruning_max_layer",
         type=int,
         default=75,
         help="Max number of layers allowed after pruning",
     )
+
     parser.add_argument(
         "--random_seed",
         type=int,
         default=0,
         help="Specify the random seed, or use 0 for automatic generation",
     )
+
     parser.add_argument(
         "--mps",
         action="store_true",
         help="Use the Metal Performance Shaders (MPS) backend, if available.",
     )
+
     parser.add_argument(
         "--run_name", type=str, help="Name of the run used for TensorBoard logging"
     )
+
     parser.add_argument(
         "--tensorboard", action="store_true", help="Enable TensorBoard logging"
     )
+
     parser.add_argument(
         "--num_init_rounds",
         type=int,
         default=8,
         help="Number of rounds to choose the starting height map from.",
     )
+
     parser.add_argument(
         "--num_init_cluster_layers",
         type=int,
