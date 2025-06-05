@@ -235,7 +235,7 @@ def main():
 
     args = parser.parse_args()
     if args.num_init_cluster_layers == -1:
-        args.num_init_cluster_layers = args.max_layers
+        args.num_init_cluster_layers = args.max_layers // 2
 
     # check if csv or json is given
     if args.csv_file == "" and args.json_file == "":
