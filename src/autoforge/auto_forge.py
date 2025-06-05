@@ -167,7 +167,7 @@ def main():
     parser.add_argument(
         "--fast_pruning_percent",
         type=float,
-        default=0.2,
+        default=0.05,
         help="Percentage of increment search for fast pruning",
     )
 
