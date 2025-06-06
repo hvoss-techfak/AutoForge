@@ -131,7 +131,7 @@ def main():
     parser.add_argument(
         "--stl_output_size",
         type=int,
-        default=200,
+        default=150,
         help="Size of the longest dimension of the output STL file in mm",
     )
 
