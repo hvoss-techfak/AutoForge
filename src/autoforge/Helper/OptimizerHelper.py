@@ -98,6 +98,41 @@ def deterministic_gumbel_softmax(
 
 
 @torch.jit.script
+def bleed_layer_effect(mask: torch.Tensor, strength: float = 0.1) -> torch.Tensor:
+    """
+    Applies a simple 2D 3x3 average blur to simulate edge bleeding.
+
+    Args:
+        mask (torch.Tensor): [H,W] or [L,H,W] tensor of masks.
+        strength (float): Amount of the bleed to spread to neighbors.
+
+    Returns:
+        torch.Tensor: Mask with neighboring bleed added.
+    """
+    if mask.dim() == 2:
+        mask = mask.unsqueeze(0)  # [1,H,W]
+    L, H, W = mask.shape
+
+    # 3x3 average kernel
+    kernel = (
+        torch.tensor(
+            [[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=mask.dtype, device=mask.device
+        )
+        / 8.0
+    )  # 8 neighbors
+
+    kernel = kernel.view(1, 1, 3, 3)
+
+    # Apply conv2d to each layer independently
+    blurred = F.conv2d(mask.unsqueeze(1), kernel, padding=1, groups=1).squeeze(
+        1
+    )  # [L,H,W]
+
+    # Combine original mask with bleed from neighbors
+    return mask + strength * blurred
+
+
+@torch.jit.script
 def composite_image_cont(
     pixel_height_logits: torch.Tensor,  # [H,W]
     global_logits: torch.Tensor,  # [L,M]
@@ -133,7 +168,8 @@ def composite_image_cont(
     )  # [L,H,W]
 
     # 4. thickness and opacity
-    eff_thick = p_print * h  # [L,H,W]
+    p_print_bleed = bleed_layer_effect(p_print, strength=0.1)  # [L,H,W]
+    eff_thick = torch.clamp(p_print_bleed, 0.0, 1.0) * h
     thick_ratio = eff_thick / layer_TDs.view(-1, 1, 1)  # [L,H,W]
 
     o, A, k, b = -1.2416557e-02, 9.6407950e-01, 3.4103447e01, -4.1554203e00
@@ -254,7 +290,8 @@ def composite_image_disc(
     )  # [L,H,W]
 
     # 4. Thickness, opacity and the rest exactly as in the continuous version.
-    eff_thick: torch.Tensor = p_print * h  # [L,H,W]
+    p_print_bleed = bleed_layer_effect(p_print, strength=0.1)  # [L,H,W]
+    eff_thick = torch.clamp(p_print_bleed, 0.0, 1.0) * h
     thick_ratio: torch.Tensor = eff_thick / layer_TDs.view(-1, 1, 1)  # [L,H,W]
 
     o, A, k, b = -1.2416557e-02, 9.6407950e-01, 3.4103447e01, -4.1554203e00
@@ -283,10 +320,12 @@ def composite_image_disc(
 
 def _gpu_capability(device):
     major, minor = torch.cuda.get_device_capability(device)
-    return major * 10 + minor             # 80, 61, …
+    return major * 10 + minor  # 80, 61, …
+
 
 def _has_fp16(device):
     return _gpu_capability(device) >= 53  # CC 5.3 or newer
+
 
 class PrecisionManager:
     """
@@ -297,6 +336,7 @@ class PrecisionManager:
         loss = model(...)
     prec.backward_and_step(loss, optimizer)
     """
+
     def __init__(self, device):
         self.device = device
         self.scaler = None
@@ -306,7 +346,7 @@ class PrecisionManager:
         if device.type == "cuda":
             if torch.cuda.is_bf16_supported():
                 print("Using bfloat16 autocast for CUDA.")
-                self.autocast_dtype = torch.bfloat16          # fastest if available
+                self.autocast_dtype = torch.bfloat16  # fastest if available
                 self.scaler = torch.cuda.amp.GradScaler()
                 self.enabled = True
             elif _has_fp16(device):
@@ -318,7 +358,7 @@ class PrecisionManager:
                 print("Using float32 autocast for CUDA.")
                 # TF32 fallback for very old GPUs
                 torch.backends.cuda.matmul.allow_tf32 = True
-                torch.backends.cudnn.allow_tf32  = True
+                torch.backends.cudnn.allow_tf32 = True
 
     @contextmanager
     def autocast(self):
@@ -326,10 +366,10 @@ class PrecisionManager:
             with torch.cuda.amp.autocast(dtype=self.autocast_dtype):
                 yield
         else:
-            yield                                        # FP32 path
+            yield  # FP32 path
 
     def backward_and_step(self, loss, optimizer):
-        if self.scaler is not None:                     # FP16 path
+        if self.scaler is not None:  # FP16 path
             self.scaler.scale(loss).backward()
             self.scaler.step(optimizer)
             self.scaler.update()

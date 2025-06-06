@@ -445,6 +445,7 @@ def init_height_map(
     cluster_layers=None,
     lab_space=True,
     material_colors=None,
+    subdivide_clusters: int = 3,
 ):
     """
     init_method should be one of quantize_median,quantize_maxcoverage,quantize_fastoctree,kmeans
@@ -572,13 +573,39 @@ def init_height_map(
         global_logits = sorted(global_logits, key=lambda x: x[0])
         global_logits_out = interpolate_arrays(global_logits, max_layers)
 
+    if subdivide_clusters > 1:
+        new_discrete_labels = np.empty_like(labels)
+        next_global_label = 0
+        for label in unique_clusters:
+            mask = labels == label
+            indices = np.where(mask.reshape(-1))[0]
+            if len(indices) < subdivide_clusters:
+                # Not enough pixels to split; assign all to the same label
+                new_discrete_labels[mask] = next_global_label
+                next_global_label += 1
+            else:
+                pixel_vals = target_lab_reshaped[indices]
+                kmeans_sub = KMeans(
+                    n_clusters=subdivide_clusters,
+                    n_init="auto",
+                    random_state=random_seed,
+                )
+                sublabels = kmeans_sub.fit_predict(pixel_vals)
+                for i in range(subdivide_clusters):
+                    sub_indices = indices[sublabels == i]
+                    new_discrete_labels.reshape(-1)[sub_indices] = next_global_label
+                    next_global_label += 1
+        new_discrete_labels = new_discrete_labels.reshape(H, W)
+    else:
+        new_discrete_labels = labels.reshape(H, W)
+
     return (
         pixel_height_logits,
         global_logits_out,
         ordering_metric,
         cluster_layers,
         sil_score,
-        new_labels * cluster_layers,
+        new_discrete_labels,
     )
 
 
@@ -593,6 +620,7 @@ def run_init_threads(
     init_method="kmeans",
     cluster_layers=None,
     material_colors=None,
+    height_map_subdivision=1,
 ):
     background_tuple = (np.asarray(background_tuple) * 255).tolist()
     if random_seed is None:
@@ -611,6 +639,7 @@ def run_init_threads(
             cluster_layers=cluster_layers,
             lab_space=lab_space,
             material_colors=material_colors,
+            subdivide_clusters=height_map_subdivision,
         )
         for i in range(num_threads)
     ]

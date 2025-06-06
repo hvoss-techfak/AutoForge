@@ -233,6 +233,13 @@ def main():
         help="Simple switch to disable the matplotlib render window for gradio rendering.",
     )
 
+    parser.add_argument(
+        "--height_map_subdivision",
+        type=int,
+        default=1,
+        help="Subdivide each calculated height label into n individual labels",
+    )
+
     args = parser.parse_args()
     if args.num_init_cluster_layers == -1:
         args.num_init_cluster_layers = args.max_layers // 2
@@ -324,6 +331,7 @@ def main():
             init_method="kmeans",
             cluster_layers=args.num_init_cluster_layers,
             material_colors=material_colors_np,
+            height_map_subdivision=args.height_map_subdivision,
         )
     )
 
