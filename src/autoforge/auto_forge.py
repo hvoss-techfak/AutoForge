@@ -145,7 +145,7 @@ def main():
     parser.add_argument(
         "--early_stopping",
         type=int,
-        default=10000,
+        default=2000,
         help="Number of steps without improvement before stopping",
     )
 
