@@ -55,7 +55,7 @@ def main():
     )
 
     parser.add_argument(
-        "--iterations", type=int, default=8000, help="Number of optimization iterations"
+        "--iterations", type=int, default=6000, help="Number of optimization iterations"
     )
 
     parser.add_argument(
@@ -403,8 +403,10 @@ def main():
                 best=True
             )
 
-            final_loss = PruningHelper.get_initial_loss(optimizer.best_params["global_logits"].shape[0],optimizer)
-            #write to text file
+            final_loss = PruningHelper.get_initial_loss(
+                optimizer.best_params["global_logits"].shape[0], optimizer
+            )
+            # write to text file
             with open(os.path.join(args.output_folder, "final_loss.txt"), "w") as f:
                 f.write(f"{final_loss}")
 
