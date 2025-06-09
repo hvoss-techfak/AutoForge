@@ -20,21 +20,29 @@ from tqdm import tqdm
 # Any CLI flag accepted by autoforge.py can be placed here.
 DEFAULT_ARGS: dict[str, object] = {
     "--csv_file": "../../../bambulab.csv",
-    "--iterations": 4000,
+    "--iterations": 6000,
+    "--num_init_rounds": 8,
     "--stl_output_size": 50,
     "--disable_visualization_for_gradio": 1,
+    "--warmup_fraction": 1.0,
+    "--fast_pruning_percent": 0.05,
+    "--learning_rate_warmup_fraction": 0.01,
 }
 
-SWEEP_PARAM = "--num_init_rounds"  # param to overwrite per run
-SWEEP_VALUES = [1,4,8,16,32,64]
+SWEEP_PARAM = "--learning_rate"  # param to overwrite per run
+SWEEP_VALUES = [
+    0.01,
+    0.02,
+    0.03,
+]  # ,0.04,0.05,0.06,0.07,0.08,0.09,0.1]  # values to sweep over
 
 IMAGES_DIR = Path("/home/scsadmin/AutoForge/images/test_images")
 BASE_OUTPUT_DIR = Path("output_grid")  # all run folders are created inside here
-MAX_WORKERS = 4  # parallel jobs
+MAX_WORKERS = 16  # parallel jobs
 # ---------- end editable section ------ #
 
 
-def make_cmd(image_path: Path, param_value, run_dir: Path) -> list[str]:
+def make_cmd(image_path: Path, param_value, run_dir: Path, idx: int) -> list[str]:
     """Assemble the command line for one run."""
     cmd: list[str] = [
         sys.executable,
@@ -43,6 +51,8 @@ def make_cmd(image_path: Path, param_value, run_dir: Path) -> list[str]:
         str(image_path),
         "--output_folder",
         str(run_dir),
+        "--random_seed",
+        str(idx + 1),
     ]
 
     # default args
@@ -58,17 +68,17 @@ def make_cmd(image_path: Path, param_value, run_dir: Path) -> list[str]:
     return cmd
 
 
-def run_single(image_path: Path, param_value) -> dict:
+def run_single(image_path: Path, param_value, idx) -> dict:
     """Worker: launch subprocess, parse loss, return result dict."""
     run_dir = BASE_OUTPUT_DIR / (
-        f"{image_path.stem}_{SWEEP_PARAM.lstrip('-')}={param_value}"
+        f"{image_path.stem}_{idx}_{SWEEP_PARAM.lstrip('-')}={param_value}"
     )
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = make_cmd(image_path, param_value, run_dir)
+    cmd = make_cmd(image_path, param_value, run_dir, idx)
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
-    #print output
+    # print output
     if proc.returncode != 0:
         print(f"Running: {' '.join(cmd)}")
         print(f"Return code: {proc.returncode}")
@@ -107,10 +117,11 @@ def main():
     results = []
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {
-            pool.submit(run_single, img, val): (img, val)
-            for img, val in product(images, values) for _ in range(1)
+            pool.submit(run_single, img, val, idx): (img, val)
+            for idx in range(1)
+            for img, val in product(images, values)
         }
-        for fut in tqdm(as_completed(futures),total=len(futures), desc="Running grid"):
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="Running grid"):
             res = fut.result()
             results.append(res)
             print(
