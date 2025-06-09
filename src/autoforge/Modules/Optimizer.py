@@ -11,8 +11,10 @@ from autoforge.Helper.CAdamW import CAdamW
 from autoforge.Helper.OptimizerHelper import (
     composite_image_cont,
     composite_image_disc,
-    deterministic_gumbel_softmax, PrecisionManager,
+    deterministic_gumbel_softmax,
+    PrecisionManager,
 )
+
 from autoforge.Loss.LossFunctions import loss_fn, compute_loss
 
 
@@ -591,10 +593,17 @@ class FilamentOptimizer:
             prune_num_colors,
             prune_num_swaps,
             prune_redundant_layers,
+            optimise_swap_positions,
         )
 
         if search_seed:
             self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
+
+        #clear pytorch and system cache to reduce vram usage
+        torch.cuda.empty_cache()
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
 
         prune_num_colors(
             self,
@@ -622,6 +631,8 @@ class FilamentOptimizer:
             fast=fast_pruning,
             chunking_percent=fast_pruning_percent,
         )
+
+        optimise_swap_positions(self)
 
     def _maybe_update_best_discrete(self):
         """

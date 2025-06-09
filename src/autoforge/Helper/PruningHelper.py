@@ -776,3 +776,91 @@ def smooth_coplanar_faces(
     smoothed_height_logits = coplanar_sum / count.clamp(min=1)
 
     return smoothed_height_logits
+
+
+def optimise_swap_positions(
+    optimizer: FilamentOptimizer,
+    n_jobs: int | None = -1,
+    *,
+    allowed_loss_increase_percent: float = 0.0,
+) -> torch.Tensor:
+    """
+    Exhaustively move each swap boundary to every admissible layer and keep the
+    best configuration. Uses a progress bar to display changes.
+
+    Returns
+    -------
+    torch.Tensor
+        The discrete global assignment with optimised swap positions.
+    """
+
+    num_materials = optimizer.material_colors.shape[0]
+
+    def disc_loss(dg_test: torch.Tensor) -> float:
+        logits_for_disc = disc_to_logits(dg_test, num_materials, big_pos=1e5)
+        with _gpu_lock, torch.no_grad():
+            out = optimizer.get_best_discretized_image(
+                custom_global_logits=logits_for_disc
+            )
+            return compute_loss(comp=out, target=optimizer.target).item()
+
+    best_dg, _ = optimizer.get_discretized_solution(best=True)
+    best_loss = disc_loss(best_dg)
+
+    outer_tbar = tqdm(desc="Optimising swap positions", total=100, leave=False)
+    improved = True
+    while improved:
+        improved = False
+        outer_tbar.update(1)
+
+        bands = find_color_bands(best_dg)
+        num_swaps = len(bands) - 1
+        if num_swaps == 0:
+            break
+
+        for swap_idx in range(num_swaps):
+            band_a = bands[swap_idx]
+            band_b = bands[swap_idx + 1]
+
+            lower_limit = bands[swap_idx - 1][1] + 1 if swap_idx > 0 else 0
+            upper_limit = (
+                bands[swap_idx + 2][0] - 1
+                if swap_idx + 2 < len(bands)
+                else best_dg.size(0) - 1
+            )
+
+            if lower_limit >= upper_limit:
+                continue
+
+            def candidate_loss(new_boundary: int):
+                if new_boundary == band_a[1]:
+                    return float("inf"), None, None
+                dg_new = best_dg.clone()
+                dg_new[lower_limit : new_boundary + 1] = band_a[2]
+                dg_new[new_boundary + 1 : upper_limit + 1] = band_b[2]
+                return disc_loss(dg_new), dg_new, new_boundary
+
+            results = Parallel(n_jobs=n_jobs, backend="threading", prefer="threads")(
+                delayed(candidate_loss)(b) for b in range(lower_limit, upper_limit + 1)
+            )
+
+            cand_loss, cand_dg, new_pos = min(results, key=lambda x: x[0])
+
+            if cand_loss < best_loss * (1 + allowed_loss_increase_percent):
+                old_pos = band_a[1]
+                best_dg = cand_dg
+                best_loss = cand_loss
+                optimizer.best_params["global_logits"] = disc_to_logits(
+                    best_dg, num_materials=num_materials, big_pos=1e5
+                )
+                outer_tbar.set_description(
+                    f"Swap {swap_idx} moved {old_pos}->{new_pos} | Loss {best_loss:.4f}"
+                )
+                print(
+                    f"Swap {swap_idx} moved {old_pos}->{new_pos} | Loss {best_loss:.4f}"
+                )
+                improved = True
+                break
+
+    outer_tbar.close()
+    return best_dg

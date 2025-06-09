@@ -2,6 +2,8 @@ import argparse
 import sys
 import os
 import time
+import traceback
+
 import configargparse
 import cv2
 import torch
@@ -30,8 +32,7 @@ if torch.__version__ >= "2.0.0":
         print("Warning: Could not set float32 matmul precision to high. Error:", e)
         pass
 
-
-def main():
+def parse_args():
     parser = configargparse.ArgParser()
     parser.add_argument("--config", is_config_file=True, help="Path to config file")
 
@@ -167,7 +168,7 @@ def main():
     parser.add_argument(
         "--fast_pruning_percent",
         type=float,
-        default=0.05,
+        default=0.5,
         help="Percentage of increment search for fast pruning",
     )
 
@@ -234,13 +235,17 @@ def main():
     )
 
     parser.add_argument(
-        "--height_map_subdivision",
+        "--best_of",
         type=int,
         default=1,
-        help="Subdivide each calculated height label into n individual labels",
+        help="Run the program multiple times and output the best result.",
     )
 
     args = parser.parse_args()
+    return args
+
+def main(args):
+
     if args.num_init_cluster_layers == -1:
         args.num_init_cluster_layers = args.max_layers // 2
 
@@ -331,7 +336,6 @@ def main():
             init_method="kmeans",
             cluster_layers=args.num_init_cluster_layers,
             material_colors=material_colors_np,
-            height_map_subdivision=args.height_map_subdivision,
         )
     )
 
@@ -478,7 +482,62 @@ def main():
 
             print("All done. Outputs in:", args.output_folder)
             print("Happy Printing!")
+            return final_loss
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    final_output_folder = args.output_folder
+    run_best_loss = 1000000000
+    if args.best_of == 1:
+        main(args)
+    else:
+        temp_output_folder = os.path.join(args.output_folder, "temp")
+        ret = []
+        for i in range(args.best_of):
+            try:
+                print(f"Run {i + 1}/{args.best_of}")
+                run_folder = os.path.join(temp_output_folder, f"run_{i + 1}")
+                args.output_folder = run_folder
+                os.makedirs(args.output_folder, exist_ok=True)
+                run_loss = main(args)
+                print(f"Run {i + 1} finished with loss: {run_loss}")
+                if run_loss < run_best_loss:
+                    run_best_loss = run_loss
+                    print(f"New best loss found: {run_best_loss} in run {i + 1}")
+                ret.append((run_folder,run_loss))
+                #garbage collection
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
+            except Exception:
+                traceback.print_exc()
+        #get run with best loss
+        best_run = min(ret, key=lambda x: x[1])
+        best_run_folder = best_run[0]
+        best_loss = best_run[1]
+
+        #move files from run folder to final output folder
+        if not os.path.exists(final_output_folder):
+            os.makedirs(final_output_folder)
+        for file in os.listdir(best_run_folder):
+            src_file = os.path.join(best_run_folder, file)
+            dst_file = os.path.join(final_output_folder, file)
+            if os.path.isfile(src_file):
+                os.rename(src_file, dst_file)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
