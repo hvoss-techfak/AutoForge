@@ -32,6 +32,7 @@ if torch.__version__ >= "2.0.0":
         print("Warning: Could not set float32 matmul precision to high. Error:", e)
         pass
 
+
 def parse_args():
     parser = configargparse.ArgParser()
     parser.add_argument("--config", is_config_file=True, help="Path to config file")
@@ -244,8 +245,8 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-def main(args):
 
+def main(args):
     if args.num_init_cluster_layers == -1:
         args.num_init_cluster_layers = args.max_layers // 2
 
@@ -505,20 +506,25 @@ if __name__ == "__main__":
                 if run_loss < run_best_loss:
                     run_best_loss = run_loss
                     print(f"New best loss found: {run_best_loss} in run {i + 1}")
-                ret.append((run_folder,run_loss))
-                #garbage collection
+                ret.append((run_folder, run_loss))
+                # garbage collection
                 torch.cuda.empty_cache()
                 import gc
+
                 gc.collect()
                 torch.cuda.empty_cache()
+                # close all matplotlib windows if there are any
+                import matplotlib.pyplot as plt
+
+                plt.close("all")
             except Exception:
                 traceback.print_exc()
-        #get run with best loss
+        # get run with best loss
         best_run = min(ret, key=lambda x: x[1])
         best_run_folder = best_run[0]
         best_loss = best_run[1]
 
-        #move files from run folder to final output folder
+        # move files from run folder to final output folder
         if not os.path.exists(final_output_folder):
             os.makedirs(final_output_folder)
         for file in os.listdir(best_run_folder):
@@ -526,18 +532,3 @@ if __name__ == "__main__":
             dst_file = os.path.join(final_output_folder, file)
             if os.path.isfile(src_file):
                 os.rename(src_file, dst_file)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
