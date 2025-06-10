@@ -107,7 +107,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--perform_pruning`  Perform pruning after optimization (default: True).  
   **Note:** This is highly recommended even if you don't have a color/color swap limit, as it actually increases the quality of the output.
 - `--fast_pruning`  Perform pruning in chunks. 10-15x speedup compared to accurate method (default: False).
-- `--fast_pruning_percent` Size of fast pruning chunks in percent (default: 0.2) (20%).
+- `--fast_pruning_percent` Size of fast pruning chunks in percent (default: 0.5) (50%).
 - `--pruning_max_colors` Max number of colors allowed after pruning (default: 100).
 - `--pruning_max_swaps` Max number of swaps allowed after pruning (default: 100).
 - `--pruning_max_layer` Max number of layers allowed after pruning (default: 75).
@@ -119,7 +119,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--num_init_rounds` Number of rounds to choose the starting height map from (default: 128).
 - `--num_init_cluster_layers` Number of layers to cluster the image into (default: -1).
 - `--disable_visualization_for_gradio` Simple switch to disable the matplotlib render window for gradio rendering (default: 0).
-
+- `--best_of` Run the entire program multiple times and output the best result (default: 1)
 
 ## Outputs
 
