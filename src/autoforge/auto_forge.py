@@ -246,7 +246,7 @@ def parse_args():
     return args
 
 
-def main(args):
+def start(args):
     if args.num_init_cluster_layers == -1:
         args.num_init_cluster_layers = args.max_layers // 2
 
@@ -485,13 +485,12 @@ def main(args):
             print("Happy Printing!")
             return final_loss
 
-
-if __name__ == "__main__":
+def main():
     args = parse_args()
     final_output_folder = args.output_folder
     run_best_loss = 1000000000
     if args.best_of == 1:
-        main(args)
+        start(args)
     else:
         temp_output_folder = os.path.join(args.output_folder, "temp")
         ret = []
@@ -501,7 +500,7 @@ if __name__ == "__main__":
                 run_folder = os.path.join(temp_output_folder, f"run_{i + 1}")
                 args.output_folder = run_folder
                 os.makedirs(args.output_folder, exist_ok=True)
-                run_loss = main(args)
+                run_loss = start(args)
                 print(f"Run {i + 1} finished with loss: {run_loss}")
                 if run_loss < run_best_loss:
                     run_best_loss = run_loss
@@ -532,3 +531,7 @@ if __name__ == "__main__":
             dst_file = os.path.join(final_output_folder, file)
             if os.path.isfile(src_file):
                 os.rename(src_file, dst_file)
+
+
+if __name__ == "__main__":
+    main()
