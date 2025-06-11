@@ -138,6 +138,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--processing_reduction_factor",
+        type=int,
+        default=2,
+        help="Reduction factor for reducing the processing size compared to the output size (default: 2 - half resolution)",
+    )
+
+    parser.add_argument(
         "--nozzle_diameter",
         type=float,
         default=0.4,
@@ -304,6 +311,9 @@ def main(args):
     # Read input image
     img = imread(args.input_image, cv2.IMREAD_UNCHANGED)
     computed_output_size = int(round(args.stl_output_size * 2 / args.nozzle_diameter))
+    computed_processing_size = int(
+        round(computed_output_size / args.processing_reduction_factor)
+    )
     print(f"Computed solving pixel size: {computed_output_size}")
     alpha = None
     if img.shape[2] == 4:
@@ -340,6 +350,25 @@ def main(args):
         )
     )
 
+    processing_img_np = resize_image(
+        output_img_np, computed_processing_size
+    )  # For the processing resolution
+    processing_target = torch.tensor(
+        processing_img_np, dtype=torch.float32, device=device
+    )
+
+    # nearest neighbor resize
+    processing_pixel_height_logits_init = cv2.resize(
+        src=pixel_height_logits_init,
+        interpolation=cv2.INTER_NEAREST,
+        dsize=(processing_target.shape[1], processing_target.shape[0]),
+    )
+    processing_pixel_height_labels = cv2.resize(
+        src=pixel_height_labels,
+        interpolation=cv2.INTER_NEAREST,
+        dsize=(processing_target.shape[1], processing_target.shape[0]),
+    )
+
     # if we have an alpha mask we set the height for those pixels to -13.815512 (the lowest init sigmoid value)
     # Now with unlocked height map we probably need to think about changing this somehow. TODO: Think about this.
     if alpha is not None:
@@ -352,9 +381,9 @@ def main(args):
     # Create an optimizer instance
     optimizer = FilamentOptimizer(
         args=args,
-        target=output_target,
-        pixel_height_logits_init=pixel_height_logits_init,
-        pixel_height_labels=pixel_height_labels,
+        target=processing_target,
+        pixel_height_logits_init=processing_pixel_height_logits_init,
+        pixel_height_labels=processing_pixel_height_labels,
         global_logits_init=global_logits_init,
         material_colors=material_colors,
         material_TDs=material_TDs,
@@ -392,6 +421,16 @@ def main(args):
 
     optimizer.log_to_tensorboard(
         interval=1, namespace="post_opt", step=(post_opt_step := post_opt_step + 1)
+    )
+
+    # set the full size again for pruning
+    optimizer.pixel_height_logits = torch.from_numpy(pixel_height_logits_init)
+    optimizer.best_params["pixel_height_logits"] = torch.from_numpy(
+        pixel_height_logits_init
+    ).to(device)
+    optimizer.target = output_target
+    optimizer.pixel_height_labels = torch.tensor(
+        pixel_height_labels, dtype=torch.int32, device=device
     )
 
     with torch.no_grad():
@@ -523,6 +562,16 @@ if __name__ == "__main__":
         best_run = min(ret, key=lambda x: x[1])
         best_run_folder = best_run[0]
         best_loss = best_run[1]
+
+        # print statistics
+        # median
+        losses = [x[1] for x in ret]
+        median_loss = np.median(losses)
+        std_loss = np.std(losses)
+        print(f"Best run folder: {best_run_folder}")
+        print(f"Best run loss: {best_loss}")
+        print(f"Median loss: {median_loss}")
+        print(f"Standard deviation of losses: {std_loss}")
 
         # move files from run folder to final output folder
         if not os.path.exists(final_output_folder):
