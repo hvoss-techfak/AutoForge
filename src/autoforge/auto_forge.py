@@ -249,6 +249,13 @@ def parse_args():
         help="Run the program multiple times and output the best result.",
     )
 
+    parser.add_argument(
+        "--discrete_check",
+        type=int,
+        default=10,
+        help="Modulo how often to check for new discrete results."
+    )
+
     args = parser.parse_args()
     return args
 
@@ -397,7 +404,7 @@ def start(args):
     tbar = tqdm(range(args.iterations))
     with torch.autocast(device.type, dtype=torch.bfloat16):
         for i in tbar:
-            loss_val = optimizer.step(record_best=i % 8 == 0)
+            loss_val = optimizer.step(record_best=i % args.discrete_check == 0)
 
             optimizer.visualize(interval=50)
             optimizer.log_to_tensorboard(interval=100)
