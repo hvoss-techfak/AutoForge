@@ -100,6 +100,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
   **Note:** The solver currently assumes that you have a solid color in the background, which means a color with a TD value of 4 or less (if you have a background height of 0.4).
 - `--visualize` enable live visualization of the composite image during optimization (default: True).
 - `--stl_output_size` Size of the longest dimension of the output STL file in millimeters (default: 200).
+- `--processing_reduction_factor` Reduction factor for the processing size compared to the output size (default: 2 - half resolution).
 - `--nozzle_diameter` Diameter of the printer nozzle in millimeters (default: 0.4).  
   **Note:** Details smaller than half this value will be ignored.
 - `--early_stopping` Number of steps without improvement before stopping (default: 10000).
