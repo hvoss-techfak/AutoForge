@@ -252,8 +252,8 @@ def parse_args():
     parser.add_argument(
         "--discrete_check",
         type=int,
-        default=10,
-        help="Modulo how often to check for new discrete results."
+        default=100,
+        help="Modulo how often to check for new discrete results.",
     )
 
     args = parser.parse_args()
@@ -406,7 +406,7 @@ def start(args):
         for i in tbar:
             loss_val = optimizer.step(record_best=i % args.discrete_check == 0)
 
-            optimizer.visualize(interval=50)
+            optimizer.visualize(interval=100)
             optimizer.log_to_tensorboard(interval=100)
 
             if (i + 1) % 100 == 0:
@@ -530,6 +530,7 @@ def start(args):
             print("All done. Outputs in:", args.output_folder)
             print("Happy Printing!")
             return final_loss
+
 
 def main():
     args = parse_args()
