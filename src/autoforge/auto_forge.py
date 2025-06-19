@@ -442,7 +442,7 @@ def start(args):
     )
 
     with torch.no_grad():
-        with torch.autocast(device.type, dtype=torch.bfloat16):
+        with torch.autocast(device.type, dtype=dtype):
             if args.perform_pruning:
                 optimizer.prune(
                     max_colors_allowed=args.pruning_max_colors,
