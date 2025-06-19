@@ -402,7 +402,8 @@ def start(args):
     # Main optimization loop
     print("Starting optimization...")
     tbar = tqdm(range(args.iterations))
-    with torch.autocast(device.type, dtype=torch.bfloat16):
+    dtype = torch.bfloat16 if not args.mps else torch.float32
+    with torch.autocast(device.type, dtype=dtype):
         for i in tbar:
             loss_val = optimizer.step(record_best=i % args.discrete_check == 0)
 
