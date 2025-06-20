@@ -28,21 +28,23 @@ def extract_filament_swaps(disc_global, disc_height_image, background_layers):
             - slider_values (list): List of layer numbers where a material change occurs.
     """
     # L is the total number of layers printed (maximum value in the height image)
-    L = int(np.max(np.array(disc_height_image)))
-    filament_indices = []
-    slider_values = []
+    L = int(np.max(np.asarray(disc_height_image)))
+    if L == 0:
+        return [], []
+
+    filament_indices = [int(disc_global[0])]  # first colour used
+    slider_values = [1]  # first swap happens at layer #2
+
     prev = int(disc_global[0])
-    for i in range(L):
+    for i in range(1, L):
         current = int(disc_global[i])
-        # If this is the first layer or the material changes from the previous layer…
         if current != prev:
-            slider = i + background_layers
-            slider_values.append(slider)
-            filament_indices.append(prev)
-        prev = current
-    # Add the last material index
+            filament_indices.append(current)  # new material
+            slider_values.append(i + 1)  # 1-based index
+            prev = current
+
     filament_indices.append(prev)
-    slider = i + background_layers
+    slider = slider_values[-1] + 1
     slider_values.append(slider)
 
     return filament_indices, slider_values
@@ -91,27 +93,8 @@ def generate_project_file(
     # Build the filament_set list. For each swap point, we look up the corresponding material from CSV.
     # Here we map CSV columns to the project file’s expected keys.
     filament_set = []
-    for idx in filament_indices:
-        mat = material_data[idx]
-        filament_entry = {
-            "Brand": mat["Brand"],
-            "Color": mat["Color"],
-            "Name": mat["Name"],
-            # Convert Owned to a boolean (in case it is read as a string)
-            "Owned": str(mat["Owned"]).strip().lower() == "true"
-            if "Owned" in mat
-            else False,
-            "Transmissivity": float(mat["Transmissivity"])
-            if not float(mat["Transmissivity"]).is_integer()
-            else int(mat["Transmissivity"]),
-            "Type": mat["Type"] if "Type" in mat else "PLA",
-            "uuid": mat["Uuid"] if "Uuid" in mat else str(uuid.uuid4()),
-        }
-        filament_set.append(filament_entry)
 
-    # add black as the first filament with background height as the first slider value
-    filament_set.insert(
-        0,
+    filament_set.append(
         {
             "Brand": "Autoforge",
             "Color": args.background_color,
@@ -120,18 +103,33 @@ def generate_project_file(
             "Transmissivity": 0.1,
             "Type": "PLA",
             "uuid": str(uuid.uuid4()),
-        },
+        }
     )
-    # add black to slider value
-    slider_values.insert(0, (args.background_height // args.layer_height))
 
-    # reverse order of filament set
+    for idx in filament_indices:
+        mat = material_data[idx]
+        filament_set.append(
+            {
+                "Brand": mat["Brand"],
+                "Color": mat["Color"],
+                "Name": mat["Name"],
+                "Owned": str(mat.get("Owned", False)).strip().lower() == "true",
+                "Transmissivity": (
+                    int(mat["Transmissivity"])
+                    if float(mat["Transmissivity"]).is_integer()
+                    else float(mat["Transmissivity"])
+                ),
+                "Type": mat.get("Type", "PLA"),
+                "uuid": mat.get("Uuid", str(uuid.uuid4())),
+            }
+        )
+
     filament_set = filament_set[::-1]
 
     # Build the project file dictionary.
     # Many keys are filled in with default or derived values.
     project_data = {
-        "base_layer_height": args.layer_height,  # you may adjust this if needed
+        "base_layer_height": args.background_height,  # you may adjust this if needed
         "blue_shift": 0,
         "border_height": args.background_height,  # here we use the background height
         "border_width": 3,
@@ -413,12 +411,18 @@ def generate_swap_instructions(
     if L == 0:
         instructions.append("No layers printed.")
         return instructions
-    instructions.append("Start with your background color")
+    instructions.append(
+        f"Print at 100% infill with a layer height of {h:.2f}mm with a base layer of {background_height:.2f}mm"
+    )
+    instructions.append("")
+    instructions.append(
+        f"Start with your background color, with a layer height of {background_height:.2f}mm for the first layer."
+    )
     for i in range(0, L):
         if i == 0 or int(discrete_global[i]) != int(discrete_global[i - 1]):
             ie = i + 1
             instructions.append(
-                f"At layer #{ie + background_layers} ({(ie * h) + background_height:.2f}mm) swap to {material_names[int(discrete_global[i])]}"
+                f"At layer #{ie + 1} ({(ie * h) + background_height:.2f}mm) swap to {material_names[int(discrete_global[i])]}"
             )
     instructions.append(
         "For the rest, use " + material_names[int(discrete_global[L - 1])]

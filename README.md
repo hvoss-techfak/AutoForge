@@ -94,7 +94,7 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 - `--max_layers` Maximum number of layers (default: 75).  
   **Note:** This is about 3mm + the background height
 - `--min_layers`  Minimum number of layers (default: 0). Used to limit height of pruning.
-- `--background_height` Height of the background in millimeters (default: 0.4).  
+- `--background_height` Height of the background in millimeters (default: 0.24).  
   **Note:** The background height must be divisible by the layer height.
 - `--background_color` Background color in hexadecimal format (default: `#000000` aka Black).  
   **Note:** The solver currently assumes that you have a solid color in the background, which means a color with a TD value of 4 or less (if you have a background height of 0.4).

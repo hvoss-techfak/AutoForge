@@ -113,7 +113,7 @@ def parse_args():
     parser.add_argument(
         "--background_height",
         type=float,
-        default=0.4,
+        default=0.24,
         help="Height of the background in mm",
     )
 
