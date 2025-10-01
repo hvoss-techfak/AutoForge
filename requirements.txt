@@ -1,4 +1,4 @@
-numpy>=1.19.0
+numpy
 torch>=2.6.0
 torchvision>=0.21.0
 transformers>=4.48.1
@@ -13,5 +13,5 @@ tensorboard
 pillow>=11.1.0
 shapely>=2.0.7
 trimesh>=4.6.4
-torchcam>=0.4.0
 joblib>=1.4.2
+pytest

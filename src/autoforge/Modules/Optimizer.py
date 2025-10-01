@@ -110,9 +110,17 @@ class FilamentOptimizer:
                 global_logits_init[i, i % num_materials] = 1.0
 
             global_logits_init += torch.rand_like(global_logits_init) * 0.2 - 0.1
-        global_logits_init = torch.from_numpy(global_logits_init).to(
-            dtype=torch.float32, device=device
-        )
+        # Convert only if numpy array
+        if isinstance(global_logits_init, np.ndarray):
+            global_logits_init = torch.from_numpy(global_logits_init).to(
+                dtype=torch.float32, device=device
+            )
+        elif torch.is_tensor(global_logits_init):
+            global_logits_init = global_logits_init.to(
+                dtype=torch.float32, device=device
+            )
+        else:
+            raise TypeError("global_logits_init must be a numpy array or torch Tensor")
         global_logits_init.requires_grad_(True)
 
         self.loss = None
@@ -599,9 +607,10 @@ class FilamentOptimizer:
         if search_seed:
             self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
 
-        #clear pytorch and system cache to reduce vram usage
+        # clear pytorch and system cache to reduce vram usage
         torch.cuda.empty_cache()
         import gc
+
         gc.collect()
         torch.cuda.empty_cache()
 

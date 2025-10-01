@@ -11,7 +11,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "CC BY-NC-SA 4.0" }
 dependencies = [
-  "numpy>=1.19.0",
+  "numpy",
   "torch>=2.6.0",
   "torchvision>=0.21.0",
   "transformers>=4.48.1",
@@ -26,8 +26,7 @@ dependencies = [
   "pillow>=11.1.0",
   "shapely>=2.0.7",
   "trimesh>=4.6.4",
-  "torchcam>=0.4.0",
-  "joblib>=1.4.2"
+  "joblib>=1.4.2",
 ]
 
 [tool.setuptools]
@@ -35,3 +34,7 @@ package-dir = {"" = "src"}
 
 [project.scripts]
 autoforge = "autoforge.auto_forge:main"
+
+[tool.pytest.ini_options]
+addopts = "--cov=autoforge --cov-report=term-missing"
+pythonpath = ["src"]
