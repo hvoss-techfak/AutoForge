@@ -24,6 +24,7 @@ from autoforge.Helper.OutputHelper import (
 )
 from autoforge.Modules.Optimizer import FilamentOptimizer
 from autoforge.Helper.PruningHelper import disc_to_logits
+from autoforge.Helper.OptimizerHelper import composite_image_cont
 
 # check if we can use torch.set_float32_matmul_precision('high')
 if torch.__version__ >= "2.0.0":
@@ -517,11 +518,8 @@ def start(args):
     if len(masks_full) == 1:
         layers_per_segment = [args.max_layers]
     else:
-        base = args.max_layers // len(masks_full)
-        rem = args.max_layers % len(masks_full)
-        layers_per_segment = [
-            base + (1 if i < rem else 0) for i in range(len(masks_full))
-        ]
+        # Each segment gets the full layer budget so final stack is concatenated across segments
+        layers_per_segment = [args.max_layers for _ in range(len(masks_full))]
 
     # Accumulators for final outputs (full resolution)
     final_comp_full = np.zeros((H_out, W_out, 3), dtype=np.uint8)
@@ -595,7 +593,11 @@ def start(args):
         outside_proc = ~mask_proc
         max_logit = 13.815512  # ~ sigmoid(13.8) ~ 0.999999
         min_logit = -13.815512
-        seg_proc_logits_init[outside_proc & fut_proc] = max_logit
+        # get maximum height from pixel in segment
+        temp_seg = seg_proc_logits_init[(~outside_proc) & (~fut_proc)]
+        seg_height = np.max(temp_seg)
+        print(seg_height)
+        seg_proc_logits_init[outside_proc & fut_proc] = seg_height
         seg_proc_logits_init[outside_proc & (~fut_proc)] = min_logit
         # Keep labels zero outside
         seg_proc_labels[outside_proc] = 0
@@ -624,6 +626,13 @@ def start(args):
             focus_map=focus_map,
         )
 
+        # Prepare downscaled previous composite for visualization
+        prev_comp_rgb_proc = cv2.resize(
+            prev_comp_rgb_full,
+            (processing_target.shape[1], processing_target.shape[0]),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
         # Main optimization loop per segment
         print("Starting optimization for segment...")
         tbar = tqdm(range(seg_args.iterations))
@@ -632,8 +641,80 @@ def start(args):
             for i in tbar:
                 loss_val = optimizer.step(record_best=i % seg_args.discrete_check == 0)
 
+                # Dynamic enforcement: outside current mask but in future segments -> current segment's max optimized DISCRETE height
+                with torch.no_grad():
+                    # Get current discrete height image for this segment at processing res
+                    tau_h, tau_g = optimizer._get_tau()
+                    disc_global_tmp, disc_height_tmp = optimizer.discretize_solution(
+                        {
+                            "pixel_height_logits": optimizer.pixel_height_logits,
+                            "global_logits": optimizer.params["global_logits"],
+                            "height_offsets": optimizer.height_offsets,
+                        },
+                        tau_global=tau_g,
+                        h=optimizer.h,
+                        max_layers=optimizer.max_layers,
+                        rng_seed=0,
+                    )
+                    mask_proc_t = torch.as_tensor(
+                        mask_proc, device=device, dtype=torch.bool
+                    )
+                    if bool(
+                        mask_proc_t.any().item() if mask_proc_t.numel() > 0 else False
+                    ):
+                        z_max = disc_height_tmp[mask_proc_t].max().to(torch.float32)
+                    else:
+                        z_max = torch.tensor(0.0, device=device, dtype=torch.float32)
+                    denom = float(max(int(optimizer.max_layers), 1))
+                    s = torch.clamp(z_max / denom, 1e-6, 1.0 - 1e-6)
+                    logit_target = torch.log(s) - torch.log1p(-s)
+
+                    fut_proc_np = future_masks_proc[seg_idx]
+                    outside_proc_np = ~mask_proc
+                    outside_fut_t = torch.as_tensor(
+                        (outside_proc_np & fut_proc_np), device=device
+                    )
+                    outside_not_fut_t = torch.as_tensor(
+                        (outside_proc_np & (~fut_proc_np)), device=device
+                    )
+                    optimizer.pixel_height_logits.masked_fill_(
+                        outside_fut_t, logit_target.item()
+                    )
+                    optimizer.pixel_height_logits.masked_fill_(
+                        outside_not_fut_t, float(-13.815512)
+                    )
+
+                # Built-in visualizations
                 optimizer.visualize(interval=100)
                 optimizer.log_to_tensorboard(interval=100)
+
+                # Combined preview: previous segments + current segment (processing resolution)
+                if (optimizer.num_steps_done % 25) == 0:
+                    with torch.no_grad():
+                        tau_h, tau_g = optimizer._get_tau()
+                        eff_logits = optimizer._apply_height_offset()
+                        comp_cur = composite_image_cont(
+                            eff_logits,
+                            optimizer.params["global_logits"],
+                            tau_h,
+                            tau_g,
+                            optimizer.h,
+                            optimizer.max_layers,
+                            optimizer.material_colors,
+                            optimizer.material_TDs,
+                            optimizer.background,
+                        )
+                        comp_cur_np = np.clip(comp_cur.cpu().numpy(), 0, 255).astype(
+                            np.uint8
+                        )
+                        # Compose onto previous composite outside mask
+                        combined_rgb = prev_comp_rgb_proc.copy()
+                        combined_rgb[mask_proc] = comp_cur_np[mask_proc]
+                        # Save as vis_temp.png for UI parity (BGR for OpenCV)
+                        cv2.imwrite(
+                            os.path.join(args.output_folder, "vis_temp.png"),
+                            cv2.cvtColor(combined_rgb, cv2.COLOR_RGB2BGR),
+                        )
 
                 if (i + 1) % 100 == 0:
                     tbar.set_description(
@@ -659,7 +740,7 @@ def start(args):
             step=(post_opt_step := post_opt_step + 1),
         )
 
-        # Upsample best logits to full resolution and apply mask rules for future pixels
+        # Upsample best logits to full resolution
         with torch.no_grad():
             best_logits_proc = (
                 optimizer.best_params["pixel_height_logits"].detach().cpu().numpy()
@@ -669,11 +750,6 @@ def start(args):
                 (W_out, H_out),
                 interpolation=cv2.INTER_LINEAR,
             )
-            # Outside current mask and not future: min height; future: max height
-            fut_full = future_masks_full[seg_idx]
-            outside_full = ~mask_full
-            best_logits_full[outside_full & fut_full] = max_logit
-            best_logits_full[outside_full & (~fut_full)] = min_logit
 
         # Switch to full-size for discrete solution, applying full target
         optimizer.pixel_height_logits = torch.from_numpy(best_logits_full).to(device)
@@ -693,12 +769,34 @@ def start(args):
                 optimizer.get_discretized_solution(best=True)
             )
 
-        # Store per-segment result for joint pruning
-        seg_heights_np = disc_height_image_full.cpu().numpy().astype(np.int32)
+        # Now enforce outside-future at full-res using the true max DISCRETE height
+        with torch.no_grad():
+            seg_heights_np_full = disc_height_image_full.cpu().numpy().astype(np.int32)
+            z_max_full = (
+                int(seg_heights_np_full[mask_full].max()) if mask_full.any() else 0
+            )
+            denom_full = max(int(seg_layers), 1)
+            s_full = np.clip((z_max_full / float(denom_full)), 1e-6, 1.0 - 1e-6)
+            logit_full = float(np.log(s_full) - np.log1p(-s_full))
+            fut_full = future_masks_full[seg_idx]
+            outside_full = ~mask_full
+            best_logits_full[outside_full & fut_full] = logit_full
+            best_logits_full[outside_full & (~fut_full)] = -13.815512
+            # Update optimizer tensors to reflect this for visualization
+            optimizer.pixel_height_logits = torch.from_numpy(best_logits_full).to(
+                device
+            )
+            optimizer.best_params["pixel_height_logits"] = torch.from_numpy(
+                best_logits_full
+            ).to(device)
+
+        # Store per-segment result for joint pruning; only count in-segment heights
+        seg_heights_np = seg_heights_np_full
+        seg_heights_np_in_mask = np.where(mask_full, seg_heights_np, 0)
         segment_results.append(
             {
                 "mask_full": mask_full,
-                "disc_height": seg_heights_np,
+                "disc_height": seg_heights_np_in_mask,
                 "disc_global": disc_global_seg.cpu().numpy(),
             }
         )

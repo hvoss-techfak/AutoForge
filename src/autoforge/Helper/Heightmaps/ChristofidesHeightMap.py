@@ -445,6 +445,7 @@ def init_height_map(
     cluster_layers=None,
     lab_space=True,
     material_colors=None,
+    mask: np.ndarray | None = None,
 ):
     """
     init_method should be one of quantize_median,quantize_maxcoverage,quantize_fastoctree,kmeans
@@ -457,6 +458,9 @@ def init_height_map(
          - The foreground cluster (farthest from the background) as the top.
       4. Using a Christofides TSP solution (with an artificial node) to order the clusters.
       5. Mapping the clusters to evenly spaced height values in [0, 1] and converting to logits.
+
+    If a boolean mask (H,W) is provided, all clustering and mapping operate only on mask==True pixels.
+    Pixels outside the mask are ignored during clustering and receive the minimum height (via logits) by default.
     """
     import random
 
@@ -477,31 +481,99 @@ def init_height_map(
         target_lab_full[..., 2] *= lab_weights[2]
     else:
         target_lab_full = target_np
-    target_lab_reshaped = target_lab_full.reshape(-1, 3)
-    labs, labels = two_stage_weighted_kmeans(
-        target_lab_reshaped,
-        H,
-        W,
-        overcluster_k=500,
-        final_k=cluster_layers,
-        beta_distinct=4.0,
-        random_state=random_seed,
-    )
 
-    if lab_space:
-        target_lab_for_quality = rgb2lab((target.astype(np.float32) / 255.0))
-        target_lab_for_quality[..., 0] *= lab_weights[0]
-        target_lab_for_quality[..., 1] *= lab_weights[1]
-        target_lab_for_quality[..., 2] *= lab_weights[2]
+    use_mask = mask is not None
+    if use_mask:
+        mask_bool = mask.astype(bool)
+        n_valid = int(mask_bool.sum())
+        if n_valid == 0:
+            # Degenerate: no pixels -> return all-min logits and trivial globals
+            pixel_height_logits = np.full(
+                (H, W), fill_value=np.log(eps) - np.log(1 - eps), dtype=np.float32
+            )
+            return (
+                pixel_height_logits,
+                None,
+                0.0,
+                cluster_layers,
+                -1.0,
+                np.full((H, W), fill_value=-1, dtype=np.int32),
+            )
+
+        # 2-stage weighted KMeans on masked pixels only
+        flat_masked = target_lab_full[mask_bool].reshape(n_valid, 3)
+        over_k = min(500, max(2, n_valid))
+        final_k = int(min(max(1, cluster_layers), n_valid))
+        # Stage 1
+        kmeans1 = MiniBatchKMeans(
+            n_clusters=min(over_k, max(2, final_k * 4)),
+            random_state=random_seed,
+            max_iter=300,
+        )
+        labels1 = kmeans1.fit_predict(flat_masked)
+        centroids1 = kmeans1.cluster_centers_
+        counts1 = np.bincount(labels1, minlength=centroids1.shape[0]).astype(np.float64)
+        # Weights using distinctiveness among centroids
+        distinct = _compute_distinctiveness(centroids1)
+        if distinct.max() > 0:
+            distinct = distinct / distinct.max()
+        weights = counts1 * (1.0 + 4.0 * distinct)
+        # Stage 2
+        kmeans2 = KMeans(n_clusters=final_k, random_state=random_seed, n_init="auto")
+        kmeans2.fit(centroids1, sample_weight=weights)
+        labs = kmeans2.cluster_centers_
+        # Assign each masked pixel to nearest final centroid
+        chunk = 2**18
+        labels_masked = np.empty(n_valid, dtype=np.int32)
+        for start in range(0, n_valid, chunk):
+            end = min(start + chunk, n_valid)
+            d = cdist(flat_masked[start:end], labs, metric="euclidean")
+            labels_masked[start:end] = np.argmin(d, axis=1)
+        # Build full-size labels, -1 outside mask
+        labels = np.full((H, W), fill_value=-1, dtype=np.int32)
+        labels_flat_masked = labels_masked
+        labels[mask_bool] = labels_flat_masked
+
+        # For quality score, compute silhouette on masked region only
+        if lab_space:
+            target_lab_for_quality = rgb2lab((target.astype(np.float32) / 255.0))
+            target_lab_for_quality[..., 0] *= lab_weights[0]
+            target_lab_for_quality[..., 1] *= lab_weights[1]
+            target_lab_for_quality[..., 2] *= lab_weights[2]
+        else:
+            target_lab_for_quality = target.astype(np.float32) / 255.0
+        sil_score = segmentation_quality(
+            target_lab_for_quality[mask_bool].reshape(-1, 3),
+            labels_masked,
+            sample_size=min(5000, n_valid),
+            random_state=random_seed,
+        )
     else:
-        target_lab_for_quality = target.astype(np.float32) / 255.0
+        target_lab_reshaped = target_lab_full.reshape(-1, 3)
+        labs, labels = two_stage_weighted_kmeans(
+            target_lab_reshaped,
+            H,
+            W,
+            overcluster_k=500,
+            final_k=cluster_layers,
+            beta_distinct=4.0,
+            random_state=random_seed,
+        )
 
-    sil_score = segmentation_quality(
-        target_lab_for_quality.reshape(-1, 3),
-        labels,
-        sample_size=5000,
-        random_state=random_seed,
-    )
+        if lab_space:
+            target_lab_for_quality = rgb2lab((target.astype(np.float32) / 255.0))
+            target_lab_for_quality[..., 0] *= lab_weights[0]
+            target_lab_for_quality[..., 1] *= lab_weights[1]
+            target_lab_for_quality[..., 2] *= lab_weights[2]
+        else:
+            target_lab_for_quality = target.astype(np.float32) / 255.0
+
+        sil_score = segmentation_quality(
+            target_lab_for_quality.reshape(-1, 3),
+            labels,
+            sample_size=5000,
+            random_state=random_seed,
+        )
 
     # Convert the background color to Lab and apply the same weighting.
     bg_rgb = np.array(background_tuple).astype(np.float32) / 255.0
@@ -518,34 +590,40 @@ def init_height_map(
     bg_cluster = int(np.argmin(distances))
     fg_cluster = int(np.argmax(distances))
 
-    # Get the unique clusters (should be 0...max_layers-1 ideally).
-    unique_clusters = sorted(np.unique(labels))
+    # Get the unique clusters present (masked or full image depending on branch).
+    unique_clusters = sorted(np.unique(labels[labels >= 0]))
     nodes = unique_clusters
 
     # Get the ordering via TSP ordering function.
     final_ordering = tsp_order_christofides_path(nodes, labs, bg_cluster, fg_cluster)
 
-    # # Optionally prune out outliers.
-    # final_ordering = prune_ordering(
-    #     final_ordering, labs, bg_cluster, fg_cluster, min_length=3, improvement_factor=3
-    # )
-
-    # Create a mapping that covers all clusters.
+    # Create a mapping that covers only the clusters in use.
     new_values = create_mapping(final_ordering, labs, unique_clusters)
-    new_labels = np.vectorize(lambda x: new_values[x])(labels).astype(np.float32)
 
-    pixel_height_logits = np.log((new_labels + eps) / (1 - new_labels + eps))
+    # Build per-pixel mapping values
+    new_labels_full = np.zeros((H, W), dtype=np.float32)
+    if use_mask:
+        # Vectorised assignment within mask
+        # Build an array map for fast indexing
+        max_label = max(unique_clusters) if unique_clusters else -1
+        map_arr = np.zeros(max_label + 1 if max_label >= 0 else 1, dtype=np.float32)
+        for lbl in unique_clusters:
+            map_arr[lbl] = float(new_values[lbl])
+        new_labels_full[mask_bool] = (
+            map_arr[labels[mask_bool]] if unique_clusters else 0.0
+        )
+    else:
+        vec_map = np.vectorize(lambda x: new_values[x])
+        new_labels_full = vec_map(labels).astype(np.float32)
+
+    pixel_height_logits = np.log((new_labels_full + eps) / (1 - new_labels_full + eps))
     ordering_metric = compute_ordering_metric(final_ordering, labs)
-    ordering_metric /= cluster_layers
+    ordering_metric /= max(1, (cluster_layers if cluster_layers else 1))
 
     global_logits_out = None
     if material_colors is not None:
-        # Convert material_colors (assumed in [-1, 3]) to normalized [0, 1] for Lab conversion.
-        # Adjust as needed depending on your color convention.
-        # Reshape to (1, num_materials, 3) so that rgb2lab returns shape (1, num_materials, 3)
         if lab_space:
             material_lab = rgb2lab(material_colors.reshape(1, -1, 3)).reshape(-1, 3)
-            # Apply the same lab_weights.
             material_lab[:, 0] *= lab_weights[0]
             material_lab[:, 1] *= lab_weights[1]
             material_lab[:, 2] *= lab_weights[2]
@@ -554,23 +632,21 @@ def init_height_map(
             materials = material_colors
 
         num_materials = materials.shape[0]
-
-        # Initialize global logits for each cluster in unique_clusters.
         global_logits = []
-
-        for idx, label in enumerate(unique_clusters):
-            # Use the final mapping value for this cluster.
+        for label in unique_clusters:
             t = new_values[label]
-            # Compute distances from this cluster’s lab value to each material (in Lab space).
             cluster_lab = labs[label]
             dists = np.linalg.norm(materials - cluster_lab, axis=1)
-            best_j = np.argmin(dists)
+            best_j = int(np.argmin(dists))
             out_logit = np.ones(num_materials) * -1.0
             out_logit[best_j] = 1.0
             global_logits.append((t, out_logit))
 
-        global_logits = sorted(global_logits, key=lambda x: x[0])
-        global_logits_out = interpolate_arrays(global_logits, max_layers)
+        if len(global_logits) > 0:
+            global_logits = sorted(global_logits, key=lambda x: x[0])
+            global_logits_out = interpolate_arrays(global_logits, max_layers)
+        else:
+            global_logits_out = None
 
     return (
         pixel_height_logits,
@@ -593,6 +669,7 @@ def run_init_threads(
     init_method="kmeans",
     cluster_layers=None,
     material_colors=None,
+    mask: np.ndarray | None = None,
 ):
     background_tuple = (np.asarray(background_tuple) * 255).tolist()
     if random_seed is None:
@@ -611,6 +688,7 @@ def run_init_threads(
             cluster_layers=cluster_layers,
             lab_space=lab_space,
             material_colors=material_colors,
+            mask=mask,
         )
         for i in range(num_threads)
     ]
