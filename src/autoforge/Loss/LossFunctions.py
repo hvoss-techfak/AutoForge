@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 
 from autoforge.Helper.ImageHelper import srgb_to_lab
 from autoforge.Helper.OptimizerHelper import composite_image_cont
@@ -57,11 +56,26 @@ def compute_loss(
     comp_lab = srgb_to_lab(comp)
     target_lab = srgb_to_lab(target)
 
-    mse_loss = F.mse_loss(
-        comp_lab, target_lab
-    )  # F.huber_loss(comp_lab, target_lab, delta=1.0)
+    # Base per-pixel MSE in Lab space
+    per_pix = (comp_lab - target_lab) ** 2  # [H,W,3]
+    per_pix = per_pix.mean(dim=2)  # [H,W]
 
-    total_loss = mse_loss
+    if focus_map is not None:
+        # Ensure shapes match [H,W]
+        if focus_map.dim() == 3 and focus_map.shape[-1] == 1:
+            focus = focus_map.squeeze(-1)
+        else:
+            focus = focus_map
+        focus = focus.clamp(min=0.0)
+        # Normalize weights to sum to 1 to keep loss scale consistent
+        denom = focus.sum()
+        if denom.item() > 0:
+            weighted = (per_pix * focus).sum() / denom
+        else:
+            weighted = per_pix.mean()
+        total_loss = weighted
+    else:
+        total_loss = per_pix.mean()
 
     return total_loss
 

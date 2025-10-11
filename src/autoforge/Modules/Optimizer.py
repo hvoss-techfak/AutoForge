@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+from typing import Optional
 
 from autoforge.Helper.CAdamW import CAdamW
 from autoforge.Helper.OptimizerHelper import (
@@ -30,7 +31,9 @@ class FilamentOptimizer:
         material_TDs: torch.Tensor,
         background: torch.Tensor,
         device: torch.device,
-        perception_loss_module: torch.nn.Module,
+        perception_loss_module: Optional[torch.nn.Module],
+        # New optional focus map to weight the loss toward a region (H,W) in solver resolution
+        focus_map: Optional[torch.Tensor] = None,
     ):
         """
         Initialize an optimizer instance.
@@ -43,7 +46,8 @@ class FilamentOptimizer:
             material_TDs (torch.Tensor): Tensor of material transmission/opacity parameters.
             background (torch.Tensor): Background color tensor.
             device (torch.device): Device to run the optimization on.
-            perception_loss_module (torch.nn.Module): Module to compute perceptual loss.
+            perception_loss_module (torch.nn.Module | None): Module to compute perceptual loss.
+            focus_map (torch.Tensor | None): Optional (H,W) weights to emphasize a region during loss.
         """
         self.args = args
         self.target = target  # smaller (solver) resolution, shape [H,W,3], float32
@@ -87,6 +91,9 @@ class FilamentOptimizer:
         self.best_swaps = 0
         self.perception_loss_module = perception_loss_module
         self.visualize_flag = args.visualize
+
+        # Store optional focus map at solver resolution
+        self.focus_map = focus_map.to(device) if torch.is_tensor(focus_map) else None
 
         # Initialize TensorBoard writer
         if args.tensorboard:
@@ -186,15 +193,6 @@ class FilamentOptimizer:
             )
             self.ax[1, 1].set_title("Height Map Changes")
 
-            # target_vis = self.target.cpu().detach().numpy()
-            # focus_vis = self.focus_map.cpu().detach().numpy()
-            #
-            # overlay = overlay_mask(
-            #     to_pil_image(target_vis),
-            #     to_pil_image(focus_vis, mode="F"),
-            #     alpha=0.5,
-            # )
-
             # Compute and store the initial height map for later difference computation.
             with torch.no_grad():
                 initial_height = (self.max_layers * self.h) * torch.sigmoid(
@@ -263,18 +261,6 @@ class FilamentOptimizer:
 
         tau_height, tau_global = self._get_tau()
 
-        # start_fraction = self.args.height_logits_learning_start_fraction
-        # full_fraction = self.args.height_logits_learning_full_fraction
-
-        # total_iters = self.args.iterations
-        # current_step = self.num_steps_done
-        # if current_step < start_fraction * total_iters:
-        #     scaling = 0.0
-        # elif current_step < full_fraction * total_iters:
-        #     scaling = (current_step - start_fraction * total_iters) / ((full_fraction - start_fraction) * total_iters)
-        # else:
-        #     scaling = 1.0
-
         effective_logits = self._apply_height_offset()
 
         loss = loss_fn(
@@ -291,7 +277,7 @@ class FilamentOptimizer:
             material_TDs=self.material_TDs,
             background=self.background,
             add_penalty_loss=10.0,
-            focus_map=None,
+            focus_map=self.focus_map,
             focus_strength=0.0,
         )
 
@@ -299,9 +285,9 @@ class FilamentOptimizer:
 
         self.num_steps_done += 1
 
-        # Optionally track the best "discrete" solution after a certain iteration
         if record_best:
             self._maybe_update_best_discrete()
+
         # torch.cuda.empty_cache()
         loss = loss.item()
         self.loss = loss
@@ -483,14 +469,6 @@ class FilamentOptimizer:
 
             # Compute and update the difference depth map (current - initial)
             diff_map = height_map - self.initial_height_map
-            # print(diff_map.min(), diff_map.max())
-            # Normalize the difference map safely.
-            # if np.allclose(diff_map.max(), diff_map.min()):
-            #     diff_map_norm = np.zeros_like(diff_map)
-            # else:
-            #     diff_map_norm = (diff_map - diff_map.min()) / (
-            #         diff_map.max() - diff_map.min()
-            #     )
             self.diff_depth_map_ax.set_data(diff_map)
             self.diff_depth_map_ax.set_clim(-2.5, 2.5)
 
@@ -601,7 +579,6 @@ class FilamentOptimizer:
             prune_num_colors,
             prune_num_swaps,
             prune_redundant_layers,
-            optimise_swap_positions,
         )
 
         if search_seed:
@@ -641,8 +618,6 @@ class FilamentOptimizer:
             chunking_percent=fast_pruning_percent,
         )
 
-        optimise_swap_positions(self)
-
     def _maybe_update_best_discrete(self):
         """
         Discretize the current solution, compute the discrete-mode loss,
@@ -654,7 +629,7 @@ class FilamentOptimizer:
             seed = np.random.randint(0, 1000000)
 
             # 1) Discretize
-            tau_h, tau_g = self.vis_tau, self.vis_tau
+            tau_g = self.vis_tau
             with torch.no_grad():
                 effective_logits = self._apply_height_offset()
                 disc_global, disc_height_image = self.discretize_solution(
@@ -679,6 +654,8 @@ class FilamentOptimizer:
                 current_disc_loss = compute_loss(
                     comp=comp_disc,
                     target=self.target,
+                    # Respect focus during best tracking to match optimization region
+                    focus_map=self.focus_map,
                 ).item()
                 from autoforge.Helper.PruningHelper import find_color_bands
 
@@ -728,6 +705,8 @@ class FilamentOptimizer:
             current_disc_loss = compute_loss(
                 comp=comp_disc,
                 target=self.target,
+                # Respect focus during seed search as well
+                focus_map=self.focus_map,
             ).item()
             if current_disc_loss < best_loss:
                 best_loss = current_disc_loss
