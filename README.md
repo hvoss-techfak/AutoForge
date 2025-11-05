@@ -83,7 +83,7 @@ To use FlatForge mode for smooth, face-down printing:
 autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv --flatforge --pruning_max_colors 4 --cap_layers 2
 ```
 
-This will generate separate STL files for each color, allowing you to print face-down on the build plate for a smooth finish. With `--pruning_max_colors 4`, you'll get 3 colored materials + 1 clear filament = 4 total filaments (perfect for a 4-slot AMS).
+This will generate separate STL files for each color, allowing you to print face-down on the build plate for a smooth finish. With `--pruning_max_colors 4`, you'll get 2 colored materials + 1 clear filament + 1 background = 4 total filaments (perfect for a 4-slot AMS).
 
 ### Command Line Arguments
 
@@ -126,7 +126,9 @@ This will generate separate STL files for each color, allowing you to print face
 - `--fast_pruning`  Perform pruning in chunks. 10-15x speedup compared to accurate method (default: False).
 - `--fast_pruning_percent` Size of fast pruning chunks in percent (default: 0.5) (50%).
 - `--pruning_max_colors` Max number of colors allowed after pruning (default: 100).  
-  **Note:** In FlatForge mode, this includes the clear/transparent filament. For example, `--pruning_max_colors 4` means 3 colored materials + 1 clear = 4 total filaments.
+  **Note:** This includes background in both modes. In FlatForge mode, also includes clear filament.
+  - Traditional: `--pruning_max_colors 4` means 3 colored + 1 background = 4 total filaments.
+  - FlatForge: `--pruning_max_colors 4` means 2 colored + 1 clear + 1 background = 4 total filaments.
 - `--pruning_max_swaps` Max number of swaps allowed after pruning (default: 100).
 - `--pruning_max_layer` Max number of layers allowed after pruning (default: 75).
 - `--random_seed` Random seed for reproducibility (default: 0 (disabled)).

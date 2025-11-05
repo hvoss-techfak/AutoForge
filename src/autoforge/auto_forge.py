@@ -460,8 +460,22 @@ def start(args):
     with torch.no_grad():
         with torch.autocast(device.type, dtype=dtype):
             if args.perform_pruning:
+                # Adjust pruning_max_colors to account for background and clear filament
+                # pruning_max_colors = total filaments needed
+                # Need to reserve slots: 1 for background (always), 1 for clear (FlatForge only)
+                max_colors_for_pruning = args.pruning_max_colors
+                
+                if args.flatforge:
+                    # FlatForge: pruning_max_colors = colored + clear + background
+                    # Reserve 2 slots (1 clear + 1 background)
+                    max_colors_for_pruning = max(1, args.pruning_max_colors - 2)
+                else:
+                    # Traditional: pruning_max_colors = colored + background
+                    # Reserve 1 slot for background
+                    max_colors_for_pruning = max(1, args.pruning_max_colors - 1)
+                
                 optimizer.prune(
-                    max_colors_allowed=args.pruning_max_colors,
+                    max_colors_allowed=max_colors_for_pruning,
                     max_swaps_allowed=args.pruning_max_swaps,
                     min_layers_allowed=args.min_layers,
                     max_layers_allowed=args.pruning_max_layer,
