@@ -502,7 +502,8 @@ def generate_flatforge_stls(
             pixel_height = int(disc_height_image[i, j])
             
             # Assign materials from layer 0 to min(pixel_height, max_layer)-1
-            # If disc_global has gaps (-1), fill them with the last non-empty color from below
+            # Fill any gaps in disc_global by extending the last color from below
+            # This ensures there's no clear between two colored layers
             last_color = -1
             for layer in range(min(pixel_height, max_layer)):
                 material = int(disc_global[layer])
@@ -511,7 +512,8 @@ def generate_flatforge_stls(
                     last_color = material
                     layer_materials[layer, i, j] = material
                 elif last_color >= 0:
-                    # This layer is a gap, but we have a color from below - extend it
+                    # This layer is a gap in disc_global, extend the color from below
+                    # This prevents clear from being placed between two colored layers
                     layer_materials[layer, i, j] = last_color
                 # else: both material and last_color are -1, leave as -1
     
@@ -588,7 +590,8 @@ def generate_flatforge_stls(
     
     # Generate STL for clear/transparent areas
     # Clear should ONLY be placed above the topmost colored material, never between colors
-    # (gaps between colors are filled by extending the color from below during material assignment)
+    # Since gaps between colors are filled by extending the color from below during material assignment,
+    # we only need to check if the pixel height is less than max_layer (unfilled top layers)
     print("Generating FlatForge STL for clear areas...")
     
     # Find positions where clear is needed (above all colored materials)
@@ -601,24 +604,14 @@ def generate_flatforge_stls(
             if not valid_mask[i, j]:
                 continue
             
-            # Find the highest layer with a colored material (>= 0)
-            highest_colored_layer = -1
-            for layer in range(max_layer - 1, -1, -1):  # Search from top down
-                if layer_materials[layer, i, j] >= 0:
-                    highest_colored_layer = layer
-                    break
+            pixel_height = int(disc_height_image[i, j])
             
-            # Fill clear only ABOVE the highest colored material
-            if highest_colored_layer >= 0 and highest_colored_layer < max_layer - 1:
-                # There are layers above the highest color that need clear
+            # If pixel height is less than max_layer, fill the top with clear
+            if pixel_height < max_layer:
                 has_clear = True
-                clear_min_height_map[i, j] = highest_colored_layer + 1
+                clear_min_height_map[i, j] = pixel_height
                 clear_height_map[i, j] = max_layer
-            elif highest_colored_layer == -1:
-                # No colored materials at this pixel, fill entire height with clear
-                has_clear = True
-                clear_min_height_map[i, j] = 0
-                clear_height_map[i, j] = max_layer
+            # Note: We don't check layer_materials because gaps are already filled with colors
     
     if has_clear:
         clear_height_map_mm = clear_height_map * layer_height
@@ -642,6 +635,8 @@ def generate_flatforge_stls(
     if cap_layers > 0:
         print(f"Generating FlatForge STL for cap layer ({cap_layers} layers)...")
         # Cap layer covers the entire valid area at the top, creating a flat top surface
+        # The cap should be ONLY transparent filament with thickness = cap_layers * layer_height
+        # It starts at max_layer (above all other layers) and extends to max_layer + cap_layers
         cap_height_map = np.full((H, W), (max_layer + cap_layers) * layer_height, dtype=float)
         cap_min_height_map = np.full((H, W), max_layer * layer_height, dtype=float)
         
