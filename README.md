@@ -35,6 +35,7 @@ The pruning is set to a maximum of 8 color and 20 swaps, so each image uses at m
 - **Learned Optimization**: Optimizes per-pixel height and per-layer material assignments using PyTorch.
 - **Learned Heightmap**: Optimizes the height of the layered model to create more detailed prints.
 - **Gumbel Softmax Sampling**: Leverages the Gumbel softmax method to decide material assignments for each layer.
+- **FlatForge Mode**: Generate separate STL files for each color, enabling face-down printing for smooth, resin-like finishes.
 - **STL File Generation**: Exports an ASCII STL file based on the optimized height map.
 - **Swap Instructions**: Generates clear swap instructions for changing materials during printing.
 - **Live Visualization**: (Optional) Displays live composite images during the optimization process.
@@ -74,6 +75,16 @@ autoforge --input_image path/to/input_image.jpg --json_file %APPDATA%\HueForge\F
 autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv --pruning_max_colors 8 --pruning_max_swaps 20
 ```
 
+### FlatForge Mode
+
+To use FlatForge mode for smooth, face-down printing:
+
+```bash
+autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv --flatforge --pruning_max_colors 4 --cap_layers 2
+```
+
+This will generate separate STL files for each color, allowing you to print face-down on the build plate for a smooth finish. With `--pruning_max_colors 4`, you'll get 3 colored materials + 1 clear filament = 4 total filaments (perfect for a 4-slot AMS).
+
 ### Command Line Arguments
 
 - `--config` *(Optional)* Path to a configuration file with the settings.
@@ -105,11 +116,17 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
   **Note:** Details smaller than half this value will be ignored.
 - `--early_stopping` Number of steps without improvement before stopping (default: 10000).
 
+- `--flatforge` Enable FlatForge mode to generate separate STL files for each color (default: False).  
+  **Note:** FlatForge creates flat prints where each color is its own STL file, allowing face-down printing for smooth, resin-like finishes. Requires a multi-material printer (AMS, MMU, or tool changer).
+- `--cap_layers` Number of complete transparent/clear layers to add on top in FlatForge mode (default: 0).  
+  **Note:** Creates a glossy cap layer over the colored layers for a resin-filled appearance. Only used when `--flatforge` is enabled.
+
 - `--perform_pruning`  Perform pruning after optimization (default: True).  
   **Note:** This is highly recommended even if you don't have a color/color swap limit, as it actually increases the quality of the output.
 - `--fast_pruning`  Perform pruning in chunks. 10-15x speedup compared to accurate method (default: False).
 - `--fast_pruning_percent` Size of fast pruning chunks in percent (default: 0.5) (50%).
-- `--pruning_max_colors` Max number of colors allowed after pruning (default: 100).
+- `--pruning_max_colors` Max number of colors allowed after pruning (default: 100).  
+  **Note:** In FlatForge mode, this includes the clear/transparent filament. For example, `--pruning_max_colors 4` means 3 colored materials + 1 clear = 4 total filaments.
 - `--pruning_max_swaps` Max number of swaps allowed after pruning (default: 100).
 - `--pruning_max_layer` Max number of layers allowed after pruning (default: 75).
 - `--random_seed` Random seed for reproducibility (default: 0 (disabled)).
@@ -126,10 +143,20 @@ autoforge --input_image path/to/input_image.jpg --csv_file path/to/materials.csv
 
 After running, the following files will be created in your specified output folder:
 
+**Traditional Mode:**
 - **Discrete Composite Image**: `final_model.png`
 - **STL File**: `final_model.stl`
 - **Hueforge Project File**: `project_file.hfp` 
 - **Swap Instructions**: `swap_instructions.txt`
+
+**FlatForge Mode** (when `--flatforge` is enabled):
+- **Discrete Composite Image**: `final_model.png`
+- **Separate STL files for each color**: One STL per material (e.g., `BrandName_ColorName_HEXCODE.stl`)
+- **Clear/Transparent STL**: Uses the most transparent material from your library
+- **Background STL**: `Background_HEXCODE.stl`
+- **Optional Cap Layer STL**: `Cap_MaterialName_HEXCODE.stl` (if `--cap_layers > 0`)
+  
+  *Note:* FlatForge generates multiple STL files that align perfectly when loaded together in your slicer, creating a solid rectangular print with each color as a separate object.
 
 ## Development
 

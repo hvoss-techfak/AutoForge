@@ -21,6 +21,7 @@ from autoforge.Helper.OutputHelper import (
     generate_stl,
     generate_swap_instructions,
     generate_project_file,
+    generate_flatforge_stls,
 )
 from autoforge.Modules.Optimizer import FilamentOptimizer
 
@@ -256,6 +257,21 @@ def parse_args():
         help="Modulo how often to check for new discrete results.",
     )
 
+    parser.add_argument(
+        "--flatforge",
+        type=bool,
+        default=False,
+        help="Enable FlatForge mode to generate separate STL files for each color",
+        action=argparse.BooleanOptionalAction,
+    )
+
+    parser.add_argument(
+        "--cap_layers",
+        type=int,
+        default=0,
+        help="Number of complete clear/transparent layers to add on top in FlatForge mode",
+    )
+
     args = parser.parse_args()
     return args
 
@@ -487,46 +503,68 @@ def start(args):
                 os.path.join(args.output_folder, "final_model.png"), comp_disc_np
             )
 
-            stl_filename = os.path.join(args.output_folder, "final_model.stl")
-            height_map_mm = (
-                disc_height_image.cpu().numpy().astype(np.float32)
-            ) * args.layer_height
-            generate_stl(
-                height_map_mm,
-                stl_filename,
-                args.background_height,
-                maximum_x_y_size=args.stl_output_size,
-                alpha_mask=alpha,
-            )
+            # Generate STL files
+            if args.flatforge:
+                # FlatForge mode: Generate separate STL files for each color
+                print("FlatForge mode enabled. Generating separate STL files...")
+                generate_flatforge_stls(
+                    disc_global.cpu().numpy(),
+                    disc_height_image.cpu().numpy(),
+                    material_colors_np,
+                    material_names,
+                    material_TDs_np,
+                    args.layer_height,
+                    args.background_height,
+                    args.background_color,
+                    args.stl_output_size,
+                    args.output_folder,
+                    cap_layers=args.cap_layers,
+                    alpha_mask=alpha,
+                )
+            else:
+                # Traditional mode: Generate single STL file
+                stl_filename = os.path.join(args.output_folder, "final_model.stl")
+                height_map_mm = (
+                    disc_height_image.cpu().numpy().astype(np.float32)
+                ) * args.layer_height
+                generate_stl(
+                    height_map_mm,
+                    stl_filename,
+                    args.background_height,
+                    maximum_x_y_size=args.stl_output_size,
+                    alpha_mask=alpha,
+                )
 
-            # Swap instructions
-            background_layers = int(args.background_height // args.layer_height)
-            swap_instructions = generate_swap_instructions(
-                disc_global.cpu().numpy(),
-                disc_height_image.cpu().numpy(),
-                args.layer_height,
-                background_layers,
-                args.background_height,
-                material_names,
-            )
-            with open(
-                os.path.join(args.output_folder, "swap_instructions.txt"), "w"
-            ) as f:
-                for line in swap_instructions:
-                    f.write(line + "\n")
+            # Swap instructions (only for traditional mode)
+            if not args.flatforge:
+                background_layers = int(args.background_height // args.layer_height)
+                swap_instructions = generate_swap_instructions(
+                    disc_global.cpu().numpy(),
+                    disc_height_image.cpu().numpy(),
+                    args.layer_height,
+                    background_layers,
+                    args.background_height,
+                    material_names,
+                )
+                with open(
+                    os.path.join(args.output_folder, "swap_instructions.txt"), "w"
+                ) as f:
+                    for line in swap_instructions:
+                        f.write(line + "\n")
 
-            # Project file
-            project_filename = os.path.join(args.output_folder, "project_file.hfp")
-            generate_project_file(
-                project_filename,
-                args,
-                disc_global.cpu().numpy(),
-                disc_height_image.cpu().numpy(),
-                output_target.shape[1],
-                output_target.shape[0],
-                stl_filename,
-                args.csv_file,
-            )
+            # Project file (only for traditional mode)
+            if not args.flatforge:
+                project_filename = os.path.join(args.output_folder, "project_file.hfp")
+                generate_project_file(
+                    project_filename,
+                    args,
+                    disc_global.cpu().numpy(),
+                    disc_height_image.cpu().numpy(),
+                    output_target.shape[1],
+                    output_target.shape[0],
+                    os.path.join(args.output_folder, "final_model.stl"),
+                    args.csv_file,
+                )
 
             print("All done. Outputs in:", args.output_folder)
             print("Happy Printing!")
