@@ -256,6 +256,15 @@ def parse_args():
         help="Modulo how often to check for new discrete results.",
     )
 
+    # New: choose heightmap initializer
+    parser.add_argument(
+        "--init_heightmap_method",
+        type=str,
+        choices=["kmeans", "depth"],
+        default="kmeans",
+        help="Initializer for the height map: 'kmeans' (fast, default) or 'depth' (requires transformers).",
+    )
+
     args = parser.parse_args()
     return args
 
@@ -342,20 +351,40 @@ def start(args):
     global_logits_init = None
     # Initialize pixel_height_logits from the large (final) image
     print("Initalizing height map. This can take a moment...")
-    # Default initialization
-    pixel_height_logits_init, global_logits_init, pixel_height_labels = (
-        run_init_threads(
-            output_img_np,
-            args.max_layers,
-            args.layer_height,
-            bgr_tuple,
-            random_seed=random_seed,
-            num_threads=args.num_init_rounds,
-            init_method="kmeans",
-            cluster_layers=args.num_init_cluster_layers,
-            material_colors=material_colors_np,
+
+    if args.init_heightmap_method == "depth":
+        # Optional depth-based initializer
+        try:
+            from autoforge.Helper.Heightmaps.DepthEstimateHeightMap import (
+                init_height_map_depth_color_adjusted,
+            )
+        except Exception as e:
+            print(
+                "Error: depth initializer requested but could not be imported. Install 'transformers' and try again.",
+                file=sys.stderr,
+            )
+            raise
+        pixel_height_logits_init, pixel_height_labels = (
+            init_height_map_depth_color_adjusted(
+                output_img_np, args.max_layers, random_seed=random_seed
+            )
         )
-    )
+        global_logits_init = None  # let the optimizer create a default pattern
+    else:
+        # Default initialization via color clustering + TSP ordering
+        pixel_height_logits_init, global_logits_init, pixel_height_labels = (
+            run_init_threads(
+                output_img_np,
+                args.max_layers,
+                args.layer_height,
+                bgr_tuple,
+                random_seed=random_seed,
+                num_threads=args.num_init_rounds,
+                init_method="kmeans",
+                cluster_layers=args.num_init_cluster_layers,
+                material_colors=material_colors_np,
+            )
+        )
 
     processing_img_np = resize_image(
         output_img_np, computed_processing_size
