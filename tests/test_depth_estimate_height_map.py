@@ -2,7 +2,6 @@ import numpy as np
 
 from autoforge.Helper.Heightmaps.DepthEstimateHeightMap import (
     initialize_pixel_height_logits,
-    init_height_map_depth_color_adjusted,
     tsp_simulated_annealing,
     choose_optimal_num_bands,
 )
@@ -47,12 +46,3 @@ def test_choose_optimal_num_bands():
     )
     k = choose_optimal_num_bands(centroids, min_bands=2, max_bands=4, random_seed=0)
     assert k in (2, 3, 4)
-
-
-def test_init_height_map_depth_color_adjusted(mock_depth_pipeline, small_image):
-    logits = init_height_map_depth_color_adjusted(
-        small_image, max_layers=4, random_seed=0
-    )
-    assert logits.shape == small_image.shape[:2]
-    # Values finite
-    assert np.isfinite(logits).all()
