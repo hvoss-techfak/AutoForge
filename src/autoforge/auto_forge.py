@@ -422,6 +422,12 @@ def start(args):
             )
             # Override args.background_color
             args.background_color = chosen_hex
+            # Store background filament info for downstream outputs
+            args.background_material_index = closest_idx
+            try:
+                args.background_material_name = material_names[closest_idx]
+            except Exception:
+                args.background_material_name = None
             try:
                 with open(
                     os.path.join(args.output_folder, "auto_background_color.txt"), "w"
@@ -429,6 +435,10 @@ def start(args):
                     f.write(f"dominant_image_color={dominant_hex}\n")
                     f.write(f"chosen_filament_color={chosen_hex}\n")
                     f.write(f"closest_filament_index={closest_idx}\n")
+                    if getattr(args, "background_material_name", None):
+                        f.write(
+                            f"closest_filament_name={args.background_material_name}\n"
+                        )
             except Exception:
                 traceback.print_exc()
         else:
@@ -689,6 +699,7 @@ def start(args):
                 background_layers,
                 args.background_height,
                 material_names,
+                getattr(args, "background_material_name", None),
             )
             with open(
                 os.path.join(args.output_folder, "swap_instructions.txt"), "w"

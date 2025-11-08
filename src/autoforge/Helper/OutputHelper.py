@@ -94,17 +94,37 @@ def generate_project_file(
     # Here we map CSV columns to the project file’s expected keys.
     filament_set = []
 
-    filament_set.append(
-        {
-            "Brand": "Autoforge",
-            "Color": args.background_color,
-            "Name": "Background",
-            "Owned": False,
-            "Transmissivity": 0.1,
-            "Type": "PLA",
-            "uuid": str(uuid.uuid4()),
-        }
-    )
+    # Use actual background filament data if auto selected and index stored
+    bg_idx = getattr(args, "background_material_index", None)
+    if bg_idx is not None and 0 <= bg_idx < len(material_data):
+        bg_mat = material_data[bg_idx]
+        filament_set.append(
+            {
+                "Brand": bg_mat.get("Brand", "Autoforge"),
+                "Color": bg_mat.get("Color", args.background_color),
+                "Name": bg_mat.get("Name", "Background"),
+                "Owned": str(bg_mat.get("Owned", False)).strip().lower() == "true",
+                "Transmissivity": (
+                    int(bg_mat["Transmissivity"])
+                    if float(bg_mat["Transmissivity"]).is_integer()
+                    else float(bg_mat["Transmissivity"])
+                ),
+                "Type": bg_mat.get("Type", "PLA"),
+                "uuid": bg_mat.get("Uuid", str(uuid.uuid4())),
+            }
+        )
+    else:
+        filament_set.append(
+            {
+                "Brand": "Autoforge",
+                "Color": args.background_color,
+                "Name": "Background",
+                "Owned": False,
+                "Transmissivity": 0.1,
+                "Type": "PLA",
+                "uuid": str(uuid.uuid4()),
+            }
+        )
 
     for idx in filament_indices:
         mat = material_data[idx]
@@ -391,6 +411,7 @@ def generate_swap_instructions(
     background_layers,
     background_height,
     material_names,
+    background_material_name=None,
 ):
     """
     Generate swap instructions based on discrete material assignments.
@@ -411,12 +432,23 @@ def generate_swap_instructions(
     if L == 0:
         instructions.append("No layers printed.")
         return instructions
-    instructions.append(
-        f"Print at 100% infill with a layer height of {h:.2f}mm with a base layer of {background_height:.2f}mm"
-    )
+    # First line includes background filament name if available
+    if background_material_name:
+        instructions.append(
+            f"Print at 100% infill with a layer height of {h:.2f}mm with a base layer of {background_height:.2f}mm using background filament {background_material_name}."
+        )
+    else:
+        instructions.append(
+            f"Print at 100% infill with a layer height of {h:.2f}mm with a base layer of {background_height:.2f}mm"
+        )
     instructions.append("")
+    start_bg_name = (
+        background_material_name
+        if background_material_name
+        else "your background color"
+    )
     instructions.append(
-        f"Start with your background color, with a layer height of {background_height:.2f}mm for the first layer."
+        f"Start with {start_bg_name}, with a layer height of {background_height:.2f}mm for the first layer."
     )
     for i in range(0, L):
         if i == 0 or int(discrete_global[i]) != int(discrete_global[i - 1]):
