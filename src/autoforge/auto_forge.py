@@ -224,7 +224,7 @@ def parse_args():
     parser.add_argument(
         "--num_init_rounds",
         type=int,
-        default=8,
+        default=16,
         help="Number of rounds to choose the starting height map from.",
     )
 
@@ -264,7 +264,19 @@ def parse_args():
         default="kmeans",
         help="Initializer for the height map: 'kmeans' (fast, default) or 'depth' (requires transformers).",
     )
-
+    # New priority mask argument (optional)
+    parser.add_argument(
+        "--priority_mask",
+        type=str,
+        default="",
+        help="Optional path to a priority mask image (same dimensions as input image). Non-empty: apply weighted loss (0.1 outside, 1.0 at max inside).",
+    )
+    parser.add_argument(
+        "--priority_mask_boost",
+        type=float,
+        default=1.0,
+        help="Multiplier used during initialization to boost heights in priority regions: new = new * (1 + boost * mask).",
+    )
     args = parser.parse_args()
     return args
 
@@ -305,6 +317,12 @@ def start(args):
         sys.exit(1)
     if args.json_file != "" and not os.path.exists(args.json_file):
         print(f"Error: Json file '{args.json_file}' not found.", file=sys.stderr)
+        sys.exit(1)
+    if args.priority_mask != "" and not os.path.exists(args.priority_mask):
+        print(
+            f"Error: priority mask file '{args.priority_mask}' not found.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     random_seed = args.random_seed
@@ -348,6 +366,30 @@ def start(args):
     output_img_np = resize_image(img, computed_output_size)
     output_target = torch.tensor(output_img_np, dtype=torch.float32, device=device)
 
+    # Priority mask handling
+    focus_map_proc = None
+    focus_map_full = None  # ensure defined even if priority_mask not provided
+    if args.priority_mask != "":
+        pm = imread(args.priority_mask, cv2.IMREAD_UNCHANGED)
+        # Convert to single-channel grayscale (uint8)
+        if pm.ndim == 3:
+            # Drop alpha if present, then convert to grayscale
+            if pm.shape[2] == 4:
+                pm = pm[:, :, :3]
+            pm = cv2.cvtColor(pm, cv2.COLOR_BGR2GRAY)
+        # If pm is already 2D, leave as is
+        # Resize to match the final output image resolution exactly
+        tgt_h, tgt_w = output_img_np.shape[:2]
+        pm_resized = cv2.resize(pm, (tgt_w, tgt_h), interpolation=cv2.INTER_LINEAR)
+        # Normalize to [0,1] using 255 (preserve absolute intensities)
+        pm_float = pm_resized.astype(np.float32) / 255.0
+        focus_map_full = torch.tensor(pm_float, dtype=torch.float32, device=device)
+        # Save a copy for reference
+        cv2.imwrite(
+            os.path.join(args.output_folder, "priority_mask_resized.png"),
+            (pm_float * 255).astype(np.uint8),
+        )
+
     global_logits_init = None
     # Initialize pixel_height_logits from the large (final) image
     print("Initalizing height map. This can take a moment...")
@@ -358,7 +400,7 @@ def start(args):
             from autoforge.Helper.Heightmaps.DepthEstimateHeightMap import (
                 init_height_map_depth_color_adjusted,
             )
-        except Exception as e:
+        except Exception:
             print(
                 "Error: depth initializer requested but could not be imported. Install 'transformers' and try again.",
                 file=sys.stderr,
@@ -366,7 +408,13 @@ def start(args):
             raise
         pixel_height_logits_init, pixel_height_labels = (
             init_height_map_depth_color_adjusted(
-                output_img_np, args.max_layers, random_seed=random_seed
+                output_img_np,
+                args.max_layers,
+                random_seed=random_seed,
+                focus_map=focus_map_full.cpu().numpy()
+                if focus_map_full is not None
+                else None,
+                focus_boost=args.priority_mask_boost,
             )
         )
         global_logits_init = None  # let the optimizer create a default pattern
@@ -383,6 +431,10 @@ def start(args):
                 init_method="kmeans",
                 cluster_layers=args.num_init_cluster_layers,
                 material_colors=material_colors_np,
+                focus_map=focus_map_full.cpu().numpy()
+                if focus_map_full is not None
+                else None,
+                focus_boost=args.priority_mask_boost,
             )
         )
 
@@ -392,6 +444,15 @@ def start(args):
     processing_target = torch.tensor(
         processing_img_np, dtype=torch.float32, device=device
     )
+
+    # If we have a full-res focus map, also create a processing-resolution one now
+    if focus_map_full is not None:
+        fm_proc_np = cv2.resize(
+            focus_map_full.cpu().numpy().astype(np.float32),
+            (processing_target.shape[1], processing_target.shape[0]),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        focus_map_proc = torch.tensor(fm_proc_np, dtype=torch.float32, device=device)
 
     # nearest neighbor resize
     processing_pixel_height_logits_init = cv2.resize(
@@ -426,6 +487,7 @@ def start(args):
         background=background,
         device=device,
         perception_loss_module=perception_loss_module,
+        focus_map=focus_map_proc,
     )
 
     # Main optimization loop
@@ -469,6 +531,30 @@ def start(args):
     optimizer.pixel_height_labels = torch.tensor(
         pixel_height_labels, dtype=torch.int32, device=device
     )
+    # Ensure residual matches full resolution and store in best_params
+    if hasattr(optimizer, "height_residual"):
+        with torch.no_grad():
+            hr = optimizer.height_residual.detach()
+            full_h, full_w = optimizer.pixel_height_logits.shape[:2]
+            if hr.shape != (full_h, full_w):
+                hr4d = hr.unsqueeze(0).unsqueeze(0)  # [1,1,h,w]
+                hr_full = (
+                    torch.nn.functional.interpolate(
+                        hr4d,
+                        size=(full_h, full_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                    .squeeze(0)
+                    .squeeze(0)
+                )
+                optimizer.height_residual.data = hr_full.to(device)
+            optimizer.best_params["height_residual"] = (
+                optimizer.height_residual.detach().clone()
+            )
+    # Update focus_map to full resolution if provided
+    if focus_map_proc is not None and focus_map_full is not None:
+        optimizer.focus_map = focus_map_full
 
     with torch.no_grad():
         with torch.autocast(device.type, dtype=dtype):

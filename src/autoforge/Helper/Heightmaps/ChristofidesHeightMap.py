@@ -1,5 +1,6 @@
 import os
 import random
+from typing import Optional
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -445,6 +446,8 @@ def init_height_map(
     cluster_layers=None,
     lab_space=True,
     material_colors=None,
+    focus_map: Optional[np.ndarray] = None,
+    focus_boost: float = 0.5,
 ):
     """
     init_method should be one of quantize_median,quantize_maxcoverage,quantize_fastoctree,kmeans
@@ -457,6 +460,10 @@ def init_height_map(
          - The foreground cluster (farthest from the background) as the top.
       4. Using a Christofides TSP solution (with an artificial node) to order the clusters.
       5. Mapping the clusters to evenly spaced height values in [0, 1] and converting to logits.
+
+    Added parameters:
+      focus_map (H,W) in [0,1]: if provided boosts initial height values inside priority regions.
+      focus_boost: scaling factor; pixel value multiplied by (1 + focus_boost * focus_map).
     """
     import random
 
@@ -534,6 +541,23 @@ def init_height_map(
     new_values = create_mapping(final_ordering, labs, unique_clusters)
     new_labels = np.vectorize(lambda x: new_values[x])(labels).astype(np.float32)
 
+    # Apply focus map boost before converting to logits if provided.
+    if focus_map is not None:
+        fm = np.asarray(focus_map, dtype=np.float32)
+        # Ensure fm is in [0,1]
+        if fm.max() > 1.0 or fm.min() < 0.0:
+            # If passed in 0-255, normalize
+            fm = np.clip(fm, 0, 255) / 255.0
+        if fm.shape != (H, W):
+            # Nearest-neighbor resize using index mapping (no extra deps)
+            src_h, src_w = fm.shape[:2]
+            iy = (np.arange(H) * src_h / H).astype(np.int32)
+            ix = (np.arange(W) * src_w / W).astype(np.int32)
+            iy = np.clip(iy, 0, src_h - 1)
+            ix = np.clip(ix, 0, src_w - 1)
+            fm = fm[np.ix_(iy, ix)]
+        new_labels = np.clip(new_labels * (1.0 + focus_boost * fm), 0.0, 1.0)
+
     pixel_height_logits = np.log((new_labels + eps) / (1 - new_labels + eps))
     ordering_metric = compute_ordering_metric(final_ordering, labs)
     ordering_metric /= cluster_layers
@@ -593,6 +617,8 @@ def run_init_threads(
     init_method="kmeans",
     cluster_layers=None,
     material_colors=None,
+    focus_map: Optional[np.ndarray] = None,
+    focus_boost: float = 0.5,
 ):
     background_tuple = (np.asarray(background_tuple) * 255).tolist()
     if random_seed is None:
@@ -611,6 +637,8 @@ def run_init_threads(
             cluster_layers=cluster_layers,
             lab_space=lab_space,
             material_colors=material_colors,
+            focus_map=focus_map,
+            focus_boost=focus_boost,
         )
         for i in range(num_threads)
     ]

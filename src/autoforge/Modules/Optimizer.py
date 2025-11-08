@@ -1,5 +1,6 @@
 import argparse
 import random
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -30,7 +31,8 @@ class FilamentOptimizer:
         material_TDs: torch.Tensor,
         background: torch.Tensor,
         device: torch.device,
-        perception_loss_module: torch.nn.Module,
+        perception_loss_module: Optional[torch.nn.Module],
+        focus_map: Optional[torch.Tensor] = None,
     ):
         """
         Initialize an optimizer instance.
@@ -44,6 +46,7 @@ class FilamentOptimizer:
             background (torch.Tensor): Background color tensor.
             device (torch.device): Device to run the optimization on.
             perception_loss_module (torch.nn.Module): Module to compute perceptual loss.
+            focus_map (torch.Tensor | None): Optional priority mask [H,W] in [0,1]. Higher -> higher loss weight.
         """
         self.args = args
         self.target = target  # smaller (solver) resolution, shape [H,W,3], float32
@@ -61,7 +64,12 @@ class FilamentOptimizer:
         self.pixel_height_logits = torch.tensor(
             pixel_height_logits_init, dtype=torch.float32, device=device
         )
+        # Base logits are frozen; learn residual for flexibility
         self.pixel_height_logits.requires_grad_(False)
+        # Trainable residual to adjust heights per-pixel
+        self.height_residual = torch.nn.Parameter(
+            torch.zeros_like(self.pixel_height_logits)
+        )
 
         print("layers", int(pixel_height_labels.flatten().max()))
         self.cluster_layers = int(pixel_height_labels.flatten().max()) + 1
@@ -88,6 +96,22 @@ class FilamentOptimizer:
         self.perception_loss_module = perception_loss_module
         self.visualize_flag = args.visualize
 
+        # Priority mask
+        self.focus_map = None
+        if focus_map is not None:
+            # Ensure on device and correct dtype/shape [H,W]
+            fm = focus_map
+            if fm.dim() == 3 and fm.shape[-1] == 1:
+                fm = fm.squeeze(-1)
+            self.focus_map = fm.to(device=self.device, dtype=torch.float32)
+
+        # TV regularization weight (fixed)
+        self.tv_weight = 1e-3
+        self.current_tv_factor = 0.0  # warmup progress for TV regularization
+        # Additional smoothness regularization (align with neighbours)
+        self.smooth_weight = 5e-4
+        self.current_smooth_factor = 0.0
+
         # Initialize TensorBoard writer
         if args.tensorboard:
             if args.run_name:
@@ -97,6 +121,7 @@ class FilamentOptimizer:
         else:
             self.writer = None
 
+        # Initialize global logits
         if global_logits_init is None:
             # We have an initial guess for 'global_logits'
             num_materials = material_colors.shape[0]
@@ -129,6 +154,7 @@ class FilamentOptimizer:
             "pixel_height_logits": self.pixel_height_logits,
             "global_logits": global_logits_init,
             "height_offsets": self.height_offsets,
+            "height_residual": self.height_residual,
         }
 
         # Tau schedule
@@ -140,9 +166,9 @@ class FilamentOptimizer:
             args.iterations - self.warmup_steps
         )
 
-        # Initialize optimizer
+        # Initialize optimizer - include residual
         self.optimizer = CAdamW(
-            [self.params["global_logits"], self.height_offsets],
+            [self.params["global_logits"], self.height_offsets, self.height_residual],
             lr=self.learning_rate,
         )
 
@@ -186,34 +212,75 @@ class FilamentOptimizer:
             )
             self.ax[1, 1].set_title("Height Map Changes")
 
-            # target_vis = self.target.cpu().detach().numpy()
-            # focus_vis = self.focus_map.cpu().detach().numpy()
-            #
-            # overlay = overlay_mask(
-            #     to_pil_image(target_vis),
-            #     to_pil_image(focus_vis, mode="F"),
-            #     alpha=0.5,
-            # )
+            # Priority mask visualization in bottom-right
+            if self.focus_map is not None:
+                fm_np = self.focus_map.cpu().detach().numpy()
+                # Normalize for display (robust to non [0,1] ranges)
+                fm_min, fm_max = float(fm_np.min()), float(fm_np.max())
+                if fm_max - fm_min > 1e-8:
+                    fm_norm = (fm_np - fm_min) / (fm_max - fm_min)
+                else:
+                    fm_norm = np.zeros_like(fm_np)
+                fm_uint8 = (fm_norm * 255).astype(np.uint8)
+                self.priority_mask_ax = self.ax[1, 2].imshow(
+                    fm_uint8, cmap="magma", vmin=0, vmax=255
+                )
+                self.ax[1, 2].set_title("Priority Mask")
+            else:
+                self.ax[1, 2].text(
+                    0.5,
+                    0.5,
+                    "No Priority Mask",
+                    ha="center",
+                    va="center",
+                    fontsize=10,
+                    color="gray",
+                    transform=self.ax[1, 2].transAxes,
+                )
+                self.ax[1, 2].set_axis_off()
 
             # Compute and store the initial height map for later difference computation.
             with torch.no_grad():
                 initial_height = (self.max_layers * self.h) * torch.sigmoid(
-                    self.params["pixel_height_logits"]
+                    self._apply_height_offset()
                 )
             self.initial_height_map = initial_height.cpu().detach().numpy()
 
-    def _apply_height_offset(self, pixel_logits=None, height_offsets=None):
+    def _apply_height_offset(
+        self,
+        pixel_logits: Optional[torch.Tensor] = None,
+        height_offsets: Optional[torch.Tensor] = None,
+        height_residual: Optional[torch.Tensor] = None,
+    ):
         if pixel_logits is None:
             pixel_logits = self.pixel_height_logits
         if height_offsets is None:
             height_offsets = self.height_offsets
+        if height_residual is None:
+            height_residual = self.height_residual
 
         offsets = torch.zeros_like(pixel_logits)
         nonzero_mask = self.pixel_height_labels != 0
         offsets[nonzero_mask] = height_offsets[
             self.pixel_height_labels[nonzero_mask]
         ].squeeze(-1)
-        return pixel_logits + offsets
+        return pixel_logits + offsets + height_residual
+
+    @staticmethod
+    def _tv_l1(x: torch.Tensor) -> torch.Tensor:
+        dx = torch.abs(x[:, 1:] - x[:, :-1]).mean()
+        dy = torch.abs(x[1:, :] - x[:-1, :]).mean()
+        return dx + dy
+
+    @staticmethod
+    def _smooth_l2(x: torch.Tensor) -> torch.Tensor:
+        # L2 to a 3x3 box-blurred version of x
+        x4 = x.unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
+        w = torch.ones((1, 1, 3, 3), dtype=x.dtype, device=x.device) / 9.0
+        x_pad = torch.nn.functional.pad(x4, (1, 1, 1, 1), mode="reflect")
+        x_blur = torch.nn.functional.conv2d(x_pad, w, stride=1, padding=0)
+        diff = (x4 - x_blur).squeeze(0).squeeze(0)
+        return (diff * diff).mean()
 
     def _get_tau(self):
         """
@@ -263,21 +330,9 @@ class FilamentOptimizer:
 
         tau_height, tau_global = self._get_tau()
 
-        # start_fraction = self.args.height_logits_learning_start_fraction
-        # full_fraction = self.args.height_logits_learning_full_fraction
-
-        # total_iters = self.args.iterations
-        # current_step = self.num_steps_done
-        # if current_step < start_fraction * total_iters:
-        #     scaling = 0.0
-        # elif current_step < full_fraction * total_iters:
-        #     scaling = (current_step - start_fraction * total_iters) / ((full_fraction - start_fraction) * total_iters)
-        # else:
-        #     scaling = 1.0
-
         effective_logits = self._apply_height_offset()
 
-        loss = loss_fn(
+        base_loss = loss_fn(
             {
                 "pixel_height_logits": effective_logits,
                 "global_logits": self.params["global_logits"],
@@ -291,9 +346,29 @@ class FilamentOptimizer:
             material_TDs=self.material_TDs,
             background=self.background,
             add_penalty_loss=10.0,
-            focus_map=None,
+            focus_map=self.focus_map,
             focus_strength=0.0,
         )
+        # TV regularization warmup: ramp to full strength by 25% of iterations
+        tv_warmup_fraction = 0.5
+        self.current_tv_factor = min(
+            1.0,
+            self.num_steps_done / (tv_warmup_fraction * self.args.iterations + 1e-8),
+        )
+        tv_reg = (self.tv_weight * self.current_tv_factor) * self._tv_l1(
+            self.height_residual
+        )
+        # Smoothness regularization with same warmup
+        smooth_warmup_fraction = 0.5
+        self.current_smooth_factor = min(
+            1.0,
+            self.num_steps_done
+            / (smooth_warmup_fraction * self.args.iterations + 1e-8),
+        )
+        smooth_reg = (
+            self.smooth_weight * self.current_smooth_factor
+        ) * self._smooth_l2(self.height_residual)
+        loss = base_loss + tv_reg + smooth_reg
 
         self.precision.backward_and_step(loss, self.optimizer)
 
@@ -333,8 +408,11 @@ class FilamentOptimizer:
         """
         pixel_logits = params["pixel_height_logits"]
         pixel_offset = params["height_offsets"]
+        pixel_residual = params.get("height_residual", None)
         effective_logits = self._apply_height_offset(
-            pixel_logits=pixel_logits, height_offsets=pixel_offset
+            pixel_logits=pixel_logits,
+            height_offsets=pixel_offset,
+            height_residual=pixel_residual,
         )
 
         global_logits = params["global_logits"]
@@ -386,6 +464,14 @@ class FilamentOptimizer:
                 self.writer.add_scalar("Params/tau_global", tau_global, steps)
                 self.writer.add_scalar(
                     "Params/lr", self.optimizer.param_groups[0]["lr"], steps
+                )
+                self.writer.add_scalar(
+                    "Params/tv_factor", getattr(self, "current_tv_factor", 0.0), steps
+                )
+                self.writer.add_scalar(
+                    "Params/smooth_factor",
+                    getattr(self, "current_smooth_factor", 0.0),
+                    steps,
                 )
                 self.writer.add_scalar("Loss/train", self.loss, steps)
 
@@ -441,11 +527,14 @@ class FilamentOptimizer:
             comp_np = np.clip(comp.cpu().detach().numpy(), 0, 255).astype(np.uint8)
             self.current_comp_ax.set_data(comp_np)
 
+            # Priority mask does not change over time; no update needed unless future edits require it.
+
             if self.best_params is not None:
                 # Update the depth map correctly.
                 effective_best_logits = self._apply_height_offset(
                     self.best_params["pixel_height_logits"],
                     self.best_params["height_offsets"],
+                    self.best_params.get("height_residual", None),
                 )
                 best_comp = composite_image_disc(
                     effective_best_logits,
@@ -512,6 +601,7 @@ class FilamentOptimizer:
             "pixel_height_logits": self.pixel_height_logits.detach().clone(),
             "global_logits": self.params["global_logits"].detach().clone(),
             "height_offsets": self.height_offsets.detach().clone(),
+            "height_residual": self.height_residual.detach().clone(),
         }
 
     def get_discretized_solution(
@@ -567,11 +657,16 @@ class FilamentOptimizer:
             effective_logits = self._apply_height_offset(
                 self.best_params["pixel_height_logits"],
                 self.best_params["height_offsets"],
+                self.best_params.get("height_residual", None),
             )
             best_comp = composite_image_disc(
                 effective_logits
                 if custom_height_logits is None
-                else self._apply_height_offset(custom_height_logits),
+                else self._apply_height_offset(
+                    custom_height_logits,
+                    self.best_params["height_offsets"],
+                    self.best_params.get("height_residual", None),
+                ),
                 self.best_params["global_logits"]
                 if custom_global_logits is None
                 else custom_global_logits,
@@ -654,7 +749,7 @@ class FilamentOptimizer:
             seed = np.random.randint(0, 1000000)
 
             # 1) Discretize
-            tau_h, tau_g = self.vis_tau, self.vis_tau
+            tau_g = self.vis_tau
             with torch.no_grad():
                 effective_logits = self._apply_height_offset()
                 disc_global, disc_height_image = self.discretize_solution(
@@ -679,6 +774,7 @@ class FilamentOptimizer:
                 current_disc_loss = compute_loss(
                     comp=comp_disc,
                     target=self.target,
+                    focus_map=self.focus_map,
                 ).item()
                 from autoforge.Helper.PruningHelper import find_color_bands
 
@@ -712,6 +808,7 @@ class FilamentOptimizer:
             effective_logits = self._apply_height_offset(
                 self.best_params["pixel_height_logits"],
                 self.best_params["height_offsets"],
+                self.best_params.get("height_residual", None),
             )
             comp_disc = composite_image_disc(
                 effective_logits,
@@ -728,6 +825,7 @@ class FilamentOptimizer:
             current_disc_loss = compute_loss(
                 comp=comp_disc,
                 target=self.target,
+                focus_map=self.focus_map,
             ).item()
             if current_disc_loss < best_loss:
                 best_loss = current_disc_loss
