@@ -61,12 +61,13 @@ def test_optimizer_step_and_discretize():
     assert disc_global.shape[0] == opt.params["global_logits"].shape[0]
     assert disc_height.shape == (opt.H, opt.W)
 
-    # test get_current_parameters returns clones
+    # test get_current_parameters returns clones with expected keys, including new height_residual
     params = opt.get_current_parameters()
     assert set(params.keys()) == {
         "pixel_height_logits",
         "global_logits",
         "height_offsets",
+        "height_residual",
     }
 
 
