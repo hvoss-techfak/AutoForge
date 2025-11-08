@@ -468,7 +468,7 @@ def init_height_map(
     import random
 
     if cluster_layers is None:
-        cluster_layers = max_layers // 2
+        cluster_layers = max_layers  # // 2
 
     if random_seed is not None:
         np.random.seed(random_seed)

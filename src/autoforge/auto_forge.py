@@ -183,7 +183,7 @@ def parse_args():
     parser.add_argument(
         "--fast_pruning_percent",
         type=float,
-        default=0.5,
+        default=0.25,
         help="Percentage of increment search for fast pruning",
     )
 
@@ -496,9 +496,7 @@ def start(args):
                 output_img_np,
                 args.max_layers,
                 random_seed=random_seed,
-                focus_map=focus_map_full.cpu().numpy()
-                if focus_map_full is not None
-                else None,
+                focus_map=None,
                 focus_boost=args.priority_mask_boost,
             )
         )
@@ -515,9 +513,7 @@ def start(args):
                 init_method="kmeans",
                 cluster_layers=args.num_init_cluster_layers,
                 material_colors=material_colors_np,
-                focus_map=focus_map_full.cpu().numpy()
-                if focus_map_full is not None
-                else None,
+                focus_map=None,
                 focus_boost=args.priority_mask_boost,
             )
         )
