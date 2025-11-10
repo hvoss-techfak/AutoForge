@@ -36,5 +36,5 @@ package-dir = {"" = "src"}
 autoforge = "autoforge.auto_forge:main"
 
 [tool.pytest.ini_options]
-addopts = "--cov=autoforge --cov-report=term-missing"
+addopts = ""
 pythonpath = ["src"]
