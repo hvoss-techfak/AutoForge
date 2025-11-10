@@ -84,7 +84,7 @@ def compute_loss(
     # Per-pixel MSE over Lab channels
     per_pixel_mse = (comp_lab - target_lab).pow(2).mean(dim=2)  # [H,W]
 
-    weights = 1.0 + 2.0 * focus_map_proc  # [H,W]
+    weights = 1.0 + focus_strength * focus_map_proc  # [H,W]
     weighted_loss = per_pixel_mse * weights
     # Normalize by average weight so scale comparable to original MSE
     total_loss = weighted_loss.mean() / weights.mean().detach()
