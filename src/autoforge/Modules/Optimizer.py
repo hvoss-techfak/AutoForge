@@ -177,7 +177,7 @@ class FilamentOptimizer:
         # Min LR (effectively off)
         self.height_lr_min = 1e-10
         # Base LR for height optimizer (can be scaled relative to main LR)
-        self.height_base_lr = self.learning_rate
+        self.height_base_lr = self.learning_rate/10
 
         # Initialize two separate optimizers
         self.color_optimizer = CAdamW(
