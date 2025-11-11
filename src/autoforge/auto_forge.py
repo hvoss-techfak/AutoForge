@@ -812,6 +812,7 @@ def _post_optimize_and_export(
                 namespace="post_opt",
                 step=(post_opt_step := post_opt_step + 1),
             )
+            
 
             comp_disc_np = comp_disc.cpu().numpy().astype(np.uint8)
             comp_disc_np = cv2.cvtColor(comp_disc_np, cv2.COLOR_RGB2BGR)
