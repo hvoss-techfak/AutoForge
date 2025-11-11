@@ -23,6 +23,22 @@ from typing import Optional, Tuple, List
 
 import configargparse
 import cv2
+try:
+    import spaces
+except Exception:
+    # Provide a minimal shim so @spaces.GPU can be used even when 'spaces' isn't installed.
+    def _spaces_noop_decorator(fn=None):
+        # Support usage as @spaces.GPU or @spaces.GPU()
+        if fn is None:
+            def _inner(f):
+                return f
+            return _inner
+        return fn
+
+    class _DummySpaces:
+        GPU = staticmethod(_spaces_noop_decorator)
+
+    spaces = _DummySpaces()
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -647,7 +663,7 @@ def _build_optimizer(
     )
     return optimizer
 
-
+@spaces.GPU
 def _run_optimization_loop(optimizer: FilamentOptimizer, args, device: torch.device) -> None:
     """Execute the main gradient-based optimization iterations.
 
@@ -729,26 +745,6 @@ def _post_optimize_and_export(
     optimizer.pixel_height_labels = torch.tensor(
         pixel_height_labels, dtype=torch.int32, device=device
     )
-    if hasattr(optimizer, "height_residual"):
-        with torch.no_grad():
-            hr = optimizer.height_residual.detach()
-            full_h, full_w = optimizer.pixel_height_logits.shape[:2]
-            if hr.shape != (full_h, full_w):
-                hr4d = hr.unsqueeze(0).unsqueeze(0)
-                hr_full = (
-                    torch.nn.functional.interpolate(
-                        hr4d,
-                        size=(full_h, full_w),
-                        mode="bilinear",
-                        align_corners=False,
-                    )
-                    .squeeze(0)
-                    .squeeze(0)
-                )
-                optimizer.height_residual.data = hr_full.to(device)
-            optimizer.best_params["height_residual"] = (
-                optimizer.height_residual.detach().clone()
-            )
     if focus_map_proc is not None and focus_map_full is not None:
         optimizer.focus_map = focus_map_full
 
