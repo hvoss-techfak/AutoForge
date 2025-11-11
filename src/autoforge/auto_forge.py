@@ -148,7 +148,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--auto_background_color",
-        action="store_true",
+        default=True,
         help="Automatically set background color to the closest filament color matching the dominant image color. Overrides --background_color.",
     )
 
