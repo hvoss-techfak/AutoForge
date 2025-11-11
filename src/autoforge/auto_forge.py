@@ -317,12 +317,6 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional path to a priority mask image (same dimensions as input image). Non-empty: apply weighted loss (0.1 outside, 1.0 at max inside).",
     )
-    parser.add_argument(
-        "--priority_mask_boost",
-        type=float,
-        default=1.0,
-        help="Multiplier used during initialization to boost heights in priority regions: new = new * (1 + boost * mask).",
-    )
 
     args = parser.parse_args()
     return args
@@ -561,7 +555,6 @@ def _initialize_heightmap(
                 args.max_layers,
                 random_seed=random_seed,
                 focus_map=None,
-                focus_boost=args.priority_mask_boost,
             )
         )
         global_logits_init = None
@@ -578,7 +571,6 @@ def _initialize_heightmap(
                 cluster_layers=args.num_init_cluster_layers,
                 material_colors=material_colors_np,
                 focus_map=None,
-                focus_boost=args.priority_mask_boost,
             )
         )
     return pixel_height_logits_init, global_logits_init, pixel_height_labels
