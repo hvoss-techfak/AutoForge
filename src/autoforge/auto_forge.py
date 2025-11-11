@@ -903,7 +903,7 @@ def start(args) -> float:
         float: Final loss value for this run (after pruning/export).
     """
     if args.num_init_cluster_layers == -1:
-        args.num_init_cluster_layers = args.max_layers // 2
+        args.num_init_cluster_layers = args.max_layers
 
     # check if csv or json is given
     if args.csv_file == "" and args.json_file == "":

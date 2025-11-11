@@ -87,7 +87,7 @@ def compute_loss(
     weights = 1.0 + focus_strength * focus_map_proc  # [H,W]
     weighted_loss = per_pixel_mse * weights
     # Normalize by average weight so scale comparable to original MSE
-    total_loss = weighted_loss.mean() / weights.mean().detach()
+    total_loss = weighted_loss.mean() / weights.mean()
 
     return total_loss.mean()
 
