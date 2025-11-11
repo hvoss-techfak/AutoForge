@@ -23,22 +23,6 @@ from typing import Optional, Tuple, List
 
 import configargparse
 import cv2
-try:
-    import spaces
-except Exception:
-    # Provide a minimal shim so @spaces.GPU can be used even when 'spaces' isn't installed.
-    def _spaces_noop_decorator(fn=None):
-        # Support usage as @spaces.GPU or @spaces.GPU()
-        if fn is None:
-            def _inner(f):
-                return f
-            return _inner
-        return fn
-
-    class _DummySpaces:
-        GPU = staticmethod(_spaces_noop_decorator)
-
-    spaces = _DummySpaces()
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -582,11 +566,12 @@ def _initialize_heightmap(
                 args.layer_height,
                 bgr_tuple,
                 random_seed=random_seed,
-                num_threads=args.num_init_rounds,
+                num_threads=4,
                 init_method="kmeans",
                 cluster_layers=args.num_init_cluster_layers,
                 material_colors=material_colors_np,
                 focus_map=None,
+                num_runs=args.num_init_rounds,
             )
         )
     return pixel_height_logits_init, global_logits_init, pixel_height_labels
@@ -663,7 +648,7 @@ def _build_optimizer(
     )
     return optimizer
 
-@spaces.GPU
+
 def _run_optimization_loop(optimizer: FilamentOptimizer, args, device: torch.device) -> None:
     """Execute the main gradient-based optimization iterations.
 

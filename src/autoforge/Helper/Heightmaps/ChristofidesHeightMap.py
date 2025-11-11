@@ -1,4 +1,3 @@
-import os
 import random
 from typing import Optional
 
@@ -613,7 +612,8 @@ def run_init_threads(
     background_tuple,
     eps=1e-6,
     random_seed=None,
-    num_threads=64,
+    num_threads=4,
+    num_runs=32,
     init_method="kmeans",
     cluster_layers=None,
     material_colors=None,
@@ -625,26 +625,46 @@ def run_init_threads(
         random_seed = np.random.randint(1e6)
     lab_space = True
 
-    tasks = [
-        delayed(init_height_map)(
-            target,
-            max_layers,
-            h,
-            background_tuple,
-            eps,
-            random_seed + i,
-            init_method=init_method,
-            cluster_layers=cluster_layers,
-            lab_space=lab_space,
-            material_colors=material_colors,
-            focus_map=focus_map,
-            focus_boost=focus_boost,
-        )
-        for i in range(num_threads)
-    ]
+    if num_threads > 1:
 
-    # Execute tasks in parallel; adjust n_jobs to match your available cores
-    results = Parallel(n_jobs=os.cpu_count(), verbose=10)(tasks)
+        tasks = [
+            delayed(init_height_map)(
+                target,
+                max_layers,
+                h,
+                background_tuple,
+                eps,
+                random_seed + i,
+                init_method=init_method,
+                cluster_layers=cluster_layers,
+                lab_space=lab_space,
+                material_colors=material_colors,
+                focus_map=focus_map,
+                focus_boost=focus_boost,
+            )
+            for i in range(num_runs)
+        ]
+
+        # Execute tasks in parallel; adjust n_jobs to match your available cores
+        results = Parallel(n_jobs=num_threads, verbose=10)(tasks)
+
+    else:
+        results = [
+            init_height_map(
+                target,
+                max_layers,
+                h,
+                background_tuple,
+                eps,
+                random_seed + i,
+                init_method=init_method,
+                cluster_layers=cluster_layers,
+                lab_space=lab_space,
+                material_colors=material_colors,
+                focus_map=focus_map,
+                focus_boost=focus_boost,
+            ) for i in range(num_runs)
+        ]
 
     metrics = [(r[2] / r[3]) / (r[4] + 1e-6) for r in results]
     mean_metric = np.mean(metrics)

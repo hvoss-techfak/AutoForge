@@ -4,24 +4,6 @@ from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
-
-try:
-    import spaces
-except Exception:
-    # Provide a minimal shim so @spaces.GPU can be used even when 'spaces' isn't installed.
-    def _spaces_noop_decorator(fn=None):
-        # Support usage as @spaces.GPU or @spaces.GPU()
-        if fn is None:
-            def _inner(f):
-                return f
-            return _inner
-        return fn
-
-    class _DummySpaces:
-        GPU = staticmethod(_spaces_noop_decorator)
-
-    spaces = _DummySpaces()
-
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -639,7 +621,6 @@ class FilamentOptimizer:
             )
         return best_comp
 
-    @spaces.GPU
     def prune(
         self,
         max_colors_allowed: int,
