@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from autoforge.Helper.ImageHelper import srgb_to_lab
-from autoforge.Helper.OptimizerHelper import composite_image_cont
+from autoforge.Helper import OptimizerHelper as OH
 
 
 def loss_fn(
@@ -18,14 +18,16 @@ def loss_fn(
     add_penalty_loss: float = 0.0,
     focus_map: torch.Tensor = None,
     focus_strength: float = 10.0,
+    pixel_height_labels: torch.Tensor = None,
 ) -> torch.Tensor:
     """
-    Full forward pass for continuous assignment:
+    Full forward pass for continuous assignment using cluster-based height distributions:
     composite, then compute unified loss on (global_logits).
     focus_map acts as a priority mask (values in [0,1]) where 1.0 means full weight and 0 means low weight.
     """
-    comp = composite_image_cont(
-        params["pixel_height_logits"],
+    comp = OH.composite_image_cont_clusters(
+        params["cluster_height_logits"],
+        pixel_height_labels,
         params["global_logits"],
         tau_height,
         tau_global,
@@ -38,7 +40,6 @@ def loss_fn(
     return compute_loss(
         comp=comp,
         target=target,
-        pixel_height_logits=params.get("pixel_height_logits", None),
         tau_height=tau_height,
         add_penalty_loss=add_penalty_loss,
         focus_map=focus_map,

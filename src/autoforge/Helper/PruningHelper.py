@@ -6,7 +6,7 @@ from tqdm import tqdm
 from joblib import Parallel, delayed
 import threading
 
-from autoforge.Helper.OptimizerHelper import composite_image_disc
+from autoforge.Helper.OptimizerHelper import composite_image_disc_clusters
 from autoforge.Loss.LossFunctions import compute_loss
 from autoforge.Modules.Optimizer import FilamentOptimizer
 
@@ -337,7 +337,7 @@ def remove_layer_from_solution(
     Remove one layer from the solution.
 
     Args:
-        params (dict): Current parameters with keys "global_logits" and "pixel_height_logits".
+        params (dict): Current parameters with key "global_logits" (and optionally "cluster_height_logits").
         layer_to_remove (int): Candidate layer index to remove.
         final_tau (float): Final tau value used in discretization/compositing.
         h (float): Layer height.
@@ -345,21 +345,9 @@ def remove_layer_from_solution(
         rng_seed (int): Seed used in discretization/compositing.
 
     Returns:
-        new_params (dict): New parameters with the candidate layer removed.
+        new_params (dict): New parameters with the candidate layer removed (updated "global_logits").
         new_max_layers (int): Updated number of layers.
     """
-    # Get the current discrete height image (used to decide which pixels need adjusting)
-    effective_logits = optimizer._apply_height_offset(
-        params["pixel_height_logits"], params["height_offsets"]
-    )
-    _, disc_height = optimizer.discretize_solution(
-        params,
-        final_tau,
-        h,
-        current_max_layers,
-        rng_seed,
-    )
-
     # Remove the candidate layer from the global (color) assignment.
     new_global_logits = torch.cat(
         [
@@ -370,25 +358,9 @@ def remove_layer_from_solution(
     )
     new_max_layers = new_global_logits.shape[0]
 
-    # Compute current effective height: height = (current_max_layers * h) * sigmoid(pixel_height_logits)
-    current_height = current_max_layers * h * torch.sigmoid(effective_logits)
-    new_height = current_height.clone()
-    mask = disc_height >= layer_to_remove
-    new_height[mask] = new_height[mask] - h
-
-    # Invert the sigmoid mapping:
-    # We need new_pixel_height_logits such that:
-    #    sigmoid(new_pixel_height_logits) = new_height / (new_max_layers * h)
-    eps = 1e-6
-    ratio = torch.clamp(new_height / (new_max_layers * h), eps, 1.0 - eps)
-    new_effective_logits = torch.log(ratio) - torch.log1p(-ratio)
-    new_pixel_height_logits = new_effective_logits - (
-        effective_logits - params["pixel_height_logits"]
-    )
+    # Heights are determined by cluster distributions; we keep them unchanged.
     new_params = {
         "global_logits": new_global_logits,
-        "pixel_height_logits": new_pixel_height_logits,
-        "height_offsets": params["height_offsets"],
     }
     return new_params, new_max_layers
 
@@ -437,12 +409,10 @@ def prune_redundant_layers(
             current_max_layers,
             optimizer.best_seed,
         )
-        eff_logits = optimizer._apply_height_offset(
-            cand_params["pixel_height_logits"], cand_params["height_offsets"]
-        )
         with _gpu_lock, torch.no_grad():
-            cand_comp = composite_image_disc(
-                eff_logits,
+            cand_comp = composite_image_disc_clusters(
+                optimizer.best_params["cluster_height_logits"],
+                optimizer.pixel_height_labels,
                 cand_params["global_logits"],
                 optimizer.vis_tau,
                 optimizer.vis_tau,
@@ -555,12 +525,9 @@ def prune_redundant_layers(
 
 def get_initial_loss(current_max_layers, optimizer):
     with _gpu_lock, torch.no_grad():
-        eff_logits = optimizer._apply_height_offset(
-            optimizer.best_params["pixel_height_logits"],
-            optimizer.best_params["height_offsets"],
-        )
-        ref_comp = composite_image_disc(
-            eff_logits,
+        ref_comp = composite_image_disc_clusters(
+            optimizer.best_params["cluster_height_logits"],
+            optimizer.pixel_height_labels,
             optimizer.best_params["global_logits"],
             optimizer.vis_tau,
             optimizer.vis_tau,

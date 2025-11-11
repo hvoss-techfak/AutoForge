@@ -318,6 +318,233 @@ def composite_image_disc(
     return comp * 255.0
 
 
+@torch.jit.script
+def cluster_logits_to_pixel_height_logits(
+    cluster_height_logits: torch.Tensor,  # [C,L]
+    pixel_height_labels: torch.Tensor,    # [H,W] long
+    tau_height: float,
+    max_layers: int,
+    hard: bool = False,
+    rng_seed: int = 0,
+) -> torch.Tensor:
+    """Convert per-cluster height distribution logits into per-pixel height logits.
+
+    Args:
+        cluster_height_logits: [C,L] raw logits per cluster over layers.
+        pixel_height_labels: [H,W] cluster index per pixel.
+        tau_height: temperature used to sharpen/soften distributions.
+        max_layers: total number of available layers (L).
+        hard: if True, performs a deterministic Gumbel-Softmax sample (one-hot) per cluster.
+        rng_seed: seed base for deterministic sampling when hard=True.
+
+    Returns:
+        pixel_height_logits: [H,W] logits such that sigmoid(logits) * max_layers ≈ expected (or sampled) layer index.
+    """
+    eps: float = 1e-8
+    t = tau_height if tau_height > eps else eps
+    C = int(cluster_height_logits.shape[0])
+    L = int(cluster_height_logits.shape[1])
+    if hard:
+        # Inline deterministic sampling to keep TorchScript happy (no forward ref)
+        z_idx = torch.empty((C,), dtype=torch.int64, device=cluster_height_logits.device)
+        for c in range(C):
+            y = deterministic_gumbel_softmax(cluster_height_logits[c], t, True, rng_seed + c)
+            z_idx[c] = int(torch.argmax(y))
+        z_c = z_idx.to(torch.float32)
+    else:
+        # Expectation over layers
+        p = F.softmax(cluster_height_logits / t, dim=1)  # [C,L]
+        layer_idx = torch.arange(L, dtype=torch.float32, device=cluster_height_logits.device)
+        z_c = (p * layer_idx.unsqueeze(0)).sum(dim=1)  # [C]
+    # Map to per-pixel expected/sampled layer index
+    z_map = z_c[pixel_height_labels]  # [H,W]
+    # Normalize to [0,1] and convert to logits (inverse sigmoid)
+    s = torch.clamp(z_map / float(max_layers), 1e-4, 1 - 1e-4)
+    pixel_height_logits = torch.log(s) - torch.log1p(-s)
+    return pixel_height_logits
+
+
+@torch.jit.script
+def _cluster_expectation_heights(
+    cluster_height_logits: torch.Tensor,  # [C,L]
+    tau_height: float,
+) -> torch.Tensor:
+    """
+    Compute per-cluster expected layer index given logits over layers and temperature.
+
+    Args:
+        cluster_height_logits: [C, L] logits per cluster over layers
+        tau_height: temperature for softmax
+    Returns:
+        z_c: [C] expected layer index per cluster (float)
+    """
+    eps: float = 1e-8
+    t = tau_height if tau_height > eps else eps
+    p = F.softmax(cluster_height_logits / t, dim=1)  # [C,L]
+    L = p.shape[1]
+    layer_idx = torch.arange(L, dtype=cluster_height_logits.dtype, device=cluster_height_logits.device)
+    z_c = (p * layer_idx.unsqueeze(0)).sum(dim=1)  # [C]
+    return z_c
+
+
+@torch.jit.script
+def _cluster_sample_heights(
+    cluster_height_logits: torch.Tensor,  # [C,L]
+    tau_height: float,
+    rng_seed: int,
+) -> torch.Tensor:
+    """
+    Deterministically sample a hard layer index per cluster using Gumbel-Softmax.
+
+    Args:
+        cluster_height_logits: [C, L]
+        tau_height: temperature
+        rng_seed: int seed
+    Returns:
+        z_c_int: [C] int64 selected layer index per cluster
+    """
+    C, L = cluster_height_logits.shape[0], cluster_height_logits.shape[1]
+    z_idx = torch.empty((C,), dtype=torch.int64, device=cluster_height_logits.device)
+    for c in range(C):
+        y = deterministic_gumbel_softmax(cluster_height_logits[c], tau_height, True, rng_seed + c)
+        z_idx[c] = int(torch.argmax(y))
+    return z_idx
+
+
+@torch.jit.script
+def composite_image_cont_clusters(
+    cluster_height_logits: torch.Tensor,  # [C,L]
+    pixel_height_labels: torch.Tensor,  # [H,W] long
+    global_logits: torch.Tensor,  # [L,M]
+    tau_height: float,
+    tau_global: float,
+    h: float,
+    max_layers: int,
+    material_colors: torch.Tensor,  # [M,3]
+    material_TDs: torch.Tensor,  # [M]
+    background: torch.Tensor,  # [3]
+) -> torch.Tensor:
+    """
+    Continuous compositing using per-cluster softmax distributions over layers.
+
+    - Compute per-cluster expected height (in layers) from softmax(cluster_height_logits / tau).
+    - Map to per-pixel expected height via pixel_height_labels.
+    - Use adaptive_round for a temperature-controlled soft rounding of the height.
+    - Composite exactly like composite_image_cont.
+    """
+    # 1) Per-cluster expectation -> per-pixel continuous z
+    z_c = _cluster_expectation_heights(cluster_height_logits, tau_height)  # [C]
+    z_map = z_c[pixel_height_labels]  # [H,W]
+
+    # Temperature-aware rounding
+    continuous_z = adaptive_round(z_map, tau_height, 1.0, 0.0, 0.1)  # [H,W]
+
+    # 2) global material weights with Gumbel-Softmax
+    p_mat = F.gumbel_softmax(global_logits, tau_global, hard=False, dim=1)  # [L,M]
+    layer_colors = p_mat @ material_colors  # [L,3]
+    layer_TDs = (p_mat @ material_TDs).clamp(1e-8, 1e8)  # [L]
+
+    # 3) soft print mask for all layers
+    eps = 1e-8
+    scale = 10.0 / (tau_height + eps)
+    layer_idx = torch.arange(
+        max_layers, dtype=torch.float32, device=z_map.device
+    ).view(-1, 1, 1)  # [L,1,1]
+    p_print = torch.sigmoid((continuous_z.unsqueeze(0) - (layer_idx + 0.5)) * scale)  # [L,H,W]
+
+    # 4) thickness and opacity
+    p_print_bleed = bleed_layer_effect(p_print, strength=0.1)  # [L,H,W]
+    eff_thick = torch.clamp(p_print_bleed, 0.0, 1.0) * h
+    thick_ratio = eff_thick / layer_TDs.view(-1, 1, 1)  # [L,H,W]
+
+    o, A, k, b = -1.2416557e-02, 9.6407950e-01, 3.4103447e01, -4.1554203e00
+    opac = o + (A * torch.log1p(k * thick_ratio) + b * thick_ratio)
+    opac = torch.clamp(opac, 0.0, 1.0)  # [L,H,W]
+
+    # 5) top->bottom compositing
+    opac_fb = torch.flip(opac, dims=[0])
+    colors_fb = torch.flip(layer_colors, dims=[0])
+
+    trans_fb = 1.0 - opac_fb
+    trans_shift = torch.cat([torch.ones_like(trans_fb[:1]), trans_fb[:-1]], dim=0)
+    remain_fb = torch.cumprod(trans_shift, dim=0)  # [L,H,W]
+
+    comp_layers = (remain_fb * opac_fb).unsqueeze(-1) * colors_fb.view(-1, 1, 1, 3)
+    comp = comp_layers.sum(dim=0)  # [H,W,3]
+
+    # 6) background
+    rem_after = remain_fb[-1] * trans_fb[-1]
+    comp = comp + rem_after.unsqueeze(-1) * background
+    return comp * 255.0
+
+
+@torch.jit.script
+def composite_image_disc_clusters(
+    cluster_height_logits: torch.Tensor,  # [C,L]
+    pixel_height_labels: torch.Tensor,  # [H,W] long
+    global_logits: torch.Tensor,  # [L,M]
+    tau_height: float,
+    tau_global: float,
+    h: float,
+    max_layers: int,
+    material_colors: torch.Tensor,  # [M,3]
+    material_TDs: torch.Tensor,  # [M]
+    background: torch.Tensor,  # [3]
+    rng_seed: int = -1,
+) -> torch.Tensor:
+    """
+    Discrete compositing using per-cluster distributions:
+    - Sample one layer per cluster with deterministic Gumbel-Softmax.
+    - Convert to per-pixel integer layer heights via labels.
+    - Composite exactly like composite_image_disc.
+    """
+    seed_base: int = rng_seed if rng_seed >= 0 else 0
+
+    # 1) Hard sample per-cluster layer index and map to per-pixel integer heights
+    z_idx = _cluster_sample_heights(cluster_height_logits, tau_height, seed_base)  # [C]
+    z_map_int = z_idx[pixel_height_labels]  # [H,W], int64
+
+    # 2) Select materials per layer with deterministic Gumbel-Softmax
+    L = int(global_logits.shape[0])
+    layer_colors = torch.empty((L, 3), dtype=material_colors.dtype, device=material_colors.device)
+    layer_TDs = torch.empty((L,), dtype=material_TDs.dtype, device=material_TDs.device)
+    for j in range(L):
+        one_hot = deterministic_gumbel_softmax(global_logits[j], tau_global, True, seed_base + j)
+        idx = int(torch.argmax(one_hot).item())
+        layer_colors[j] = material_colors[idx]
+        layer_TDs[j] = material_TDs[idx].clamp(1e-8, 1e8)
+
+    # 3) Binary print mask
+    layer_idx = torch.arange(max_layers, dtype=torch.int64, device=z_map_int.device).view(-1, 1, 1)
+    p_print = (layer_idx < z_map_int.unsqueeze(0)).to(torch.float32)  # [L,H,W]
+
+    # 4) Thickness / opacity
+    p_print_bleed = bleed_layer_effect(p_print, strength=0.1)
+    eff_thick = torch.clamp(p_print_bleed, 0.0, 1.0) * h
+    thick_ratio = eff_thick / layer_TDs.view(-1, 1, 1)
+
+    o, A, k, b = -1.2416557e-02, 9.6407950e-01, 3.4103447e01, -4.1554203e00
+    opac = o + (A * torch.log1p(k * thick_ratio) + b * thick_ratio)
+    opac = torch.clamp(opac, 0.0, 1.0)
+
+    # 5) Compose top->bottom
+    opac_fb = torch.flip(opac, dims=[0])
+    colors_fb = torch.flip(layer_colors, dims=[0])
+
+    trans_fb = 1.0 - opac_fb
+    trans_prev = torch.cat([torch.ones_like(trans_fb[:1]), trans_fb[:-1]], dim=0)
+    remain_fb = torch.cumprod(trans_prev, dim=0)
+
+    comp_layers = (remain_fb * opac_fb).unsqueeze(-1) * colors_fb.view(-1, 1, 1, 3)
+    comp = comp_layers.sum(dim=0)
+
+    # 6) Background
+    rem_after = remain_fb[-1] * trans_fb[-1]
+    comp = comp + rem_after.unsqueeze(-1) * background
+
+    return comp * 255.0
+
+
 def _gpu_capability(device):
     major, minor = torch.cuda.get_device_capability(device)
     return major * 10 + minor  # 80, 61, …
