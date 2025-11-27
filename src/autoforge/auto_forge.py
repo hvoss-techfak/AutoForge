@@ -15,6 +15,7 @@ The implementation intentionally keeps side-effects (disk writes / prints) order
 preserve prior behavior. Helper functions are factored out for readability; no functional
 behavior should have changed relative to the previous monolithic version.
 """
+
 import argparse
 import sys
 import os
@@ -154,7 +155,6 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--visualize",
-        type=bool,
         default=True,
         help="Enable visualization during optimization",
         action=argparse.BooleanOptionalAction,
@@ -441,9 +441,7 @@ def _auto_select_background_color(
                 f.write(f"chosen_filament_color={chosen_hex}\n")
                 f.write(f"closest_filament_index={closest_idx}\n")
                 if getattr(args, "background_material_name", None):
-                    f.write(
-                        f"closest_filament_name={args.background_material_name}\n"
-                    )
+                    f.write(f"closest_filament_name={args.background_material_name}\n")
         except Exception:
             traceback.print_exc()
     else:
@@ -453,7 +451,10 @@ def _auto_select_background_color(
 
 
 def _prepare_background_and_materials(
-    args, device: torch.device, material_colors_np: np.ndarray, material_TDs_np: np.ndarray
+    args,
+    device: torch.device,
+    material_colors_np: np.ndarray,
+    material_TDs_np: np.ndarray,
 ) -> Tuple[Tuple[int, int, int], torch.Tensor, torch.Tensor, torch.Tensor]:
     """Create torch tensors for materials & background color.
 
@@ -656,7 +657,9 @@ def _build_optimizer(
     return optimizer
 
 
-def _run_optimization_loop(optimizer: FilamentOptimizer, args, device: torch.device) -> None:
+def _run_optimization_loop(
+    optimizer: FilamentOptimizer, args, device: torch.device
+) -> None:
     """Execute the main gradient-based optimization iterations.
 
     Features:
@@ -940,8 +943,10 @@ def start(args) -> float:
     )
 
     # Prepare background color tensor and material tensors
-    bgr_tuple, background, material_colors, material_TDs = _prepare_background_and_materials(
-        args, device, material_colors_np, material_TDs_np
+    bgr_tuple, background, material_colors, material_TDs = (
+        _prepare_background_and_materials(
+            args, device, material_colors_np, material_TDs_np
+        )
     )
 
     # Compute sizes
@@ -959,12 +964,14 @@ def start(args) -> float:
     focus_map_full = _load_priority_mask(args, output_img_np, device)
 
     # Initialize heightmap
-    pixel_height_logits_init, global_logits_init, pixel_height_labels = _initialize_heightmap(
-        args,
-        output_img_np,
-        bgr_tuple,
-        material_colors_np,
-        random_seed,
+    pixel_height_logits_init, global_logits_init, pixel_height_labels = (
+        _initialize_heightmap(
+            args,
+            output_img_np,
+            bgr_tuple,
+            material_colors_np,
+            random_seed,
+        )
     )
 
     # Prepare processing targets and focus map (processing-res)
