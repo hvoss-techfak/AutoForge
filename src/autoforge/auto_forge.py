@@ -149,7 +149,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--auto_background_color",
-        action="store_true",
+        default=True,
         help="Automatically set background color to the closest filament color matching the dominant image color. Overrides --background_color.",
     )
 
@@ -316,12 +316,6 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="Optional path to a priority mask image (same dimensions as input image). Non-empty: apply weighted loss (0.1 outside, 1.0 at max inside).",
-    )
-    parser.add_argument(
-        "--priority_mask_boost",
-        type=float,
-        default=1.0,
-        help="Multiplier used during initialization to boost heights in priority regions: new = new * (1 + boost * mask).",
     )
 
     args = parser.parse_args()
@@ -562,7 +556,6 @@ def _initialize_heightmap(
                 args.max_layers,
                 random_seed=random_seed,
                 focus_map=None,
-                focus_boost=args.priority_mask_boost,
             )
         )
         global_logits_init = None
@@ -574,12 +567,12 @@ def _initialize_heightmap(
                 args.layer_height,
                 bgr_tuple,
                 random_seed=random_seed,
-                num_threads=args.num_init_rounds,
+                num_threads=4,
                 init_method="kmeans",
                 cluster_layers=args.num_init_cluster_layers,
                 material_colors=material_colors_np,
                 focus_map=None,
-                focus_boost=args.priority_mask_boost,
+                num_runs=args.num_init_rounds,
             )
         )
     return pixel_height_logits_init, global_logits_init, pixel_height_labels
@@ -740,26 +733,6 @@ def _post_optimize_and_export(
     optimizer.pixel_height_labels = torch.tensor(
         pixel_height_labels, dtype=torch.int32, device=device
     )
-    if hasattr(optimizer, "height_residual"):
-        with torch.no_grad():
-            hr = optimizer.height_residual.detach()
-            full_h, full_w = optimizer.pixel_height_logits.shape[:2]
-            if hr.shape != (full_h, full_w):
-                hr4d = hr.unsqueeze(0).unsqueeze(0)
-                hr_full = (
-                    torch.nn.functional.interpolate(
-                        hr4d,
-                        size=(full_h, full_w),
-                        mode="bilinear",
-                        align_corners=False,
-                    )
-                    .squeeze(0)
-                    .squeeze(0)
-                )
-                optimizer.height_residual.data = hr_full.to(device)
-            optimizer.best_params["height_residual"] = (
-                optimizer.height_residual.detach().clone()
-            )
     if focus_map_proc is not None and focus_map_full is not None:
         optimizer.focus_map = focus_map_full
 
@@ -906,7 +879,7 @@ def start(args) -> float:
         float: Final loss value for this run (after pruning/export).
     """
     if args.num_init_cluster_layers == -1:
-        args.num_init_cluster_layers = args.max_layers // 2
+        args.num_init_cluster_layers = args.max_layers
 
     # check if csv or json is given
     if args.csv_file == "" and args.json_file == "":

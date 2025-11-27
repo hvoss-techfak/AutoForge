@@ -64,12 +64,8 @@ class FilamentOptimizer:
         self.pixel_height_logits = torch.tensor(
             pixel_height_logits_init, dtype=torch.float32, device=device
         )
-        # Base logits are frozen; learn residual for flexibility
+        # Base logits are frozen
         self.pixel_height_logits.requires_grad_(False)
-        # Trainable residual to adjust heights per-pixel
-        self.height_residual = torch.nn.Parameter(
-            torch.zeros_like(self.pixel_height_logits)
-        )
 
         print("layers", int(pixel_height_labels.flatten().max()))
         self.cluster_layers = int(pixel_height_labels.flatten().max()) + 1
@@ -251,11 +247,16 @@ class FilamentOptimizer:
         if height_offsets is None:
             height_offsets = self.height_offsets
 
-        offsets = torch.zeros_like(pixel_logits)
-        nonzero_mask = self.pixel_height_labels != 0
-        offsets[nonzero_mask] = height_offsets[
-            self.pixel_height_labels[nonzero_mask]
-        ].squeeze(-1)
+        # Differentiable gather of per-cluster offsets with zero for background (label==0)
+        labels = self.pixel_height_labels.to(torch.long)  # [H,W]
+        offsets_1d = height_offsets.squeeze(-1)  # [L]
+        # Gradient multiplier: forward unchanged, grad wrt offsets_1d scaled by height_offsets_grad_scale
+        s = getattr(self, "height_offsets_grad_scale", 1.0)
+        offsets_1d = offsets_1d * s + offsets_1d.detach() * (1.0 - s)
+        # Use advanced indexing to map each pixel's label to its cluster offset
+        gathered = offsets_1d[labels]  # [H,W]
+        mask = (labels != 0).to(gathered.dtype)
+        offsets = gathered * mask  # zero-out background
         return pixel_logits + offsets
 
     def _get_tau(self):
@@ -305,18 +306,6 @@ class FilamentOptimizer:
             g["lr"] = self.current_learning_rate
 
         tau_height, tau_global = self._get_tau()
-
-        # start_fraction = self.args.height_logits_learning_start_fraction
-        # full_fraction = self.args.height_logits_learning_full_fraction
-
-        # total_iters = self.args.iterations
-        # current_step = self.num_steps_done
-        # if current_step < start_fraction * total_iters:
-        #     scaling = 0.0
-        # elif current_step < full_fraction * total_iters:
-        #     scaling = (current_step - start_fraction * total_iters) / ((full_fraction - start_fraction) * total_iters)
-        # else:
-        #     scaling = 1.0
 
         effective_logits = self._apply_height_offset()
 
@@ -427,9 +416,7 @@ class FilamentOptimizer:
             if not prefix:
                 self.writer.add_scalar("Params/tau_height", tau_height, steps)
                 self.writer.add_scalar("Params/tau_global", tau_global, steps)
-                self.writer.add_scalar(
-                    "Params/lr", self.optimizer.param_groups[0]["lr"], steps
-                )
+                self.writer.add_scalar("Params/lr", self.optimizer.param_groups[0]["lr"], steps)
                 self.writer.add_scalar("Loss/train", self.loss, steps)
 
             # Log images periodically
