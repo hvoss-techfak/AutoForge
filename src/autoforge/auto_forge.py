@@ -191,7 +191,6 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--perform_pruning",
-        type=bool,
         default=True,
         help="Perform pruning after optimization",
         action=argparse.BooleanOptionalAction,
@@ -199,7 +198,6 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--fast_pruning",
-        type=bool,
         default=True,
         help="Use fast pruning method",
         action=argparse.BooleanOptionalAction,
@@ -289,7 +287,6 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--flatforge",
-        type=bool,
         default=False,
         help="Enable FlatForge mode to generate separate STL files for each color",
         action=argparse.BooleanOptionalAction,
