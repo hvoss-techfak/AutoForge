@@ -458,7 +458,7 @@ def _prepare_background_and_materials(
     Returns:
         (bgr_tuple_uint8, background_tensor, material_colors_tensor, material_TDs_tensor)
     """
-    bgr_tuple = hex_to_rgb(args.background_color)
+    bgr_tuple = tuple(hex_to_rgb(args.background_color))
     background = torch.tensor(bgr_tuple, dtype=torch.float32, device=device)
     material_colors = torch.tensor(
         material_colors_np, dtype=torch.float32, device=device

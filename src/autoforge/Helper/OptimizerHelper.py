@@ -2,6 +2,7 @@ from contextlib import contextmanager
 
 import torch
 import torch.nn.functional as F
+from autoforge.Helper.AmpUtils import get_selected_autocast
 
 
 @torch.jit.script
@@ -343,22 +344,25 @@ class PrecisionManager:
         self.autocast_dtype = None
         self.enabled = False
 
-        if device.type == "cuda":
-            if torch.cuda.is_bf16_supported():
-                print("Using bfloat16 autocast for CUDA.")
-                self.autocast_dtype = torch.bfloat16  # fastest if available
-                self.scaler = torch.cuda.amp.GradScaler()
-                self.enabled = True
-            elif _has_fp16(device):
-                print("Using float16 autocast for CUDA.")
-                self.autocast_dtype = torch.float16
-                self.scaler = torch.cuda.amp.GradScaler()
-                self.enabled = True
-            else:
-                print("Using float32 autocast for CUDA.")
-                # TF32 fallback for very old GPUs
+        # Decide dtype once using the shared runtime probe
+        dtype, _reason = get_selected_autocast(device)
+        self.autocast_dtype = dtype
+        # Enable only when a non-None dtype is selected and device supports native CUDA autocast
+        self.enabled = dtype is not None and device.type == "cuda"
+
+        # Use GradScaler only for CUDA float16; bf16 does not need scaling
+        if self.enabled and dtype == torch.float16:
+            self.scaler = torch.cuda.amp.GradScaler()
+        else:
+            self.scaler = None
+
+        # Optional: If CUDA but no AMP selected, allow TF32 for speed on Ampere+
+        if device.type == "cuda" and dtype is None:
+            try:
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
+            except Exception:
+                pass
 
     @contextmanager
     def autocast(self):
