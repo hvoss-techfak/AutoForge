@@ -906,19 +906,52 @@ def _save_stl_with_manifold_fix(triangles, filename):
     buffer.write(struct.pack("<I", num_triangles))
     buffer.write(stl_data.tobytes())
     buffer.seek(0)
+
+    with open(filename, "wb") as f:
+        buffer.seek(0)
+        f.write(buffer.read())
     
-    # Load with trimesh and fix manifold issues
-    try:
-        mesh = trimesh.load(buffer, file_type="stl")
-        mesh.merge_vertices()
-        mesh.remove_degenerate_faces()
-        mesh.remove_duplicate_faces()
-        mesh.fill_holes()
-        mesh.fix_normals()
-        mesh.export(filename)
-    except Exception as e:
-        print(f"Warning: Error fixing manifold for {filename}: {e}")
-        # Fall back to saving without manifold fix
-        with open(filename, "wb") as f:
-            buffer.seek(0)
-            f.write(buffer.read())
+    # # Load with trimesh and fix manifold issues
+    # try:
+    #     mesh = trimesh.load(buffer, file_type="stl")
+    #     mesh.merge_vertices()
+    #
+    #     # Try available degenerate-face removal utilities across trimesh versions
+    #     try:
+    #         if hasattr(mesh, "remove_degenerate_faces"):
+    #             mesh.remove_degenerate_faces()
+    #         elif hasattr(trimesh.repair, "remove_degenerate_faces"):
+    #             trimesh.repair.remove_degenerate_faces(mesh)
+    #         elif hasattr(trimesh.repair, "remove_degenerate_triangles"):
+    #             trimesh.repair.remove_degenerate_triangles(mesh)
+    #     except Exception as repair_err:
+    #         print(f"Warning: Skipped degenerate-face removal for {filename}: {repair_err}")
+    #
+    #     # Remove duplicate faces if the method exists
+    #     try:
+    #         if hasattr(mesh, "remove_duplicate_faces"):
+    #             mesh.remove_duplicate_faces()
+    #         elif hasattr(trimesh.repair, "remove_duplicate_faces"):
+    #             trimesh.repair.remove_duplicate_faces(mesh)
+    #     except Exception as repair_err:
+    #         print(f"Warning: Skipped duplicate-face removal for {filename}: {repair_err}")
+    #
+    #     # Fill holes and fix normals when available
+    #     try:
+    #         if hasattr(mesh, "fill_holes"):
+    #             mesh.fill_holes()
+    #     except Exception as repair_err:
+    #         print(f"Warning: Skipped hole filling for {filename}: {repair_err}")
+    #
+    #     try:
+    #         mesh.fix_normals()
+    #     except Exception as repair_err:
+    #         print(f"Warning: Skipped normal fixing for {filename}: {repair_err}")
+    #
+    #     mesh.export(filename)
+    # except Exception as e:
+    #     print(f"Warning: Error fixing manifold for {filename}: {e}")
+    #     # Fall back to saving without manifold fix
+    #     with open(filename, "wb") as f:
+    #         buffer.seek(0)
+    #         f.write(buffer.read())
