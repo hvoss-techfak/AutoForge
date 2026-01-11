@@ -937,7 +937,8 @@ def remove_height_spikes(
 
     out = dh_np.copy()
     spikes = 0
-    for y in range(1, H - 1):
+    tbar = tqdm(range(1, H - 1), desc="Removing height spikes", leave=False)
+    for y in tbar:
         for x in range(1, W - 1):
             window = dh_np[y - 1 : y + 2, x - 1 : x + 2]
             med_all = np.median(window)

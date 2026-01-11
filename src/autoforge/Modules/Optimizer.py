@@ -671,8 +671,8 @@ class FilamentOptimizer:
             self.rng_seed_search(self.best_discrete_loss, 200, autoset_seed=True)
 
         # Post-pruning spike cleanup
-        if getattr(self.args, "spike_removal", False):
-            self.post_remove_spikes()
+        #if getattr(self.args, "spike_removal", False):
+        #    self.post_remove_spikes()
 
         #Calculate and Print current loss
         dg, dh = self.get_discretized_solution(best=True)

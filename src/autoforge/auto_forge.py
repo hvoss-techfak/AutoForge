@@ -218,8 +218,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--spike_threshold_layers",
         type=int,
-        default=3,
-        help="Minimum layer delta above the local median to treat a pixel as a spike (3x3 window)",
+        default=1,
+        help="Minimum layer delta above the local median to treat a pixel as a spike in a 3x3 window",
     )
 
     parser.add_argument(
