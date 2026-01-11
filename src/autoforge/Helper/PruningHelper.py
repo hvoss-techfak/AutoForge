@@ -5,6 +5,7 @@ import torch
 from tqdm import tqdm
 from joblib import Parallel, delayed
 import threading
+import numpy as np
 
 from autoforge.Helper.OptimizerHelper import composite_image_disc
 from autoforge.Loss.LossFunctions import compute_loss
@@ -864,3 +865,100 @@ def optimise_swap_positions(
 
     outer_tbar.close()
     return best_dg
+
+
+def _compute_loss_for_heightmap(
+    optimizer: FilamentOptimizer,
+    disc_global: torch.Tensor,
+    disc_height: torch.Tensor,
+    *,
+    custom_height_logits: torch.Tensor | None = None,
+) -> float:
+    """Compute discrete loss for a given discrete height map/global assignment.
+
+    If ``custom_height_logits`` is provided, they are used directly (bypassing
+    discretization) when compositing the image; otherwise the optimizer's current
+    best height logits are used.
+    """
+    logits_for_disc = disc_to_logits(disc_global, optimizer.material_colors.shape[0], big_pos=1e5)
+    with _gpu_lock, torch.no_grad():
+        out_im = optimizer.get_best_discretized_image(
+            custom_height_logits=custom_height_logits,
+            custom_global_logits=logits_for_disc,
+        )
+        return compute_loss(comp=out_im, target=optimizer.target).item()
+
+
+def _median_without_outliers(window: np.ndarray, threshold: float, max_outliers: int = 2) -> tuple[float, bool, int]:
+    """Return replacement for center pixel if it is a spike; also report spike count.
+
+    A spike is when the center pixel is >= ``threshold`` above the window median and
+    the window has at most ``max_outliers`` such outliers. Returns (replacement_value,
+    is_spike, spike_count).
+    """
+    med = np.median(window)
+    outlier_mask = window - med >= threshold
+    spike_count = int(outlier_mask.sum())
+    center_is_outlier = bool(outlier_mask[1, 1])
+    if not center_is_outlier or spike_count == 0 or spike_count > max_outliers:
+        return float(window[1, 1]), False, 0
+    non_outliers = window[~outlier_mask]
+    if non_outliers.size == 0:
+        return float(window[1, 1]), False, 0
+    replacement = float(np.median(non_outliers))
+    return replacement, True, spike_count
+
+
+def remove_height_spikes(
+    disc_height: torch.Tensor, threshold_layers: int = 3, max_outliers: int = 2
+) -> tuple[torch.Tensor, int]:
+    """Remove tall spikes in a discrete height map using a 3x3 neighborhood.
+
+    A spike occurs only when the *center* pixel of a 3x3 window is at least
+    ``threshold_layers`` higher than the window median and the window has at most
+    two such outliers. Only those center pixels are replaced with the median of
+    the non-outlier values. Operates in layer units (0..max_layers).
+
+    Returns:
+        cleaned_height: torch.Tensor matching ``disc_height`` shape/device.
+        spike_count: int number of pixels corrected.
+    """
+    if disc_height.ndim != 2:
+        raise ValueError("disc_height must be 2D [H,W]")
+    if threshold_layers <= 0:
+        return disc_height, 0
+    if max_outliers <= 0:
+        return disc_height, 0
+
+    dh_np = disc_height.detach().cpu().numpy()
+    H, W = dh_np.shape
+    if H < 3 or W < 3:
+        return disc_height, 0
+
+    out = dh_np.copy()
+    spikes = 0
+    for y in range(1, H - 1):
+        for x in range(1, W - 1):
+            window = dh_np[y - 1 : y + 2, x - 1 : x + 2]
+            med_all = np.median(window)
+            mask = window - med_all >= threshold_layers
+            spike_count = int(mask.sum())
+            if not mask[1, 1] or spike_count == 0 or spike_count > max_outliers:
+                continue
+
+            non_outliers = window[~mask]
+            if non_outliers.size == 0:
+                continue
+            med_non_outliers = float(np.median(non_outliers))
+            center_val = float(window[1, 1])
+            if center_val < med_non_outliers + threshold_layers:
+                continue
+
+            out[y, x] = med_non_outliers  # only replace the center spike
+            spikes += 1
+
+    if spikes == 0:
+        return disc_height, 0
+
+    cleaned = torch.tensor(out, dtype=disc_height.dtype, device=disc_height.device)
+    return cleaned, spikes

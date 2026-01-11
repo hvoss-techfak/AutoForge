@@ -1,5 +1,6 @@
 import argparse
 import random
+import os
 from typing import Optional
 
 import matplotlib.pyplot as plt
@@ -258,6 +259,31 @@ class FilamentOptimizer:
         mask = (labels != 0).to(gathered.dtype)
         offsets = gathered * mask  # zero-out background
         return pixel_logits + offsets
+
+    def _remove_height_offset(
+            self,
+            pixel_logits: Optional[torch.Tensor] = None,
+            height_offsets: Optional[torch.Tensor] = None,
+    ):
+        if pixel_logits is None:
+            pixel_logits = self.pixel_height_logits
+        if height_offsets is None:
+            height_offsets = self.height_offsets
+
+        # Differentiable gather of per-cluster offsets with zero for background (label == 0)
+        labels = self.pixel_height_labels.to(torch.long)  # [H, W]
+        offsets_1d = height_offsets.squeeze(-1)  # [L]
+
+        # Same gradient scaling behavior as apply
+        s = getattr(self, "height_offsets_grad_scale", 1.0)
+        offsets_1d = offsets_1d * s + offsets_1d.detach() * (1.0 - s)
+
+        # Map each pixel label to its cluster offset
+        gathered = offsets_1d[labels]  # [H, W]
+        mask = (labels != 0).to(gathered.dtype)
+        offsets = gathered * mask  # zero-out background
+
+        return pixel_logits - offsets
 
     def _get_tau(self):
         """
@@ -637,10 +663,22 @@ class FilamentOptimizer:
             prune_num_swaps,
             prune_redundant_layers,
             optimise_swap_positions,
+            remove_height_spikes,
+            _compute_loss_for_heightmap,
         )
 
         if search_seed:
-            self.rng_seed_search(self.best_discrete_loss, 100, autoset_seed=True)
+            self.rng_seed_search(self.best_discrete_loss, 200, autoset_seed=True)
+
+        # Post-pruning spike cleanup
+        if getattr(self.args, "spike_removal", False):
+            self.post_remove_spikes()
+
+        #Calculate and Print current loss
+        dg, dh = self.get_discretized_solution(best=True)
+        if dh is not None:
+            current_loss = _compute_loss_for_heightmap(self, dg, dh)
+            print(f"Pre-prune discrete loss: {current_loss:.4f}")
 
         # clear pytorch and system cache to reduce vram usage
         torch.cuda.empty_cache()
@@ -677,6 +715,61 @@ class FilamentOptimizer:
         )
 
         optimise_swap_positions(self)
+        if getattr(self.args, "spike_removal", False):
+            self.post_remove_spikes()
+        # Calculate and Print current loss
+        dg, dh = self.get_discretized_solution(best=True)
+        if dh is not None:
+            current_loss = _compute_loss_for_heightmap(self, dg, dh)
+            print(f"Post-prune discrete loss: {current_loss:.4f}")
+
+    def post_remove_spikes(self):
+
+        from autoforge.Helper.PruningHelper import (
+            remove_height_spikes,
+            _compute_loss_for_heightmap,
+        )
+        dg_post, dh_post = self.get_discretized_solution(best=True)
+        if dh_post is not None:
+            pre_loss = _compute_loss_for_heightmap(self, dg_post, dh_post)
+
+            # Work on continuous height map to avoid discretization and numpy round-trips.
+            eff_logits = self._apply_height_offset(
+                self.best_params["pixel_height_logits"],
+                self.best_params["height_offsets"],
+            )
+            height_map = torch.sigmoid(eff_logits) * float(self.max_layers)
+
+            dh_clean, spikes = remove_height_spikes(
+                height_map, threshold_layers=self.args.spike_threshold_layers
+            )
+
+            normalized = dh_clean.clamp(0, self.max_layers) / float(self.max_layers)
+            cleaned_logits = self._remove_height_offset(
+                pixel_logits=torch.log(normalized) - torch.log1p(-normalized),
+                height_offsets=self.best_params["height_offsets"],
+            )
+            # normalized = normalized.clamp(1e-6, 1 - 1e-6)
+            # cleaned_logits = torch.log(normalized) - torch.log1p(-normalized)
+            self.best_params["pixel_height_logits"] = cleaned_logits.to(
+                self.device
+            )
+            self.pixel_height_logits = cleaned_logits.to(self.device)
+            dg_post, dh_post = self.get_discretized_solution(best=True)
+            post_loss = _compute_loss_for_heightmap(self, dg_post, dh_post)
+            print(
+                f"Spike removal: loss {pre_loss:.4f} -> {post_loss:.4f} | spikes fixed {spikes}"
+            )
+            try:
+                with open(
+                        os.path.join(self.args.output_folder, "spike_removal_stats.txt"),
+                        "a",
+                ) as f:
+                    f.write(
+                        f"post_prune,threshold_layers={self.args.spike_threshold_layers},spikes={spikes},loss_before={pre_loss:.6f},loss_after={post_loss:.6f}\n"
+                    )
+            except Exception:
+                pass
 
     def _maybe_update_best_discrete(self):
         """
@@ -743,7 +836,8 @@ class FilamentOptimizer:
         """
         best_seed = None
         best_loss = start_loss
-        for i in tqdm(range(num_seeds), desc="Searching for new best seed"):
+        tbar = tqdm(range(num_seeds), desc="Searching for new best seed")
+        for i in tbar:
             seed = np.random.randint(0, 1000000)
             effective_logits = self._apply_height_offset(
                 self.best_params["pixel_height_logits"],
@@ -769,6 +863,9 @@ class FilamentOptimizer:
             if current_disc_loss < best_loss:
                 best_loss = current_disc_loss
                 best_seed = seed
+                tbar.set_postfix(
+                    best_loss=f"{best_loss:.4f}"
+                )
         if autoset_seed and best_loss < start_loss:
             self.best_seed = best_seed
         return best_seed, best_loss

@@ -210,6 +210,19 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--spike_removal",
+        default=True,
+        help="Enable spike removal on the discrete height map before/after pruning to smooth isolated tall pixels",
+        action=argparse.BooleanOptionalAction,
+    )
+    parser.add_argument(
+        "--spike_threshold_layers",
+        type=int,
+        default=3,
+        help="Minimum layer delta above the local median to treat a pixel as a spike (3x3 window)",
+    )
+
+    parser.add_argument(
         "--pruning_max_colors",
         type=int,
         default=100,
