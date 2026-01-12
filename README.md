@@ -133,6 +133,7 @@ This will generate separate STL files for each color, allowing you to print face
 - `--pruning_max_layer` Max number of layers allowed after pruning (default: 75).
 - `--random_seed` Random seed for reproducibility (default: 0 (disabled)).
 - `--mps` Flag to use the Metal Performance Shaders (MPS) backend if available.
+- `--no-spike-removal` Disable spike removal for the final STL (not recommended).
 
 - `--tensorboard` Flag to enable TensorBoard logging.
 - `--run_name` *(Optional)* Name of the run used for TensorBoard logging.
