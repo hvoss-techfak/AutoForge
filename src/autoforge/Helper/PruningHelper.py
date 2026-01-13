@@ -10,6 +10,7 @@ import numpy as np
 from autoforge.Helper.OptimizerHelper import composite_image_disc
 from autoforge.Loss.LossFunctions import compute_loss
 from autoforge.Modules.Optimizer import FilamentOptimizer
+from collections import deque
 
 # One global lock that serialises every call that needs GPU / VRAM
 _gpu_lock = threading.Lock()
@@ -937,26 +938,38 @@ def remove_height_spikes(
 
     out = dh_np.copy()
     spikes = 0
-    tbar = tqdm(range(1, H - 1), desc="Removing height spikes", leave=False)
-    for y in tbar:
-        for x in range(1, W - 1):
-            window = dh_np[y - 1 : y + 2, x - 1 : x + 2]
-            med_all = np.median(window)
-            mask = window - med_all >= threshold_layers
-            spike_count = int(mask.sum())
-            if not mask[1, 1] or spike_count == 0 or spike_count > max_outliers:
+    queue = deque((y, x) for y in range(1, H - 1) for x in range(1, W - 1))
+    total_num = len(queue)
+    max_iters = (H - 2) * (W - 2) * 10  # safety cap
+    iters = 0
+    tbar = tqdm(total=total_num, desc="Removing height spikes", leave=False)
+    while queue and iters < max_iters:
+        tbar.update(1)
+        y, x = queue.popleft()
+        iters += 1
+        window = out[y - 1: y + 2, x - 1: x + 2]
+        replacement, is_spike, _ = _median_without_outliers(
+            window, threshold_layers, max_outliers
+        )
+        center_val = out[y, x]
+        if (
+                not is_spike
+                or center_val < replacement + threshold_layers
+                or replacement == center_val
+        ):
+            continue
+        out[y, x] = replacement
+        spikes += 1
+        for ny in range(y - 1, y + 2):
+            if ny <= 0 or ny >= H - 1:
                 continue
-
-            non_outliers = window[~mask]
-            if non_outliers.size == 0:
-                continue
-            med_non_outliers = float(np.median(non_outliers))
-            center_val = float(window[1, 1])
-            if center_val < med_non_outliers + threshold_layers:
-                continue
-
-            out[y, x] = med_non_outliers  # only replace the center spike
-            spikes += 1
+            for nx in range(x - 1, x + 2):
+                if nx <= 0 or nx >= W - 1:
+                    continue
+                queue.append((ny, nx))
+                total_num += 1
+                tbar.total = total_num
+    tbar.close()
 
     if spikes == 0:
         return disc_height, 0
