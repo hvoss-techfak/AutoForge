@@ -2,7 +2,7 @@ import json
 import os
 import time
 import traceback
-
+import time
 import requests
 from tqdm import tqdm
 
@@ -89,6 +89,7 @@ def download_all_pages(url):
         all_results.extend(data.get("results", []))
         url = data.get("next")
         tbar.update(1)
+        time.sleep(5)
     return all_results
 
 
