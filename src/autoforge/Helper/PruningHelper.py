@@ -91,7 +91,7 @@ def prune_num_colors(
 
     print(f"PRUNING: Color - initial loss={best_loss:.4f}, initial colors={len(distinct_mats)}")
 
-    tbar = tqdm(total=100, leave=True)
+    tbar = tqdm(total=100, leave=False)
 
     while True:
         distinct_mats = torch.unique(best_dg)
@@ -221,7 +221,7 @@ def prune_num_swaps(
 
     print(f"PRUNING: Swap - initial loss={best_loss:.4f}, initial swaps={num_swaps:d}")
 
-    tbar = tqdm(total=100, leave=True)
+    tbar = tqdm(total=100, leave=False)
 
     while True:
         bands = find_color_bands(best_dg)
@@ -857,7 +857,7 @@ def optimise_swap_positions(
     best_loss = disc_loss(best_dg)
     print(f"PRUNING: Swap position - initial loss={best_loss:.4f}")
 
-    outer_tbar = tqdm(desc="Optimising swap positions", total=100, leave=True)
+    outer_tbar = tqdm(desc="Optimising swap positions", total=100, leave=False)
     improved = True
     while improved:
         improved = False
@@ -906,9 +906,9 @@ def optimise_swap_positions(
                 outer_tbar.set_description(
                     f"Swap {swap_idx} moved {old_pos}->{new_pos} | Loss {best_loss:.4f}"
                 )
-                print(
-                    f"Swap {swap_idx} moved {old_pos}->{new_pos} | Loss {best_loss:.4f}"
-                )
+                # print(
+                #     f"Swap {swap_idx} moved {old_pos}->{new_pos} | Loss {best_loss:.4f}"
+                # )
                 improved = True
                 break
 
@@ -991,7 +991,7 @@ def remove_height_spikes(
     total_num = len(queue)
     max_iters = (H - 2) * (W - 2) * 10  # safety cap
     iters = 0
-    tbar = tqdm(total=total_num, desc="Removing height spikes", leave=True)
+    tbar = tqdm(total=total_num, desc="Removing height spikes", leave=False)
     while queue and iters < max_iters:
         tbar.update(1)
         y, x = queue.popleft()
