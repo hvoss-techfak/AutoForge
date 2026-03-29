@@ -47,22 +47,15 @@ def _chunked(iterable, chunk_size):
 def prune_num_colors(
     optimizer: FilamentOptimizer,
     max_colors_allowed: int,
-    tau_for_comp: float,  # kept for API compatibility
-    perception_loss_module: torch.nn.Module,  # kept for API compatibility
-    n_jobs: int | None = -1,  # how many workers joblib should start
+    tau_for_comp: float,
+    perception_loss_module: torch.nn.Module,
+    n_jobs: int | None = -1,
     *,
-    fast: bool = True,  # enable incremental search
-    chunking_percent=0.05,  # percentage of layers to process at once
-    allowed_loss_increase_percent=0.00,  # percentage of loss increase allowed over best loss
+    fast: bool = True,
+    chunking_percent=0.05,
+    allowed_loss_increase_percent=0.00,
 ) -> torch.Tensor:
-    """Iteratively merge materials until the number of distinct colors is
-    <= max_colors_allowed or until merging would worsen the loss.
 
-    When *fast* is True we only look at 10 percent of the candidate merges at a
-    time. If none of those improve the objective we look at the next 10 percent
-    and so on. In the worst case we still examine every merge, in the best case
-    we stop after the first improving chunk, saving work.
-    """
     num_materials = optimizer.material_colors.shape[0]
     disc_global, _ = optimizer.get_discretized_solution(best=True)
 
@@ -71,28 +64,41 @@ def prune_num_colors(
     ) -> tuple[float, torch.Tensor]:
         dg_test = merge_color(dg_base, c_from, c_to)
         logits_for_disc = disc_to_logits(dg_test, num_materials, big_pos=1e5)
+
         with _gpu_lock, torch.no_grad():
             out_im = optimizer.get_best_discretized_image(
                 custom_global_logits=logits_for_disc
             )
             loss = compute_loss(comp=out_im, target=optimizer.target)
+
         return loss, dg_test
 
     def get_image_loss(dg_test: torch.Tensor) -> float:
         logits_for_disc = disc_to_logits(dg_test, num_materials, big_pos=1e5)
+
         with _gpu_lock, torch.no_grad():
             out_im = optimizer.get_best_discretized_image(
                 custom_global_logits=logits_for_disc
             )
             loss = compute_loss(comp=out_im, target=optimizer.target)
+
         return loss
 
     best_dg = disc_global.clone()
     best_loss = get_image_loss(best_dg)
 
-    tbar = tqdm(total=100, leave=False)
+    distinct_mats = torch.unique(best_dg)
+
+    print(f"PRUNING: Color - initial loss={best_loss:.4f}, initial colors={len(distinct_mats)}")
+
+    tbar = tqdm(total=100, leave=True)
+
     while True:
         distinct_mats = torch.unique(best_dg)
+
+        if len(distinct_mats) <= 1:
+            break
+
         merge_pairs = [
             (c_from.item(), c_to.item())
             for c_from in distinct_mats
@@ -111,69 +117,80 @@ def prune_num_colors(
         if fast:
             random.shuffle(merge_pairs)
             chunk_size = max(1, math.ceil(len(merge_pairs) * chunking_percent))
+
             improved = False
-            c_cand = None
-            c_loss = 1000
+            best_candidate = None
+            best_candidate_loss = float("inf")
+
             for chunk in _chunked(merge_pairs, chunk_size):
                 cand_results = Parallel(
                     n_jobs=n_jobs, backend="threading", prefer="threads"
                 )(delayed(score_color)(best_dg, *pair) for pair in chunk)
+
                 merge_loss, merge_dg = min(cand_results, key=lambda x: x[0])
+
                 if merge_loss < best_loss * (1 + allowed_loss_increase_percent):
-                    best_dg, best_loss = merge_dg, merge_loss
+                    best_dg = merge_dg
+                    best_loss = merge_loss
                     improved = True
-                    break  # move on to next outer iteration
-                else:
-                    if len(distinct_mats) > max_colors_allowed:
-                        if merge_loss < c_loss:
-                            c_cand = (merge_dg, merge_loss)
-                            c_loss = merge_loss
-            if c_cand is not None:
-                best_dg, best_loss = c_cand
-                distinct_mats = torch.unique(best_dg)
-                optimizer.best_params["global_logits"] = disc_to_logits(
-                    best_dg, num_materials=num_materials, big_pos=1e5
-                )
-                tbar.set_description(
-                    f"Colors {len(distinct_mats)} | Loss {best_loss:.4f} | Merge pairs {len(merge_pairs)}"
-                )
-                improved = True
+                    break
+
+                if merge_loss < best_candidate_loss:
+                    best_candidate = merge_dg
+                    best_candidate_loss = merge_loss
 
             if not improved:
-                break  # no chunk provided improvement and we are within budget
+                if len(distinct_mats) > max_colors_allowed and best_candidate is not None:
+                    best_dg = best_candidate
+                    best_loss = best_candidate_loss
+                else:
+                    break
+
         else:
             cand_results = Parallel(
                 n_jobs=n_jobs, backend="threading", prefer="threads"
             )(delayed(score_color)(best_dg, *pair) for pair in merge_pairs)
+
             merge_loss, merge_dg = min(cand_results, key=lambda x: x[0])
+
             if merge_loss < best_loss or len(distinct_mats) > max_colors_allowed:
-                best_dg, best_loss = merge_dg, merge_loss
+                best_dg = merge_dg
+                best_loss = merge_loss
             else:
                 break
 
     tbar.close()
+
     optimizer.best_params["global_logits"] = disc_to_logits(
         best_dg, num_materials=num_materials, big_pos=1e5
     )
+
+    final_colors = torch.unique(best_dg)
+
+    assert len(final_colors) <= max_colors_allowed, (
+        f"Color pruning failed: {len(final_colors)} > {max_colors_allowed}"
+    )
+
+    print(f"PRUNING: Color - final loss={best_loss:.4f}, final colors={len(final_colors)}")
+
     return best_dg
 
 
 def prune_num_swaps(
     optimizer: FilamentOptimizer,
     max_swaps_allowed: int,
-    tau_for_comp: float,  # kept for API compatibility
-    perception_loss_module: torch.nn.Module,  # kept for API compatibility
-    n_jobs: int | None = -1,  # how many workers joblib should start
+    tau_for_comp: float,
+    perception_loss_module: torch.nn.Module,
+    n_jobs: int | None = -1,
     *,
-    fast: bool = True,  # enable incremental search
-    chunking_percent=0.05,  # percentage of layers to process at once
-    allowed_loss_increase_percent=0.000,  # percentage of loss increase allowed over best loss
+    fast: bool = True,
+    chunking_percent=0.05,
+    allowed_loss_increase_percent=0.000,
 ) -> torch.Tensor:
-    """Reduce the number of color boundaries until it is below or equal to
-    *max_swaps_allowed*, stopping earlier if any further merge would worsen the
-    loss. The *fast* parameter activates the same 10 percent chunk search logic
-    used in *prune_num_colors*.
+    """Reduce the number of color boundaries until it is <= max_swaps_allowed.
+    If necessary, merges are forced even when they worsen the loss.
     """
+
     num_materials = optimizer.material_colors.shape[0]
     disc_global, _ = optimizer.get_discretized_solution(best=True)
 
@@ -199,10 +216,17 @@ def prune_num_swaps(
     best_dg = disc_global.clone()
     best_loss = get_image_loss(best_dg)
 
-    tbar = tqdm(total=100, leave=False)
+    bands = find_color_bands(best_dg)
+    num_swaps = len(bands) - 1
+
+    print(f"PRUNING: Swap - initial loss={best_loss:.4f}, initial swaps={num_swaps:d}")
+
+    tbar = tqdm(total=100, leave=True)
+
     while True:
         bands = find_color_bands(best_dg)
         num_swaps = len(bands) - 1
+
         if num_swaps == 0:
             break
 
@@ -224,38 +248,45 @@ def prune_num_swaps(
         if fast:
             random.shuffle(merge_specs)
             chunk_size = max(1, math.ceil(len(merge_specs) * chunking_percent))
+
             improved = False
-            c_cand = None
-            c_loss = 10000
+            best_candidate = None
+            best_candidate_loss = float("inf")
+
             for chunk in _chunked(merge_specs, chunk_size):
+
                 cand_results = Parallel(
                     n_jobs=n_jobs, backend="threading", prefer="threads"
                 )(
                     delayed(score_swap)(best_dg, band_a, band_b, direction)
                     for band_a, band_b, direction in chunk
                 )
+
                 merge_loss, merge_dg = min(cand_results, key=lambda x: x[0])
+
+                # Accept merge if loss increase is allowed
                 if merge_loss < best_loss * (1 + allowed_loss_increase_percent):
                     best_dg, best_loss = merge_dg, merge_loss
                     improved = True
                     break
-                else:
-                    if num_swaps > max_swaps_allowed and merge_loss < c_loss:
-                        c_cand = (merge_dg, merge_loss)
-                        c_loss = merge_loss
-            if c_cand is not None:
-                best_dg, best_loss = c_cand
-                num_swaps = len(find_color_bands(best_dg)) - 1
-                optimizer.best_params["global_logits"] = disc_to_logits(
-                    best_dg, num_materials=num_materials, big_pos=1e5
-                )
-                tbar.set_description(
-                    f"Swaps {num_swaps} | Loss {best_loss:.4f} | Merge swaps {len(merge_specs)}"
-                )
-                improved = True
 
+                # Track best candidate for forced merge
+                if merge_loss < best_candidate_loss:
+                    best_candidate = (merge_dg, merge_loss)
+                    best_candidate_loss = merge_loss
+
+            bands = find_color_bands(best_dg)
+            num_swaps = len(bands) - 1
+
+            # If no acceptable merge but we still exceed swap budget,
+            # force the best candidate.
             if not improved:
-                break
+                if num_swaps > max_swaps_allowed and best_candidate is not None:
+                    best_dg, best_loss = best_candidate
+                    improved = True
+                else:
+                    break
+
         else:
             cand_results = Parallel(
                 n_jobs=n_jobs, backend="threading", prefer="threads"
@@ -263,16 +294,28 @@ def prune_num_swaps(
                 delayed(score_swap)(best_dg, band_a, band_b, direction)
                 for band_a, band_b, direction in merge_specs
             )
+
             merge_loss, merge_dg = min(cand_results, key=lambda x: x[0])
+
             if merge_loss < best_loss or num_swaps > max_swaps_allowed:
                 best_dg, best_loss = merge_dg, merge_loss
             else:
                 break
 
+    print(f"PRUNING: Swap - final loss={best_loss:.4f}, final swaps={len(find_color_bands(best_dg)) - 1:d}")
+
     tbar.close()
+
     optimizer.best_params["global_logits"] = disc_to_logits(
         best_dg, num_materials=num_materials, big_pos=1e5
     )
+
+    # safety check
+    final_swaps = len(find_color_bands(best_dg)) - 1
+    assert final_swaps <= max_swaps_allowed, (
+        f"Swap pruning failed: {final_swaps} swaps > {max_swaps_allowed}"
+    )
+
     return best_dg
 
 
@@ -418,6 +461,8 @@ def prune_redundant_layers(
     # Baseline loss with current best parameters
     best_loss = get_initial_loss(current_max_layers, optimizer)
 
+    print(f"PRUNING: Layer - initial loss={best_loss:.4f}, initial layer={current_max_layers:d}")
+
     tbar = tqdm(
         desc=f"Layer pruning | Loss {best_loss:.4f}",
         total=max(current_max_layers - 1, 0),
@@ -550,6 +595,8 @@ def prune_redundant_layers(
                 improvement = True
             else:
                 break
+
+    print(f"PRUNING: Layers - final loss={best_loss:.4f}, final layers={current_max_layers:d}")
 
     tbar.close()
     return optimizer.best_params, best_loss, current_max_layers
@@ -808,8 +855,9 @@ def optimise_swap_positions(
 
     best_dg, _ = optimizer.get_discretized_solution(best=True)
     best_loss = disc_loss(best_dg)
+    print(f"PRUNING: Swap position - initial loss={best_loss:.4f}")
 
-    outer_tbar = tqdm(desc="Optimising swap positions", total=100, leave=False)
+    outer_tbar = tqdm(desc="Optimising swap positions", total=100, leave=True)
     improved = True
     while improved:
         improved = False
@@ -865,6 +913,7 @@ def optimise_swap_positions(
                 break
 
     outer_tbar.close()
+    print(f"PRUNING: Swap position - final loss={best_loss:.4f}")
     return best_dg
 
 
@@ -942,7 +991,7 @@ def remove_height_spikes(
     total_num = len(queue)
     max_iters = (H - 2) * (W - 2) * 10  # safety cap
     iters = 0
-    tbar = tqdm(total=total_num, desc="Removing height spikes", leave=False)
+    tbar = tqdm(total=total_num, desc="Removing height spikes", leave=True)
     while queue and iters < max_iters:
         tbar.update(1)
         y, x = queue.popleft()
