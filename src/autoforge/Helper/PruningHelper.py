@@ -54,8 +54,8 @@ def prune_num_colors(
     fast: bool = True,
     chunking_percent=0.05,
     allowed_loss_increase_percent=0.00,
+    preview_callback=None,
 ) -> torch.Tensor:
-
     num_materials = optimizer.material_colors.shape[0]
     disc_global, _ = optimizer.get_discretized_solution(best=True)
 
@@ -89,7 +89,9 @@ def prune_num_colors(
 
     distinct_mats = torch.unique(best_dg)
 
-    print(f"PRUNING: Color - initial loss={best_loss:.4f}, initial colors={len(distinct_mats)}")
+    print(
+        f"PRUNING: Color - initial loss={best_loss:.4f}, initial colors={len(distinct_mats)}"
+    )
 
     tbar = tqdm(total=100, leave=False)
 
@@ -110,6 +112,15 @@ def prune_num_colors(
             f"Colors {len(distinct_mats)} | Loss {best_loss:.4f} | Merge pairs {len(merge_pairs)}"
         )
         tbar.update(1)
+
+        if preview_callback is not None:
+            try:
+                preview_callback(
+                    optimizer,
+                    int((1 - len(distinct_mats) / max(max_colors_allowed, 1)) * 100),
+                )
+            except Exception:
+                pass
 
         if not merge_pairs:
             break
@@ -140,7 +151,10 @@ def prune_num_colors(
                     best_candidate_loss = merge_loss
 
             if not improved:
-                if len(distinct_mats) > max_colors_allowed and best_candidate is not None:
+                if (
+                    len(distinct_mats) > max_colors_allowed
+                    and best_candidate is not None
+                ):
                     best_dg = best_candidate
                     best_loss = best_candidate_loss
                 else:
@@ -171,7 +185,9 @@ def prune_num_colors(
         f"Color pruning failed: {len(final_colors)} > {max_colors_allowed}"
     )
 
-    print(f"PRUNING: Color - final loss={best_loss:.4f}, final colors={len(final_colors)}")
+    print(
+        f"PRUNING: Color - final loss={best_loss:.4f}, final colors={len(final_colors)}"
+    )
 
     return best_dg
 
@@ -186,6 +202,7 @@ def prune_num_swaps(
     fast: bool = True,
     chunking_percent=0.05,
     allowed_loss_increase_percent=0.000,
+    preview_callback=None,
 ) -> torch.Tensor:
     """Reduce the number of color boundaries until it is <= max_swaps_allowed.
     If necessary, merges are forced even when they worsen the loss.
@@ -242,6 +259,14 @@ def prune_num_swaps(
         )
         tbar.update(1)
 
+        if preview_callback is not None:
+            try:
+                preview_callback(
+                    optimizer, int((1 - num_swaps / max(max_swaps_allowed, 1)) * 100)
+                )
+            except Exception:
+                pass
+
         if not merge_specs:
             break
 
@@ -254,7 +279,6 @@ def prune_num_swaps(
             best_candidate_loss = float("inf")
 
             for chunk in _chunked(merge_specs, chunk_size):
-
                 cand_results = Parallel(
                     n_jobs=n_jobs, backend="threading", prefer="threads"
                 )(
@@ -302,7 +326,9 @@ def prune_num_swaps(
             else:
                 break
 
-    print(f"PRUNING: Swap - final loss={best_loss:.4f}, final swaps={len(find_color_bands(best_dg)) - 1:d}")
+    print(
+        f"PRUNING: Swap - final loss={best_loss:.4f}, final swaps={len(find_color_bands(best_dg)) - 1:d}"
+    )
 
     tbar.close()
 
@@ -449,6 +475,7 @@ def prune_redundant_layers(
     fast: bool = True,  # NEW: enable 10 percent incremental search
     chunking_percent=0.05,  # percentage of layers to process at once
     allowed_loss_increase_percent=0.000,  # percentage of loss increase allowed over best loss
+    preview_callback=None,
 ):
     """Iteratively drop layers until the loss cannot be improved.
 
@@ -461,7 +488,9 @@ def prune_redundant_layers(
     # Baseline loss with current best parameters
     best_loss = get_initial_loss(current_max_layers, optimizer)
 
-    print(f"PRUNING: Layer - initial loss={best_loss:.4f}, initial layer={current_max_layers:d}")
+    print(
+        f"PRUNING: Layer - initial loss={best_loss:.4f}, initial layer={current_max_layers:d}"
+    )
 
     tbar = tqdm(
         desc=f"Layer pruning | Loss {best_loss:.4f}",
@@ -512,6 +541,15 @@ def prune_redundant_layers(
         tbar.update(1)
         improvement = False
         layer_indices = list(range(current_max_layers))
+
+        if preview_callback is not None:
+            try:
+                preview_callback(
+                    optimizer,
+                    int((1 - current_max_layers / max(pruning_max_layers, 1)) * 100),
+                )
+            except Exception:
+                pass
 
         if fast:
             random.shuffle(layer_indices)
@@ -596,7 +634,9 @@ def prune_redundant_layers(
             else:
                 break
 
-    print(f"PRUNING: Layers - final loss={best_loss:.4f}, final layers={current_max_layers:d}")
+    print(
+        f"PRUNING: Layers - final loss={best_loss:.4f}, final layers={current_max_layers:d}"
+    )
 
     tbar.close()
     return optimizer.best_params, best_loss, current_max_layers
@@ -832,6 +872,7 @@ def optimise_swap_positions(
     n_jobs: int | None = -1,
     *,
     allowed_loss_increase_percent: float = 0.0,
+    preview_callback=None,
 ) -> torch.Tensor:
     """
     Exhaustively move each swap boundary to every admissible layer and keep the
@@ -859,9 +900,17 @@ def optimise_swap_positions(
 
     outer_tbar = tqdm(desc="Optimising swap positions", total=100, leave=False)
     improved = True
+    pass_idx = 0
     while improved:
         improved = False
+        pass_idx += 1
         outer_tbar.update(1)
+
+        if preview_callback is not None:
+            try:
+                preview_callback(optimizer, min(90 + pass_idx, 99))
+            except Exception:
+                pass
 
         bands = find_color_bands(best_dg)
         num_swaps = len(bands) - 1
@@ -930,7 +979,9 @@ def _compute_loss_for_heightmap(
     discretization) when compositing the image; otherwise the optimizer's current
     best height logits are used.
     """
-    logits_for_disc = disc_to_logits(disc_global, optimizer.material_colors.shape[0], big_pos=1e5)
+    logits_for_disc = disc_to_logits(
+        disc_global, optimizer.material_colors.shape[0], big_pos=1e5
+    )
     with _gpu_lock, torch.no_grad():
         out_im = optimizer.get_best_discretized_image(
             custom_height_logits=custom_height_logits,
@@ -939,7 +990,9 @@ def _compute_loss_for_heightmap(
         return compute_loss(comp=out_im, target=optimizer.target).item()
 
 
-def _median_without_outliers(window: np.ndarray, threshold: float, max_outliers: int = 2) -> tuple[float, bool, int]:
+def _median_without_outliers(
+    window: np.ndarray, threshold: float, max_outliers: int = 2
+) -> tuple[float, bool, int]:
     """Return replacement for center pixel if it is a spike; also report spike count.
 
     A spike is when the center pixel is >= ``threshold`` above the window median and
@@ -996,15 +1049,15 @@ def remove_height_spikes(
         tbar.update(1)
         y, x = queue.popleft()
         iters += 1
-        window = out[y - 1: y + 2, x - 1: x + 2]
+        window = out[y - 1 : y + 2, x - 1 : x + 2]
         replacement, is_spike, _ = _median_without_outliers(
             window, threshold_layers, max_outliers
         )
         center_val = out[y, x]
         if (
-                not is_spike
-                or center_val < replacement + threshold_layers
-                or replacement == center_val
+            not is_spike
+            or center_val < replacement + threshold_layers
+            or replacement == center_val
         ):
             continue
         out[y, x] = replacement

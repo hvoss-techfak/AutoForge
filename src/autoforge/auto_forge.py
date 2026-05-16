@@ -29,6 +29,7 @@ import numpy as np
 from tqdm import tqdm
 
 from autoforge.Helper import PruningHelper
+from autoforge.Helper.AmpUtils import safe_autocast
 from autoforge.Helper.FilamentHelper import hex_to_rgb, load_materials
 from autoforge.Helper.Heightmaps.ChristofidesHeightMap import (
     run_init_threads,
@@ -678,8 +679,7 @@ def _run_optimization_loop(
     """
     print("Starting optimization...")
     tbar = tqdm(range(args.iterations))
-    dtype = torch.bfloat16 if not args.mps else torch.float32
-    with torch.autocast(device.type, dtype=dtype):
+    with safe_autocast(device):
         for i in tbar:
             loss_val = optimizer.step(record_best=i % args.discrete_check == 0)
 
@@ -746,9 +746,8 @@ def _post_optimize_and_export(
     if focus_map_proc is not None and focus_map_full is not None:
         optimizer.focus_map = focus_map_full
 
-    dtype = torch.bfloat16 if not args.mps else torch.float32
     with torch.no_grad():
-        with torch.autocast(device.type, dtype=dtype):
+        with safe_autocast(device):
             if args.perform_pruning:
                 # Adjust pruning_max_colors to account for background and clear filament
                 # pruning_max_colors = total filaments needed

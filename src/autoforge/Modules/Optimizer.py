@@ -34,6 +34,8 @@ class FilamentOptimizer:
         device: torch.device,
         perception_loss_module: Optional[torch.nn.Module],
         focus_map: Optional[torch.Tensor] = None,
+        preview_callback=None,
+        preview_callback_interval: int = 25,
     ):
         """
         Initialize an optimizer instance.
@@ -96,11 +98,13 @@ class FilamentOptimizer:
         # Priority mask
         self.focus_map = None
         if focus_map is not None:
-            # Ensure on device and correct dtype/shape [H,W]
             fm = focus_map
             if fm.dim() == 3 and fm.shape[-1] == 1:
                 fm = fm.squeeze(-1)
             self.focus_map = fm.to(device=self.device, dtype=torch.float32)
+
+        self.preview_callback = preview_callback
+        self.preview_callback_interval = preview_callback_interval
 
         # Initialize TensorBoard writer
         if args.tensorboard:
@@ -261,9 +265,9 @@ class FilamentOptimizer:
         return pixel_logits + offsets
 
     def _remove_height_offset(
-            self,
-            pixel_logits: Optional[torch.Tensor] = None,
-            height_offsets: Optional[torch.Tensor] = None,
+        self,
+        pixel_logits: Optional[torch.Tensor] = None,
+        height_offsets: Optional[torch.Tensor] = None,
     ):
         if pixel_logits is None:
             pixel_logits = self.pixel_height_logits
@@ -357,7 +361,15 @@ class FilamentOptimizer:
 
         self.num_steps_done += 1
 
-        # Optionally track the best "discrete" solution after a certain iteration
+        if (
+            self.preview_callback is not None
+            and self.num_steps_done % self.preview_callback_interval == 0
+        ):
+            try:
+                self.preview_callback(self, self.num_steps_done)
+            except Exception:
+                pass
+
         if record_best:
             self._maybe_update_best_discrete()
         # torch.cuda.empty_cache()
@@ -442,7 +454,9 @@ class FilamentOptimizer:
             if not prefix:
                 self.writer.add_scalar("Params/tau_height", tau_height, steps)
                 self.writer.add_scalar("Params/tau_global", tau_global, steps)
-                self.writer.add_scalar("Params/lr", self.optimizer.param_groups[0]["lr"], steps)
+                self.writer.add_scalar(
+                    "Params/lr", self.optimizer.param_groups[0]["lr"], steps
+                )
                 self.writer.add_scalar("Loss/train", self.loss, steps)
 
             # Log images periodically
@@ -671,10 +685,10 @@ class FilamentOptimizer:
             self.rng_seed_search(self.best_discrete_loss, 200, autoset_seed=True)
 
         # Post-pruning spike cleanup
-        #if getattr(self.args, "spike_removal", False):
+        # if getattr(self.args, "spike_removal", False):
         #    self.post_remove_spikes()
 
-        #Calculate and Print current loss
+        # Calculate and Print current loss
         dg, dh = self.get_discretized_solution(best=True)
         if dh is not None:
             current_loss = _compute_loss_for_heightmap(self, dg, dh)
@@ -724,11 +738,11 @@ class FilamentOptimizer:
             print(f"Post-prune discrete loss: {current_loss:.4f}")
 
     def post_remove_spikes(self):
-
         from autoforge.Helper.PruningHelper import (
             remove_height_spikes,
             _compute_loss_for_heightmap,
         )
+
         dg_post, dh_post = self.get_discretized_solution(best=True)
         if dh_post is not None:
             pre_loss = _compute_loss_for_heightmap(self, dg_post, dh_post)
@@ -751,9 +765,7 @@ class FilamentOptimizer:
             )
             # normalized = normalized.clamp(1e-6, 1 - 1e-6)
             # cleaned_logits = torch.log(normalized) - torch.log1p(-normalized)
-            self.best_params["pixel_height_logits"] = cleaned_logits.to(
-                self.device
-            )
+            self.best_params["pixel_height_logits"] = cleaned_logits.to(self.device)
             self.pixel_height_logits = cleaned_logits.to(self.device)
             dg_post, dh_post = self.get_discretized_solution(best=True)
             post_loss = _compute_loss_for_heightmap(self, dg_post, dh_post)
@@ -762,8 +774,8 @@ class FilamentOptimizer:
             )
             try:
                 with open(
-                        os.path.join(self.args.output_folder, "spike_removal_stats.txt"),
-                        "a",
+                    os.path.join(self.args.output_folder, "spike_removal_stats.txt"),
+                    "a",
                 ) as f:
                     f.write(
                         f"post_prune,threshold_layers={self.args.spike_threshold_layers},spikes={spikes},loss_before={pre_loss:.6f},loss_after={post_loss:.6f}\n"
@@ -863,9 +875,7 @@ class FilamentOptimizer:
             if current_disc_loss < best_loss:
                 best_loss = current_disc_loss
                 best_seed = seed
-                tbar.set_postfix(
-                    best_loss=f"{best_loss:.4f}"
-                )
+                tbar.set_postfix(best_loss=f"{best_loss:.4f}")
         if autoset_seed and best_loss < start_loss:
             self.best_seed = best_seed
         return best_seed, best_loss

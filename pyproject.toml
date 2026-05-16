@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "AutoForge"
-version="1.9.4"
+version="1.9.5"
 description = "AutoForge is a Python tool for generating 3D printed layered models from an input image."
 authors = [{ name = "Hendric Voss", email = "hvoss@techfak.uni-bielefeld.de" }]
 readme = "README.md"
@@ -27,6 +27,7 @@ dependencies = [
   "shapely>=2.0.7",
   "trimesh>=4.6.4",
   "joblib>=1.4.2",
+  "uvicorn[standard]>=0.44.0",
 ]
 
 [tool.setuptools]
